@@ -13,6 +13,8 @@ Version 1.3 - Updated 2017-08-02 - Paul Fuller
 			- Added check to see of java is running and to kill it
 			- Added check to find newest java install in script location
 			- Installs latest java in script location
+Version 1.4 - Updated 2017-08-02 - Paul Fuller
+            - Bug fixes: intver not populating
 IMPORTANT NOTE: If you would like Java versions 6 and below to remain, please edit the next line and replace $true with $false
 #>
 $UnInstall6andBelow = $true
@@ -123,9 +125,8 @@ if ($UnInstall6andBelow) {
  Write-Host("Finding Setup Files...")
 #Install latest Java Version  
  Get-ChildItem -Path $PSScriptRoot -Filter *.exe | ForEach {
-     $TempVer = ([System.Diagnostics.FileVersionInfo]::GetVersionInfo($_).ProductVersion)
-     $TempBit = (Test-is64Bit -FilePath $_.FullName.tostring()).FileType
-    $SetupFiles.Add($_.Name,@{Version = $TempVer;IntSize = $TempBit;fsobject=$_})
+    $TempBit = (Test-is64Bit -FilePath $_.FullName.tostring()).FileType
+    $SetupFiles.Add($_.Name,@{Version = $_.VersionInfo.ProductVersion;IntSize = $TempBit;FullPath=$_.Fullname;fsobject=$_})
 }
 If ($SetupFiles.count -gt 0 ) {
     $Install = $SetupFiles.Clone()
@@ -149,8 +150,8 @@ If ($SetupFiles.count -gt 0 ) {
         ForEach ($EXE in $Install.Keys) {
             #install 
             if($Install.$EXE.IntSize -eq "x64" ) {
-		        Write-Host ("Install: " + $EXE + "`n`t`t Version: `t" + $Install.$EXE.Version + "`n`t`t Bit: `t`t" + $Install.$EXE.IntSize + "`n`t`t FullPath: `t" + $SetupFiles.$EXE.fsobject.Fullname)
-                #Start-Process -FilePath $Install$.$EXE.fsobject.Fullname -ArgumentList $InstallOptions -Wait -Passthru
+		        Write-Host ("Install: " + $EXE + "`n`t`t Version: `t" + $Install.$EXE.Version + "`n`t`t Bit: `t`t" + $Install.$EXE.IntSize + "`n`t`t FullPath: `t" + $Install.$EXE.FullPath)
+                Start-Process -FilePath $Install.$EXE.FullPath -ArgumentList $InstallOptions -Wait -Passthru
             }
 
 	    }
@@ -164,8 +165,8 @@ If ($SetupFiles.count -gt 0 ) {
          ForEach ($EXE in $Install.Keys) {
             #install
             if($Install.$EXE.IntSize -eq "x86" ) {
-		        Write-Host ("Install: " + $EXE + "`n`t`t Version: `t" + $Install.$EXE.Version + "`n`t`t Bit: `t`t" + $Install.$EXE.IntSize + "`n`t`t FullPath: `t" + $SetupFiles.$EXE.fsobject.Fullname)
-                #Start-Process -FilePath $Install$.$EXE.fsobject.Fullname -ArgumentList $InstallOptions -Wait -Passthru
+		        Write-Host ("Install: " + $EXE + "`n`t`t Version: `t" + $Install.$EXE.Version + "`n`t`t Bit: `t`t" + $Install.$EXE.IntSize + "`n`t`t FullPath: `t" + $Install.$EXE.FullPath)
+                Start-Process -FilePath $Install.$EXE.FullPath -ArgumentList $InstallOptions -Wait -Passthru
             }
 	    }
 	}
