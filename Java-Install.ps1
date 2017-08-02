@@ -18,21 +18,16 @@ IMPORTANT NOTE: If you would like Java versions 6 and below to remain, please ed
 $UnInstall6andBelow = $true
 $InstallOptions = "/s INSTALL_SILENT=1 STATIC=0 REBOOT=0 AUTO_UPDATE=0 EULA=0 WEB_ANALYTICS=0 WEB_JAVA=1"
 
-
 #Current Script location
 $PSScriptRoot = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition 
 $objProcessor  = (Get-WmiObject -Class Win32_OperatingSystem  -ea 0).OSArchitecture
 
-#Declare version arrays
+#Declare arrays
 $AlreadyInstalled = @{}
 $Install = @{}
 $SetupFiles = @{}
 $32bitJava = @()
 $64bitJava = @()
-$32bitVersions = @()
-$64bitVersions = @()
-$JavaInstallEXE = @()
-
 
 #Force Starting of Powershell script as Administrator 
 If (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator"))
@@ -144,22 +139,35 @@ If ($SetupFiles.count -gt 0 ) {
     $temp = ($SetupFiles.GetEnumerator() | Sort-Object -Descending {$_.Value.Version} | Where-Object {$_.value.IntSize -eq "x64"} | select -First 1).name
     #remove all but the newest
     $SetupFiles.GetEnumerator() | Where-Object {$_.value.IntSize -eq "x64" -and $_.name -ne $temp} | foreach { $Install.Remove($_.name)}
-    #Install newest Java's
+    #Test if we need to install latest version. 
+    $tempVersion = $null
+    $tempVersion = ($Install.GetEnumerator() | Where-Object {$_.value.IntSize -eq "x64"}).value.Version
     $temp = $null
-    ForEach ($EXE in $Install.Keys) {
-        #Test ot make sure the latest version is not already installed x64
-        $temp = $64bitJava | Where-Object {$_.Version -eq $Install.$EXE.Version -and $Install.$EXE.IntSize -eq "x64"}
-        if(!$temp) {
-		    Write-Host ("Install: " + $EXE + "`n`t`t Version: `t" + $Install.$EXE.Version + "`n`t`t Bit: `t`t" + $Install.$EXE.IntSize + "`n`t`t FullPath: `t" + $SetupFiles.$EXE.fsobject.Fullname)
-            #Start-Process -FilePath $Install$.$EXE.fsobject.Fullname -ArgumentList $InstallOptions -Wait -Passthru
-        }
-        #Test ot make sure the latest version is not already installed x32
-        $temp = $32bitJava | Where-Object {$_.Version -eq $Install.$EXE.Version -and ($Install.$EXE.IntSize -eq "x32")}
-        if(!$temp ) {
-		    Write-Host ("Install: " + $EXE + "`n`t`t Version: `t" + $Install.$EXE.Version + "`n`t`t Bit: `t`t" + $Install.$EXE.IntSize + "`n`t`t FullPath: `t" + $SetupFiles.$EXE.fsobject.Fullname)
-            #Start-Process -FilePath $Install$.$EXE.fsobject.Fullname -ArgumentList $InstallOptions -Wait -Passthru
-        }
-        $temp = $null
+    $temp = ($64bitJava | Where-Object {$_.Version -eq $tempVersion}).Name
+    If ([string]::IsNullOrWhiteSpace($temp)) 
+    {
+        ForEach ($EXE in $Install.Keys) {
+            #install 
+            if($Install.$EXE.IntSize -eq "x64" ) {
+		        Write-Host ("Install: " + $EXE + "`n`t`t Version: `t" + $Install.$EXE.Version + "`n`t`t Bit: `t`t" + $Install.$EXE.IntSize + "`n`t`t FullPath: `t" + $SetupFiles.$EXE.fsobject.Fullname)
+                #Start-Process -FilePath $Install$.$EXE.fsobject.Fullname -ArgumentList $InstallOptions -Wait -Passthru
+            }
+
+	    }
+    }
+    $tempVersion = $null
+    $tempVersion = ($Install.GetEnumerator() | Where-Object {$_.value.IntSize -eq "x86"}).value.Version
+    $temp = $null
+    $temp = ($32bitJava | Where-Object {$_.Version -eq $tempVersion}).Name
+    If ([string]::IsNullOrWhiteSpace($temp)) 
+    {
+         ForEach ($EXE in $Install.Keys) {
+            #install
+            if($Install.$EXE.IntSize -eq "x86" ) {
+		        Write-Host ("Install: " + $EXE + "`n`t`t Version: `t" + $Install.$EXE.Version + "`n`t`t Bit: `t`t" + $Install.$EXE.IntSize + "`n`t`t FullPath: `t" + $SetupFiles.$EXE.fsobject.Fullname)
+                #Start-Process -FilePath $Install$.$EXE.fsobject.Fullname -ArgumentList $InstallOptions -Wait -Passthru
+            }
+	    }
 	}
 }
 
@@ -193,5 +201,3 @@ Foreach ($app in $64bitJava) {
         }
     }
 }
-
-
