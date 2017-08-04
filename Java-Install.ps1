@@ -14,12 +14,19 @@ Version 1.3 - Updated 2017-08-02 - Paul Fuller
 			- Added check to find newest java install in script location
 			- Installs latest java in script location
 Version 1.4 - Updated 2017-08-02 - Paul Fuller
-            - Bug fixes: intver not populating
+            - Bug fixes: typos when launching installs
+Version 1.5 - Updated 2017-08-04 - Paul Fuller
+			- Bug fixes: Changed [string]::IsNullOrWhiteSpace to [string]::IsNullOrEmpty to work on older PS boxes
+			- Bug fixes: How java processes are killed.
+				- Added a time out to the loop.
+			- Added Transcript logging
 IMPORTANT NOTE: If you would like Java versions 6 and below to remain, please edit the next line and replace $true with $false
 #>
+$ScriptVersion = "1.5"
 $UnInstall6andBelow = $true
 $InstallOptions = "/s INSTALL_SILENT=1 STATIC=0 REBOOT=0 AUTO_UPDATE=0 EULA=0 WEB_ANALYTICS=0 WEB_JAVA=1"
-
+$KillProcessTimeoutSec = 90
+$LogFile = ("C:\Backups\" + $MyInvocation.MyCommand.Name + "_" + (Get-Date -format yyyyMMdd-hhmm) + ".log")
 #Current Script location
 $PSScriptRoot = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition 
 $objProcessor  = (Get-WmiObject -Class Win32_OperatingSystem  -ea 0).OSArchitecture
@@ -38,6 +45,17 @@ If (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 	Start-Process powershell -Verb runAs -ArgumentList $arguments
 	Break
 }
+# Start-Transcript Log
+If (-NOT ([string]::IsNullOrEmpty($LogFile))) {
+    If (-NOT (Test-Path (Split-Path -Parent -Path $LogFile))) {
+		New-Item (Split-Path -Parent -Path $LogFile) -type directory
+	}
+	Start-Transcript -Path $LogFile -Append
+	Write-Host ("Script: " + $MyInvocation.MyCommand.Name)
+	Write-Host ("Version: " + $ScriptVersion)
+	Write-Host (" ")
+}
+
 
 #################Functions#################
 function Test-is64Bit {
@@ -68,34 +86,55 @@ function Test-is64Bit {
     }else {
          Write-Host ("Invalid file: " + $FilePath)
     }
-    $result
+    return $result
 
 }
 
 #################Functions#################
-#Kill all Java
-$colProcesses = Get-WmiObject  -Class Win32_Process | Where-Object {$_.Name -eq 'jqs.exe' -or $_.Name -eq 'jusched.exe' -or $_.Name -eq 'jucheck.exe' -or $_.Name -eq 'jp2launcher.exe' -or $_.Name -eq 'java.exe' -or $_.Name -eq 'javaws.exe' -or $_.Name -eq 'javaw.exe'}
-#Cycle through found problematic processes and kill them.
-Foreach ($objProcess in $colProcesses) {
-   Write-Host $("Found process " + $objProcess.Name + ".")
-   $objProcess.Terminate()
-   switch($LASTEXITCODE) {
-       0 {
-                    Write-Host $("Killed process " + $objProcess.Name + ".")
-                    }
-       -2147217406 {
-                    Write-Host $("Process " + $objProcess.Name + " already closed.")
-                    }
-       default {
-                   Write-Host $("Could not kill process " + $objProcess.Name + "! Aborting Script!")
-                   Write-Host $("Error Number: " + $LASTEXITCODE)
-                   Write-Host $("Finished problematic process check.")
-                   Write-Host $("----------------------------------")
-                   exit
-		           }
-   }
-   
-}
+#call kill process until true
+$startDate = Get-Date
+$result = $false
+do {
+	#Kill all Java
+	$colProcesses = Get-WmiObject  -Class Win32_Process | Where-Object {$_.Name -eq 'jqs.exe' -or $_.Name -eq 'jusched.exe' -or $_.Name -eq 'jucheck.exe' -or $_.Name -eq 'jp2launcher.exe' -or $_.Name -eq 'java.exe' -or $_.Name -eq 'javaws.exe' -or $_.Name -eq 'javaw.exe'}
+	#Cycle through found problematic processes and kill them.
+	If ($colProcesses) {
+		Foreach ($objProcess in $colProcesses) {
+		  try{
+		   Write-Host $("Found process " + $objProcess.Name + ".")
+		   $objProcess.Terminate()
+		   $result = $true
+		   } catch {
+			   switch($LastExitCode) {
+				   0 {
+								Write-Host $("Killed process " + $objProcess.Name + ".")
+					 }
+				   -2147217406 {
+								Write-Host $("Process " + $objProcess.Name + " already closed.")
+								}
+				   default {
+							   Write-Host $("Could not kill process " + $objProcess.Name)
+							   Write-Host $("Error Number: " + $LastExitCode)
+							   Write-Host $("Error Message: " + $_.Exception.Message)
+							   Write-Host $("Finished problematic process check.")
+							   Write-Host $("----------------------------------")
+							   If ($startDate.AddSeconds($KillProcessTimeoutSec) -ge (Get-Date)) {
+									Write-Host $("Timeout (Seconds): " + $KillProcessTimeoutSec + " reached.")
+									exit
+							   }
+							   
+							}
+			   }
+			}
+
+		}
+
+	}else {
+		Write-Host $("No Processes to kill.")
+		$result = $true
+	}	
+} while ( $result -eq $false)
+
 #Perform WMI query to find installed Java Updates
 Write-Host("Finding old Java ...")
 if ($UnInstall6andBelow) {
@@ -145,7 +184,7 @@ If ($SetupFiles.count -gt 0 ) {
     $tempVersion = ($Install.GetEnumerator() | Where-Object {$_.value.IntSize -eq "x64"}).value.Version
     $temp = $null
     $temp = ($64bitJava | Where-Object {$_.Version -eq $tempVersion}).Name
-    If ([string]::IsNullOrWhiteSpace($temp)) 
+    If ([string]::IsNullOrEmpty($temp)) 
     {
         ForEach ($EXE in $Install.Keys) {
             #install 
@@ -160,7 +199,7 @@ If ($SetupFiles.count -gt 0 ) {
     $tempVersion = ($Install.GetEnumerator() | Where-Object {$_.value.IntSize -eq "x86"}).value.Version
     $temp = $null
     $temp = ($32bitJava | Where-Object {$_.Version -eq $tempVersion}).Name
-    If ([string]::IsNullOrWhiteSpace($temp)) 
+    If ([string]::IsNullOrEmpty($temp)) 
     {
          ForEach ($EXE in $Install.Keys) {
             #install
@@ -201,4 +240,8 @@ Foreach ($app in $64bitJava) {
             Start-Process -FilePath "msiexec.exe" -ArgumentList "/qn /norestart /x $($appGUID)" -Wait -Passthru
         }
     }
+}
+#Stop-Transcript logging
+If (-Not [string]::IsNullOrEmpty($LogFile)) {
+	Stop-Transcript
 }
