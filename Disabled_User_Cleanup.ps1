@@ -107,7 +107,7 @@ ForEach ($DA in $DisabledAccounts) {
 			$tempargs += $CopyOptions
 			robocopy @($tempargs)
 			If ($?) {
-				Write-Host ("`t`tCopy Successful; Deleting: $UserHomePath") -foregroundcolor "red"
+				Write-Host ("`t`tCopy Successful; Deleting: $UserHomePath") -foregroundcolor "green"
 				Remove-Item $UserHomePath -Force -Recurse
 			}
 		}
