@@ -4,7 +4,7 @@ Operations:
 	* rename existing dll
 	* copy new dll
 Dependencies for this script:
-	* None
+	* pskill
 Changes:
 	* Added pskill Version 1.0.2
 	* Fixed Issue with loading from file. Version 1.0.3
