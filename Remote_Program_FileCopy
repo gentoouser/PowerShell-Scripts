@@ -1,0 +1,190 @@
+<#PLS TLS1.2 Transnational DLL Deployment
+Operations:
+	* Check for existing dll
+	* rename existing dll
+	* copy new dll
+Dependencies for this script:
+	* None
+Changes:
+	* Added pskill Version 1.0.2
+	* Fixed Issue with loading from file. Version 1.0.3
+	* Added timeout for pskill. Version 1.0.4
+	* Testing pskill exit code to see if process is killed. Version 1.0.5
+#>
+PARAM (
+    [Array]$Computers = $null, 
+    [string]$ComputerList = $null,    
+    [string]$PSKillPath = $null,    
+    [string]$Program = $null,    
+    [Parameter(Mandatory=$true)][string]$SourceFile = $null,
+    [Parameter(Mandatory=$true)][string]$Destination = $null
+)
+$ScriptVersion = "1.0.5"
+#############################################################################
+#region User Variables
+#############################################################################
+$LogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\" + `
+		   $MyInvocation.MyCommand.Name + "_" + `
+		   (Get-Date -format yyyyMMdd-hhmm) + ".log")
+$maximumRuntimeSeconds = 30
+#############################################################################
+#endregion User Variables
+#############################################################################
+
+#############################################################################
+#region Setup Sessions
+#############################################################################
+#Check which computer input to use to set $Computers
+If ([string]::IsNullOrEmpty($ComputerList)) {
+	If ([string]::IsNullOrEmpty($Computers)) {
+		throw " -Computers or -ComputerList is required."
+	}Else{
+		# $Computers is already set.
+	}
+}Else{
+	$ComputerList = Get-Content -Path $ComputerList
+	$TempArray = $ComputerList.split(" ") 
+	If (-Not [string]::IsNullOrEmpty($Computers)) {
+		$TempArray2 = $ComputerList + $Computers
+		$Computers = $TempArray2
+		$TempArray2 = $null
+	}else{
+		$Computers = $TempArray
+	}
+}
+#Check $SourceFile
+If (Test-Path $SourceFile -PathType Leaf) {
+	$SourceFileInfo = (Get-ChildItem $SourceFile)
+}Else{
+	throw "-SourceFile is not a valid file"
+}
+If (-Not [string]::IsNullOrEmpty($LogFile)) {
+	try { 
+	Start-Transcript -Path $LogFile -Append
+	} catch { 
+		Stop-transcript
+		Start-Transcript -Path $LogFile -Append
+	} 
+	Write-Host ("Script: " + $MyInvocation.MyCommand.Name)
+	Write-Host ("Version: " + $ScriptVersion)
+	Write-Host (" ")
+}	
+If (-Not (Test-Path $PSKillPath -PathType Leaf)) {
+	throw ("pskill.exe is not found at: " + $PSKillPath)
+}
+#############################################################################
+#endregion Setup Sessions
+#############################################################################
+
+#############################################################################
+#region Main
+#############################################################################
+Foreach ($Computer in $Computers) {
+	Write-Host ("Computer: $Computer")
+	#Test Destination Path
+	If (Test-Path $("\\" +  $Computer + "\" + $Destination.replace(":","$"))){
+		#Test for dll.
+		If (Test-Path $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.name)) {
+			Write-Host ("`t Found at destination dll: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.name))
+			$DestinationFileInfo = (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.name))
+			
+			#Test for Version Differences 
+			If ($SourceFileInfo.VersionInfo.FileVersion -gt $DestinationFileInfo.VersionInfo.FileVersion) {
+				#Copy newer version
+				$NewName =($DestinationFileInfo.Name.replace(".dll","") + "_" + $DestinationFileInfo.VersionInfo.FileVersion + ".dll")
+				$DestinationFileInfo = $null
+				#Term Program
+				Write-Host ("`t`t killing program: " + $Program)
+				$process = Start-Process -FilePath $PSKillPath -ArgumentList $("-t -nobanner \\" + $Computer + " " + $Program) -PassThru -NoNewWindow
+				try 
+				{
+				    $process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+					If ($process.ExitCode -eq 0) {
+						Write-Host ("`t`tPSKill successfully completed within timeout.")
+					}else{
+						Write-Warning -Message 'PSKill could not kill process'
+						continue
+					}
+				}catch{
+					Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
+					$process | Stop-Process -Force
+					continue
+				} 
+				#Backup Old DLL
+				Write-Host ("`t`t renaming destination dll: " + $NewName)
+				Rename-Item -Path (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.name)) -NewName $NewName
+				#copy dll
+				Write-Host ("`t`t copying new dll to destination: " + $("\\" + $Destination.replace(":","$")))
+				Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
+				
+			}Else{
+				If ($SourceFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") -gt $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff")) {
+					#File is newer
+					$NewName =($DestinationFileInfo.Name.replace(".dll","") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + ".dll")
+					$DestinationFileInfo = $null
+					#Term Program
+					Write-Host ("`t`t killing program: " + $Program)
+					$process = Start-Process -FilePath $PSKillPath -ArgumentList $("-t -nobanner \\" + $Computer + " " + $Program) -PassThru -NoNewWindow
+					try 
+					{
+						$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+						If ($process.ExitCode -eq 0) {
+							Write-Host ("`t`tPSKill successfully completed within timeout.")
+						}else{
+							Write-Warning -Message 'PSKill could not kill process'
+							continue
+						}
+					}catch{
+						Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
+						$process | Stop-Process -Force 
+						continue
+					} 
+					#Backup Old DLL
+					Write-Host ("`t`t renaming destination dll: " + $NewName)
+					Rename-Item -Path (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.name)) -NewName $NewName
+					#copy dll
+					Write-Host ("`t`t copying new dll to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")) + $SourceFileInfo.name)
+					Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
+					
+				}else{
+					# Older version or same version
+					Write-Host ("`t`t Same or Older version: " + $NewName)
+					Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
+					Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.FileVersion)
+				}
+			}
+		}Else{
+			#Copy DLL; DLL Missing
+			#Term Program
+			Write-Host ("`t`t killing program: " + $Program)
+			$process = Start-Process -FilePath $PSKillPath -ArgumentList $("-t -nobanner \\" + $Computer + " " + $Program) $Program -PassThru -NoNewWindow
+			try 
+			{
+				$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+				If ($process.ExitCode -eq 0) {
+					Write-Host ("`t`tPSKill successfully completed within timeout.")
+				}else{
+					Write-Warning -Message 'PSKill could not kill process'
+					continue
+				}
+			}catch{
+				Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
+				$process | Stop-Process -Force 
+				continue
+			} 
+			Write-Host ("`t copying missing dll to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
+			Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
+		}
+	}Else{
+		#Error missing folder or computer.
+		Write-Host ("Error: Folder or Computer does not exists: $Computers")
+		Write-Host ("`t Path: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
+		
+	}
+}
+#############################################################################
+#endregion Main
+#############################################################################
+If (-Not [string]::IsNullOrEmpty($LogFile)) {
+	Stop-Transcript
+}
