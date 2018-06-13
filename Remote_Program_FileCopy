@@ -4,12 +4,16 @@ Operations:
 	* rename existing dll
 	* copy new dll
 Dependencies for this script:
-	* pskill
+	* PSKill
 Changes:
 	* Added pskill Version 1.0.2
 	* Fixed Issue with loading from file. Version 1.0.3
 	* Added timeout for pskill. Version 1.0.4
 	* Testing pskill exit code to see if process is killed. Version 1.0.5
+	* Updated how ComputerList is imported. Version 1.0.6
+	* Add more debuging to non zero pskill return. Version 1.0.7
+	* Updated code to copy if no processes to kill. Version 1.0.8
+	* Update to log pskill computers in failed log. Version 1.0.9
 #>
 PARAM (
     [Array]$Computers = $null, 
@@ -19,7 +23,7 @@ PARAM (
     [Parameter(Mandatory=$true)][string]$SourceFile = $null,
     [Parameter(Mandatory=$true)][string]$Destination = $null
 )
-$ScriptVersion = "1.0.5"
+$ScriptVersion = "1.0.9"
 #############################################################################
 #region User Variables
 #############################################################################
@@ -42,15 +46,19 @@ If ([string]::IsNullOrEmpty($ComputerList)) {
 		# $Computers is already set.
 	}
 }Else{
-	$ComputerList = Get-Content -Path $ComputerList
-	$TempArray = $ComputerList.split(" ") 
-	If (-Not [string]::IsNullOrEmpty($Computers)) {
-		$TempArray2 = $ComputerList + $Computers
-		$Computers = $TempArray2
-		$TempArray2 = $null
-	}else{
-		$Computers = $TempArray
-	}
+	[Array]$Computers += Get-Content -Path $ComputerList
+	# If ($ComputerList.GetType().basetype.name -eq "String") {
+		# $TempArray = $ComputerList.split(" ") 
+		# $ComputerList = $TempArray
+		# $TempArray = $null
+	# }
+	# If (-Not [string]::IsNullOrEmpty($Computers)) {
+		# $TempArray2 = $ComputerList + $Computers
+		# $Computers = $TempArray2
+		# $TempArray2 = $null
+	# }else{
+		# $Computers = $ComputerList
+	# }
 }
 #Check $SourceFile
 If (Test-Path $SourceFile -PathType Leaf) {
@@ -99,10 +107,10 @@ Foreach ($Computer in $Computers) {
 				try 
 				{
 				    $process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
-					If ($process.ExitCode -eq 0) {
+					If ($process.ExitCode -le 0) {
 						Write-Host ("`t`tPSKill successfully completed within timeout.")
 					}else{
-						Write-Warning -Message 'PSKill could not kill process'
+						Write-Warning -Message $('PSKill could not kill process. Exit Code: ' + $process.ExitCode)
 						continue
 					}
 				}catch{
@@ -111,10 +119,10 @@ Foreach ($Computer in $Computers) {
 					continue
 				} 
 				#Backup Old DLL
-				Write-Host ("`t`t renaming destination dll: " + $NewName)
+				Write-Host ("`t`t Renaming destination dll: " + $NewName)
 				Rename-Item -Path (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.name)) -NewName $NewName
 				#copy dll
-				Write-Host ("`t`t copying new dll to destination: " + $("\\" + $Destination.replace(":","$")))
+				Write-Host ("`t`t Copying new dll to destination: " + $("\\" + $Destination.replace(":","$")))
 				Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
 				
 			}Else{
@@ -123,27 +131,29 @@ Foreach ($Computer in $Computers) {
 					$NewName =($DestinationFileInfo.Name.replace(".dll","") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + ".dll")
 					$DestinationFileInfo = $null
 					#Term Program
-					Write-Host ("`t`t killing program: " + $Program)
+					Write-Host ("`t`t Killing program: " + $Program)
 					$process = Start-Process -FilePath $PSKillPath -ArgumentList $("-t -nobanner \\" + $Computer + " " + $Program) -PassThru -NoNewWindow
 					try 
 					{
 						$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
-						If ($process.ExitCode -eq 0) {
+						If ($process.ExitCode -le 0) {
 							Write-Host ("`t`tPSKill successfully completed within timeout.")
 						}else{
-							Write-Warning -Message 'PSKill could not kill process'
+							$('PSKill could not kill process. Exit Code: ' + $process.ExitCode)
 							continue
 						}
 					}catch{
 						Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
 						$process | Stop-Process -Force 
+						Write-Host ("`t Logging Failed Computer")
+						Add-Content ($LogFile + "_error_computers.txt") ("$Computer")
 						continue
 					} 
 					#Backup Old DLL
-					Write-Host ("`t`t renaming destination dll: " + $NewName)
+					Write-Host ("`t`t Renaming destination dll: " + $NewName)
 					Rename-Item -Path (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.name)) -NewName $NewName
 					#copy dll
-					Write-Host ("`t`t copying new dll to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")) + $SourceFileInfo.name)
+					Write-Host ("`t`t Copying new dll to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")) + $SourceFileInfo.name)
 					Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
 					
 				}else{
@@ -161,15 +171,17 @@ Foreach ($Computer in $Computers) {
 			try 
 			{
 				$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
-				If ($process.ExitCode -eq 0) {
+				If ($process.ExitCode -le 0) {
 					Write-Host ("`t`tPSKill successfully completed within timeout.")
 				}else{
-					Write-Warning -Message 'PSKill could not kill process'
+					$('PSKill could not kill process. Exit Code: ' + $process.ExitCode)
 					continue
 				}
 			}catch{
 				Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
 				$process | Stop-Process -Force 
+				Write-Host ("`t Logging Failed Computer")
+				Add-Content ($LogFile + "_error_computers.txt") ("$Computer")
 				continue
 			} 
 			Write-Host ("`t copying missing dll to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
@@ -177,9 +189,16 @@ Foreach ($Computer in $Computers) {
 		}
 	}Else{
 		#Error missing folder or computer.
-		Write-Host ("Error: Folder or Computer does not exists: $Computers")
+		Write-Warning -Message ("Error: Folder or Computer does not exists: $Computer")
 		Write-Host ("`t Path: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
-		
+		Write-Host ("`t IP Resolved to: " + ((Resolve-DnsName -Name $Computer).IPAddress))
+		If (Test-Connection -ComputerName $Computer -Quiet){ 
+			Write-Host ("`t`t Host is up") -ForegroundColor green
+		}else{
+			Write-Warning -Message ("`t`t Host is Down")
+		}
+		Write-Host ("`t Logging Failed Computer")
+		Add-Content ($LogFile + "_error_computers.txt") ("$Computer")
 	}
 }
 #############################################################################
