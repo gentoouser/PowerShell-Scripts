@@ -20,18 +20,20 @@ Changes:
 	* Updated progress bar info. Version 1.0.13
 	* Loop thru all DNS IP Addresss for host. Version 1.1.0
 	* Added ablity to copy multible files and Stop a servcie. Version 1.2.0
+	* Fixed DLL Looping issue. Version 1.2.1
 #>
 PARAM (
     [Array]$Computers = $null, 
     [string]$ComputerList = $null,    
     [string]$PSKillPath = $null,    
-    [string]$PSServicePath = $null,      
+    [string]$PSServicePath = $null,    
+    # [string]$Program = "livewire.exe",    
     [string]$Program = $null,    
     [string]$Service = $null,    
     [Parameter(Mandatory=$true)][Array]$SourceFiles = $null,
     [Parameter(Mandatory=$true)][string]$Destination = $null
 )
-$ScriptVersion = "1.2.0"
+$ScriptVersion = "1.2.1"
 #############################################################################
 #region User Variables
 #############################################################################
@@ -115,7 +117,7 @@ Foreach ($Computer in $Computers) {
 		Foreach ($SourceFileInfo in $SourceFileObjects.GetEnumerator()) {
 			#Test for dll.
 			If (Test-Path $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) {
-				Write-Host ("`t Found at destination dll: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name))
+				Write-Host ("`t Found at destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name))
 				$DestinationFileInfo = (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name))
 				
 				#Test for Version Differences 
@@ -329,90 +331,22 @@ Foreach ($Computer in $Computers) {
 	}Else{
 	#Testing using IP
 		$Cerror = $lastexitcode
-		$OldComputer = $Computer
-		Foreach ($Computer in ((Resolve-DnsName -Name $Computer).IPAddress)) {
-			#Test Destination Path
-			If ([string]::IsNullOrEmpty($OldComputer)) {
-				If (Test-Path $("\\" +  $Computer + "\" + $Destination.replace(":","$"))){
-					#Test for dlls.
-					Foreach ($SourceFileInfo in $SourceFileObjects) {
-						If (Test-Path $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) {
-							Write-Host ("`t Found at destination dll: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name))
-							$DestinationFileInfo = (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name))
-							
-							#Test for Version Differences 
-							If ($SourceFileInfo.value.VersionInfo.FileVersion -gt $DestinationFileInfo.VersionInfo.FileVersion) {
-								#Copy newer version
-								$NewName =($DestinationFileInfo.Name.replace(".dll","") + "_" + $DestinationFileInfo.VersionInfo.FileVersion + ".dll")
-								$DestinationFileInfo = $null
-								#Term Service
-								If ($Service) {
-									Write-Host ("`t`t Stopping Service: " + $Service)
-									$process = Start-Process -FilePath $PSServicePath -ArgumentList $("\\" + $Computer + " stop " + $Service) -PassThru -NoNewWindow
-									try 
-									{
-										$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
-										If ($process.ExitCode -le 0) {
-											Write-Host ("`t`tPSService successfully completed within timeout.")
-										}else{
-											Write-Warning -Message $('PSService could not kill process. Exit Code: ' + $process.ExitCode)
-											
-											continue
-										}
-									}catch{
-										Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
-										$process | Stop-Process -Force
-										#Term Program
-										If ($Program) {
-											Write-Host ("`t`t killing program: " + $Program)
-											$process = Start-Process -FilePath $PSKillPath -ArgumentList $("-t -nobanner \\" + $Computer + " " + $Program) -PassThru -NoNewWindow
-											try 
-											{
-												$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
-												If ($process.ExitCode -le 0) {
-													Write-Host ("`t`tPSKill successfully completed within timeout.")
-												}else{
-													Write-Warning -Message $('PSKill could not kill process. Exit Code: ' + $process.ExitCode)
-													continue
-												}
-											}catch{
-												Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
-												$process | Stop-Process -Force
-												continue
-											} 
-										}
-									} 
-								}
-								#Term Program
-								If ($Program) {
-									Write-Host ("`t`t killing program: " + $Program)
-									$process = Start-Process -FilePath $PSKillPath -ArgumentList $("-t -nobanner \\" + $Computer + " " + $Program) -PassThru -NoNewWindow
-									try 
-									{
-										$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
-										If ($process.ExitCode -le 0) {
-											Write-Host ("`t`tPSKill successfully completed within timeout.")
-										}else{
-											Write-Warning -Message $('PSKill could not kill process. Exit Code: ' + $process.ExitCode)
-											continue
-										}
-									}catch{
-										Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
-										$process | Stop-Process -Force
-										continue
-									} 
-								}
-								#Backup Old DLL
-								Write-Host ("`t`t Renaming destination dll: " + $NewName)
-								Rename-Item -Path (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) -NewName $NewName
-								#copy dll
-								Write-Host ("`t`t Copying new dll to destination: " + $("\\" + $Destination.replace(":","$")))
-								Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
+		If (-Not ([string]::IsNullOrEmpty($Computer))) {
+			$OldComputer = $Computer
+			Foreach ($Computer in ((Resolve-DnsName -Name $OldComputer).IPAddress)) {
+				#Test Destination Path
+				If (-Not ([string]::IsNullOrEmpty($Computer))) {
+					If (Test-Path $("\\" +  $Computer + "\" + $Destination.replace(":","$"))){
+						#Test for dlls.
+						Foreach ($SourceFileInfo in $SourceFileObjects) {
+							If (Test-Path $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) {
+								Write-Host ("`t Found at destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name))
+								$DestinationFileInfo = (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name))
 								
-							}Else{
-								If ($SourceFileInfo.value.LastWriteTime.ToString("yyyyMMddHHmmssffff") -gt $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff")) {
-									#File is newer
-									$NewName =($DestinationFileInfo.Name.replace(".dll","") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + ".dll")
+								#Test for Version Differences 
+								If ($SourceFileInfo.value.VersionInfo.FileVersion -gt $DestinationFileInfo.VersionInfo.FileVersion) {
+									#Copy newer version
+									$NewName =($DestinationFileInfo.Name.replace(".dll","") + "_" + $DestinationFileInfo.VersionInfo.FileVersion + ".dll")
 									$DestinationFileInfo = $null
 									#Term Service
 									If ($Service) {
@@ -475,77 +409,147 @@ Foreach ($Computer in $Computers) {
 									Write-Host ("`t`t Renaming destination dll: " + $NewName)
 									Rename-Item -Path (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) -NewName $NewName
 									#copy dll
-									Write-Host ("`t`t Copying new dll to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")) + $SourceFileInfo.value.name)
+									Write-Host ("`t`t Copying new dll to destination: " + $("\\" + $Destination.replace(":","$")))
 									Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
 									
-								}else{
-									# Older version or same version
-									Write-Host ("`t`t Same or Older version: " + $NewName)
-									Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
-									Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.FileVersion)
-								}
-							}
-						}Else{
-							#Copy DLL; DLL Missing
-							#Term Service
-							If ($Service) {
-								Write-Host ("`t`t Stopping Service: " + $Service)
-								$process = Start-Process -FilePath $PSServicePath -ArgumentList $("\\" + $Computer + " stop " + $Service) -PassThru -NoNewWindow
-								try 
-								{
-									$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
-									If ($process.ExitCode -le 0) {
-										Write-Host ("`t`tPSService successfully completed within timeout.")
-									}else{
-										Write-Warning -Message $('PSService could not kill process. Exit Code: ' + $process.ExitCode)
-										
-										continue
-									}
-								}catch{
-									Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
-									$process | Stop-Process -Force
-									#Term Program
-									If ($Program) {
-										Write-Host ("`t`t killing program: " + $Program)
-										$process = Start-Process -FilePath $PSKillPath -ArgumentList $("-t -nobanner \\" + $Computer + " " + $Program) -PassThru -NoNewWindow
-										try 
-										{
-											$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
-											If ($process.ExitCode -le 0) {
-												Write-Host ("`t`tPSKill successfully completed within timeout.")
-											}else{
-												Write-Warning -Message $('PSKill could not kill process. Exit Code: ' + $process.ExitCode)
+								}Else{
+									If ($SourceFileInfo.value.LastWriteTime.ToString("yyyyMMddHHmmssffff") -gt $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff")) {
+										#File is newer
+										$NewName =($DestinationFileInfo.Name.replace(".dll","") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + ".dll")
+										$DestinationFileInfo = $null
+										#Term Service
+										If ($Service) {
+											Write-Host ("`t`t Stopping Service: " + $Service)
+											$process = Start-Process -FilePath $PSServicePath -ArgumentList $("\\" + $Computer + " stop " + $Service) -PassThru -NoNewWindow
+											try 
+											{
+												$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+												If ($process.ExitCode -le 0) {
+													Write-Host ("`t`tPSService successfully completed within timeout.")
+												}else{
+													Write-Warning -Message $('PSService could not kill process. Exit Code: ' + $process.ExitCode)
+													
+													continue
+												}
+											}catch{
+												Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
+												$process | Stop-Process -Force
+												#Term Program
+												If ($Program) {
+													Write-Host ("`t`t killing program: " + $Program)
+													$process = Start-Process -FilePath $PSKillPath -ArgumentList $("-t -nobanner \\" + $Computer + " " + $Program) -PassThru -NoNewWindow
+													try 
+													{
+														$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+														If ($process.ExitCode -le 0) {
+															Write-Host ("`t`tPSKill successfully completed within timeout.")
+														}else{
+															Write-Warning -Message $('PSKill could not kill process. Exit Code: ' + $process.ExitCode)
+															continue
+														}
+													}catch{
+														Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
+														$process | Stop-Process -Force
+														continue
+													} 
+												}
+											} 
+										}
+										#Term Program
+										If ($Program) {
+											Write-Host ("`t`t killing program: " + $Program)
+											$process = Start-Process -FilePath $PSKillPath -ArgumentList $("-t -nobanner \\" + $Computer + " " + $Program) -PassThru -NoNewWindow
+											try 
+											{
+												$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+												If ($process.ExitCode -le 0) {
+													Write-Host ("`t`tPSKill successfully completed within timeout.")
+												}else{
+													Write-Warning -Message $('PSKill could not kill process. Exit Code: ' + $process.ExitCode)
+													continue
+												}
+											}catch{
+												Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
+												$process | Stop-Process -Force
 												continue
-											}
-										}catch{
-											Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
-											$process | Stop-Process -Force
-											continue
-										} 
-									}
-								} 
-							}
-							#Term Program
-							If ($Program) {
-								Write-Host ("`t`t killing program: " + $Program)
-								$process = Start-Process -FilePath $PSKillPath -ArgumentList $("-t -nobanner \\" + $Computer + " " + $Program) -PassThru -NoNewWindow
-								try 
-								{
-									$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
-									If ($process.ExitCode -le 0) {
-										Write-Host ("`t`tPSKill successfully completed within timeout.")
+											} 
+										}
+										#Backup Old DLL
+										Write-Host ("`t`t Renaming destination dll: " + $NewName)
+										Rename-Item -Path (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) -NewName $NewName
+										#copy dll
+										Write-Host ("`t`t Copying new dll to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")) + $SourceFileInfo.value.name)
+										Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
+										
 									}else{
-										Write-Warning -Message $('PSKill could not kill process. Exit Code: ' + $process.ExitCode)
-										continue
+										# Older version or same version
+										Write-Host ("`t`t Same or Older version: " + $NewName)
+										Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
+										Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.FileVersion)
 									}
-								}catch{
-									Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
-									$process | Stop-Process -Force
-									continue
-								} 
+								}
+							}Else{
+								#Copy DLL; DLL Missing
+								#Term Service
+								If ($Service) {
+									Write-Host ("`t`t Stopping Service: " + $Service)
+									$process = Start-Process -FilePath $PSServicePath -ArgumentList $("\\" + $Computer + " stop " + $Service) -PassThru -NoNewWindow
+									try 
+									{
+										$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+										If ($process.ExitCode -le 0) {
+											Write-Host ("`t`tPSService successfully completed within timeout.")
+										}else{
+											Write-Warning -Message $('PSService could not kill process. Exit Code: ' + $process.ExitCode)
+											
+											continue
+										}
+									}catch{
+										Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
+										$process | Stop-Process -Force
+										#Term Program
+										If ($Program) {
+											Write-Host ("`t`t killing program: " + $Program)
+											$process = Start-Process -FilePath $PSKillPath -ArgumentList $("-t -nobanner \\" + $Computer + " " + $Program) -PassThru -NoNewWindow
+											try 
+											{
+												$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+												If ($process.ExitCode -le 0) {
+													Write-Host ("`t`tPSKill successfully completed within timeout.")
+												}else{
+													Write-Warning -Message $('PSKill could not kill process. Exit Code: ' + $process.ExitCode)
+													continue
+												}
+											}catch{
+												Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
+												$process | Stop-Process -Force
+												continue
+											} 
+										}
+									} 
+								}
+								#Term Program
+								If ($Program) {
+									Write-Host ("`t`t killing program: " + $Program)
+									$process = Start-Process -FilePath $PSKillPath -ArgumentList $("-t -nobanner \\" + $Computer + " " + $Program) -PassThru -NoNewWindow
+									try 
+									{
+										$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+										If ($process.ExitCode -le 0) {
+											Write-Host ("`t`tPSKill successfully completed within timeout.")
+										}else{
+											Write-Warning -Message $('PSKill could not kill process. Exit Code: ' + $process.ExitCode)
+											continue
+										}
+									}catch{
+										Write-Warning -Message 'PSKill exceeded timeout, will be killed now.' 
+										$process | Stop-Process -Force
+										continue
+									} 
+								}
+								Write-Host ("`t copying missing dll to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
+								Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
 							}
-							Write-Host ("`t copying missing dll to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
-							Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
 						}
 					}Else{
 						#Error missing folder or computer.
@@ -559,18 +563,18 @@ Foreach ($Computer in $Computers) {
 						Write-Host ("`t Logging Failed Computer")
 						Add-Content ($LogFile + "_error_computers.txt") ("$OldComputer")
 					}
+				}Else{
+					#Error missing folder or computer.
+					Write-Warning -Message ("Error: Computer has IP Address $Computer in DNS: $OldComputer with error code: $Cerror")
+					Write-Host ("`t Path: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
+					If (Test-Connection -ComputerName $Computer -Quiet){ 
+						Write-Host ("`t`t Host is up") -ForegroundColor green
+					}else{
+						Write-Warning -Message ("`t`t Host is Down")
+					}
+					Write-Host ("`t Logging Failed Computer")
+					Add-Content ($LogFile + "_error_computers.txt") ("$OldComputer")
 				}
-			}Else{
-				#Error missing folder or computer.
-				Write-Warning -Message ("Error: Computer has IP Address $Computer in DNS: $OldComputer with error code: $Cerror")
-				Write-Host ("`t Path: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
-				If (Test-Connection -ComputerName $Computer -Quiet){ 
-					Write-Host ("`t`t Host is up") -ForegroundColor green
-				}else{
-					Write-Warning -Message ("`t`t Host is Down")
-				}
-				Write-Host ("`t Logging Failed Computer")
-				Add-Content ($LogFile + "_error_computers.txt") ("$OldComputer")
 			}
 		}
 	}
