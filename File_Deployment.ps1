@@ -1,8 +1,8 @@
-<#PLS TLS1.2 Transnational DLL Deployment
+<#File Deployment
 Operations:
-	* Check for existing dll
-	* rename existing dll
-	* copy new dll
+	* Check for existing File
+	* rename existing File
+	* copy new File
 Dependencies for this script:
 	* PSKill
 Changes:
@@ -20,20 +20,23 @@ Changes:
 	* Updated progress bar info. Version 1.0.13
 	* Loop thru all DNS IP Addresss for host. Version 1.1.0
 	* Added ablity to copy multible files and Stop a servcie. Version 1.2.0
-	* Fixed DLL Looping issue. Version 1.2.1
+	* Fixed File Looping issue. Version 1.2.1
+	* Added Service Start after copy. Version 1.2.2
+	* Fixed Renameing bug Version 1.2.3
+	* Fixed Issue to allow other extension besides dll. Version 1.3.0
+	* Fixed PSService start issue Version 1.3.1
 #>
 PARAM (
     [Array]$Computers = $null, 
     [string]$ComputerList = $null,    
-    [string]$PSKillPath = $null,    
-    [string]$PSServicePath = $null,    
-    # [string]$Program = "livewire.exe",    
+    [string]$PSKillPath =$null,    
+    [string]$PSServicePath = $null,       
     [string]$Program = $null,    
     [string]$Service = $null,    
     [Parameter(Mandatory=$true)][Array]$SourceFiles = $null,
     [Parameter(Mandatory=$true)][string]$Destination = $null
 )
-$ScriptVersion = "1.2.1"
+$ScriptVersion = "1.3.1"
 #############################################################################
 #region User Variables
 #############################################################################
@@ -115,7 +118,7 @@ Foreach ($Computer in $Computers) {
 	#Test Destination Path
 	If (Test-Path $("\\" +  $Computer + "\" + $Destination.replace(":","$"))){
 		Foreach ($SourceFileInfo in $SourceFileObjects.GetEnumerator()) {
-			#Test for dll.
+			#Test for File.
 			If (Test-Path $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) {
 				Write-Host ("`t Found at destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name))
 				$DestinationFileInfo = (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name))
@@ -123,12 +126,12 @@ Foreach ($Computer in $Computers) {
 				#Test for Version Differences 
 				If ($SourceFileInfo.value.VersionInfo.FileVersion -gt $DestinationFileInfo.VersionInfo.FileVersion) {
 					#Copy newer version
-					$NewName =($DestinationFileInfo.Name.replace(".dll","") + "_" + $DestinationFileInfo.VersionInfo.FileVersion + ".dll")
+					$NewName =($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.VersionInfo.FileVersion + "." + $DestinationFileInfo.Extension)
 					$DestinationFileInfo = $null
 					#Term Service
 					If ($Service) {
 						Write-Host ("`t`t Stopping Service: " + $Service)
-						$process = Start-Process -FilePath $PSServicePath -ArgumentList $("\\" + $Computer + " stop " + $Service) -PassThru -NoNewWindow
+						$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "stop",'"' + $Service + '"') -PassThru -NoNewWindow
 						try 
 						{
 							$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
@@ -182,22 +185,34 @@ Foreach ($Computer in $Computers) {
 							continue
 						} 
 					}
-					#Backup Old DLL
-					Write-Host ("`t`t Renaming destination dll: " + $NewName)
+					#Backup Old 
+					Write-Host ("`t`t Renaming destination: " + $NewName)
 					Rename-Item -Path (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) -NewName $NewName
-					#copy dll
-					Write-Host ("`t`t Copying new dll to destination: " + $("\\" + $Destination.replace(":","$")))
+					#copy 
+					Write-Host ("`t`t Copying new $SourceFile to destination: " + $("\\" + $Destination.replace(":","$")))
 					Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
-					
+					If ($Service) {
+						Write-Host ("`t`t Stopping Service: " + $Service)
+						$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "start",'"' + $Service + '"') -PassThru -NoNewWindow
+
+						$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+						If ($process.ExitCode -le 0) {
+							Write-Host ("`t`tPSService Start successfully completed within timeout.")
+						}else{
+							Write-Warning -Message $('PSService Start could not kill process. Exit Code: ' + $process.ExitCode)
+							
+							continue
+						}
+					}
 				}Else{
 					If ($SourceFileInfo.value.LastWriteTime.ToString("yyyyMMddHHmmssffff") -gt $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff")) {
 						#File is newer
-						$NewName =($DestinationFileInfo.Name.replace(".dll","") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + ".dll")
+						$NewName =($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + "." + $DestinationFileInfo.Extension)
 						$DestinationFileInfo = $null
 						#Term Service
 						If ($Service) {
 							Write-Host ("`t`t Stopping Service: " + $Service)
-							$process = Start-Process -FilePath $PSServicePath -ArgumentList $("\\" + $Computer + " stop " + $Service) -PassThru -NoNewWindow
+							$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "stop",'"' + $Service + '"') -PassThru -NoNewWindow
 							try 
 							{
 								$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
@@ -251,13 +266,25 @@ Foreach ($Computer in $Computers) {
 								continue
 							} 
 						}
-						#Backup Old DLL
-						Write-Host ("`t`t Renaming destination dll: " + $NewName)
+						#Backup Old
+						Write-Host ("`t`t Renaming destination: " + $NewName)
 						Rename-Item -Path (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) -NewName $NewName
-						#copy dll
-						Write-Host ("`t`t Copying new dll to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")) + $SourceFileInfo.value.name)
+						#copy 
+						Write-Host ("`t`t Copying new $SourceFile to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")) + $SourceFileInfo.value.name)
 						Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
-						
+						If ($Service) {
+							Write-Host ("`t`t Stopping Service: " + $Service)
+							$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "start",'"' + $Service + '"') -PassThru -NoNewWindow
+
+							$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+							If ($process.ExitCode -le 0) {
+								Write-Host ("`t`tPSService Start successfully completed within timeout.")
+							}else{
+								Write-Warning -Message $('PSService Start could not kill process. Exit Code: ' + $process.ExitCode)
+								
+								continue
+							}
+						}
 					}else{
 						# Older version or same version
 						Write-Host ("`t`t Same or Older version: " + $NewName)
@@ -266,11 +293,11 @@ Foreach ($Computer in $Computers) {
 					}
 				}
 			}Else{
-				#Copy DLL; DLL Missing
+				#Copy; Missing
 				#Term Service
 				If ($Service) {
 					Write-Host ("`t`t Stopping Service: " + $Service)
-					$process = Start-Process -FilePath $PSServicePath -ArgumentList $("\\" + $Computer + " stop " + $Service) -PassThru -NoNewWindow
+					$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "stop",'"' + $Service + '"') -PassThru -NoNewWindow
 					try 
 					{
 						$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
@@ -324,8 +351,21 @@ Foreach ($Computer in $Computers) {
 						continue
 					} 
 				}
-				Write-Host ("`t copying missing dll to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
+				Write-Host ("`t copying missing $SourceFile to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
 				Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
+				If ($Service) {
+					Write-Host ("`t`t Stopping Service: " + $Service)
+					$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "start",'"' + $Service + '"') -PassThru -NoNewWindow
+
+					$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+					If ($process.ExitCode -le 0) {
+						Write-Host ("`t`tPSService Start successfully completed within timeout.")
+					}else{
+						Write-Warning -Message $('PSService Start could not kill process. Exit Code: ' + $process.ExitCode)
+						
+						continue
+					}
+				}
 			}
 		}
 	}Else{
@@ -337,7 +377,7 @@ Foreach ($Computer in $Computers) {
 				#Test Destination Path
 				If (-Not ([string]::IsNullOrEmpty($Computer))) {
 					If (Test-Path $("\\" +  $Computer + "\" + $Destination.replace(":","$"))){
-						#Test for dlls.
+						#Test for Files.
 						Foreach ($SourceFileInfo in $SourceFileObjects) {
 							If (Test-Path $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) {
 								Write-Host ("`t Found at destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name))
@@ -346,12 +386,12 @@ Foreach ($Computer in $Computers) {
 								#Test for Version Differences 
 								If ($SourceFileInfo.value.VersionInfo.FileVersion -gt $DestinationFileInfo.VersionInfo.FileVersion) {
 									#Copy newer version
-									$NewName =($DestinationFileInfo.Name.replace(".dll","") + "_" + $DestinationFileInfo.VersionInfo.FileVersion + ".dll")
+									$NewName =($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.VersionInfo.FileVersion + "." + $DestinationFileInfo.Extension)
 									$DestinationFileInfo = $null
 									#Term Service
 									If ($Service) {
 										Write-Host ("`t`t Stopping Service: " + $Service)
-										$process = Start-Process -FilePath $PSServicePath -ArgumentList $("\\" + $Computer + " stop " + $Service) -PassThru -NoNewWindow
+										$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "stop",'"' + $Service + '"') -PassThru -NoNewWindow
 										try 
 										{
 											$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
@@ -405,22 +445,34 @@ Foreach ($Computer in $Computers) {
 											continue
 										} 
 									}
-									#Backup Old DLL
-									Write-Host ("`t`t Renaming destination dll: " + $NewName)
+									#Backup Old
+									Write-Host ("`t`t Renaming destination: " + $NewName)
 									Rename-Item -Path (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) -NewName $NewName
-									#copy dll
-									Write-Host ("`t`t Copying new dll to destination: " + $("\\" + $Destination.replace(":","$")))
+									#copy 
+									Write-Host ("`t`t Copying new $SourceFile to destination: " + $("\\" + $Destination.replace(":","$")))
 									Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
-									
+									If ($Service) {
+										Write-Host ("`t`t Stopping Service: " + $Service)
+										$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "start",'"' + $Service + '"') -PassThru -NoNewWindow
+
+										$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+										If ($process.ExitCode -le 0) {
+											Write-Host ("`t`tPSService Start successfully completed within timeout.")
+										}else{
+											Write-Warning -Message $('PSService Start could not kill process. Exit Code: ' + $process.ExitCode)
+											
+											continue
+										}
+									}
 								}Else{
 									If ($SourceFileInfo.value.LastWriteTime.ToString("yyyyMMddHHmmssffff") -gt $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff")) {
 										#File is newer
-										$NewName =($DestinationFileInfo.Name.replace(".dll","") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + ".dll")
+										$NewName =($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + "." + $DestinationFileInfo.Extension)
 										$DestinationFileInfo = $null
 										#Term Service
 										If ($Service) {
 											Write-Host ("`t`t Stopping Service: " + $Service)
-											$process = Start-Process -FilePath $PSServicePath -ArgumentList $("\\" + $Computer + " stop " + $Service) -PassThru -NoNewWindow
+											$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "stop",'"' + $Service + '"') -PassThru -NoNewWindow
 											try 
 											{
 												$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
@@ -474,13 +526,25 @@ Foreach ($Computer in $Computers) {
 												continue
 											} 
 										}
-										#Backup Old DLL
-										Write-Host ("`t`t Renaming destination dll: " + $NewName)
+										#Backup Old
+										Write-Host ("`t`t Renaming destination: " + $NewName)
 										Rename-Item -Path (Get-ChildItem $("\\" +  $Computer + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) -NewName $NewName
-										#copy dll
-										Write-Host ("`t`t Copying new dll to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")) + $SourceFileInfo.value.name)
+										#copy 
+										Write-Host ("`t`t Copying new $SourceFile to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")) + $SourceFileInfo.value.name)
 										Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
-										
+										If ($Service) {
+											Write-Host ("`t`t Stopping Service: " + $Service)
+											$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "start",'"' + $Service + '"') -PassThru -NoNewWindow
+
+											$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+											If ($process.ExitCode -le 0) {
+												Write-Host ("`t`tPSService Start successfully completed within timeout.")
+											}else{
+												Write-Warning -Message $('PSService Start could not kill process. Exit Code: ' + $process.ExitCode)
+												
+												continue
+											}
+										}
 									}else{
 										# Older version or same version
 										Write-Host ("`t`t Same or Older version: " + $NewName)
@@ -489,11 +553,11 @@ Foreach ($Computer in $Computers) {
 									}
 								}
 							}Else{
-								#Copy DLL; DLL Missing
+								#Copy; Missing
 								#Term Service
 								If ($Service) {
 									Write-Host ("`t`t Stopping Service: " + $Service)
-									$process = Start-Process -FilePath $PSServicePath -ArgumentList $("\\" + $Computer + " stop " + $Service) -PassThru -NoNewWindow
+									$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "stop",'"' + $Service + '"') -PassThru -NoNewWindow
 									try 
 									{
 										$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
@@ -547,8 +611,21 @@ Foreach ($Computer in $Computers) {
 										continue
 									} 
 								}
-								Write-Host ("`t copying missing dll to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
+								Write-Host ("`t copying missing $SourceFile to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
 								Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
+								If ($Service) {
+									Write-Host ("`t`t Stopping Service: " + $Service)
+									$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "start",'"' + $Service + '"') -PassThru -NoNewWindow
+
+									$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+									If ($process.ExitCode -le 0) {
+										Write-Host ("`t`tPSService Start successfully completed within timeout.")
+									}else{
+										Write-Warning -Message $('PSService Start could not kill process. Exit Code: ' + $process.ExitCode)
+										
+										continue
+									}
+								}
 							}
 						}
 					}Else{
