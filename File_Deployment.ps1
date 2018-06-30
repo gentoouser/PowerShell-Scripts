@@ -5,6 +5,7 @@ Operations:
 	* copy new File
 Dependencies for this script:
 	* PSKill
+	* PSService
 Changes:
 	* Added pskill Version 1.0.2
 	* Fixed Issue with loading from file. Version 1.0.3
@@ -25,18 +26,21 @@ Changes:
 	* Fixed Renameing bug Version 1.2.3
 	* Fixed Issue to allow other extension besides dll. Version 1.3.0
 	* Fixed PSService start issue Version 1.3.1
+	* Replaced Resolve-DnsName with[Net.DNS]::GetHostEntry for older PS compatibility. Version 1.3.2
+	* Added Verbose logging. Version 1.3.2
 #>
 PARAM (
     [Array]$Computers = $null, 
     [string]$ComputerList = $null,    
-    [string]$PSKillPath =$null,    
-    [string]$PSServicePath = $null,       
+    [string]$PSKillPath = $null,    
+    [string]$PSServicePath = $null,     
     [string]$Program = $null,    
     [string]$Service = $null,    
     [Parameter(Mandatory=$true)][Array]$SourceFiles = $null,
-    [Parameter(Mandatory=$true)][string]$Destination = $null
+    [Parameter(Mandatory=$true)][string]$Destination = $null,
+    [switch]$Verbose = $false
 )
-$ScriptVersion = "1.3.1"
+$ScriptVersion = "1.3.2"
 #############################################################################
 #region User Variables
 #############################################################################
@@ -113,6 +117,11 @@ If (-Not ([string]::IsNullOrEmpty($Service))) {
 #############################################################################
 #Loop thru servers
 Foreach ($Computer in $Computers) {
+	#Reset logging variables
+	$NoChange = $false
+	$UpdatesNeeded = $false
+	$MissingFiles = $false
+	$ComputerError = $false
 	Write-Progress -Activity ("Updating Computers with: " + (Split-Path -leaf -Path $SourceFile )) -Status ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer) -percentComplete ($count / $Computers.count*100)
 	Write-Host ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer)
 	#Test Destination Path
@@ -191,6 +200,7 @@ Foreach ($Computer in $Computers) {
 					#copy 
 					Write-Host ("`t`t Copying new $SourceFile to destination: " + $("\\" + $Destination.replace(":","$")))
 					Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
+					$UpdatesNeeded = $true
 					If ($Service) {
 						Write-Host ("`t`t Stopping Service: " + $Service)
 						$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "start",'"' + $Service + '"') -PassThru -NoNewWindow
@@ -272,6 +282,7 @@ Foreach ($Computer in $Computers) {
 						#copy 
 						Write-Host ("`t`t Copying new $SourceFile to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")) + $SourceFileInfo.value.name)
 						Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
+						$UpdatesNeeded = $true
 						If ($Service) {
 							Write-Host ("`t`t Stopping Service: " + $Service)
 							$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "start",'"' + $Service + '"') -PassThru -NoNewWindow
@@ -290,6 +301,7 @@ Foreach ($Computer in $Computers) {
 						Write-Host ("`t`t Same or Older version: " + $NewName)
 						Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
 						Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.FileVersion)
+						$NoChange = $true
 					}
 				}
 			}Else{
@@ -353,6 +365,7 @@ Foreach ($Computer in $Computers) {
 				}
 				Write-Host ("`t copying missing $SourceFile to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
 				Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
+				$MissingFiles = $true
 				If ($Service) {
 					Write-Host ("`t`t Stopping Service: " + $Service)
 					$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "start",'"' + $Service + '"') -PassThru -NoNewWindow
@@ -373,7 +386,7 @@ Foreach ($Computer in $Computers) {
 		$Cerror = $lastexitcode
 		If (-Not ([string]::IsNullOrEmpty($Computer))) {
 			$OldComputer = $Computer
-			Foreach ($Computer in ((Resolve-DnsName -Name $OldComputer).IPAddress)) {
+			Foreach ($Computer in (([Net.DNS]::GetHostEntry($OldComputer)).addresslist.ipaddresstostring))
 				#Test Destination Path
 				If (-Not ([string]::IsNullOrEmpty($Computer))) {
 					If (Test-Path $("\\" +  $Computer + "\" + $Destination.replace(":","$"))){
@@ -451,6 +464,7 @@ Foreach ($Computer in $Computers) {
 									#copy 
 									Write-Host ("`t`t Copying new $SourceFile to destination: " + $("\\" + $Destination.replace(":","$")))
 									Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
+									$UpdatesNeeded = $true
 									If ($Service) {
 										Write-Host ("`t`t Stopping Service: " + $Service)
 										$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "start",'"' + $Service + '"') -PassThru -NoNewWindow
@@ -532,6 +546,7 @@ Foreach ($Computer in $Computers) {
 										#copy 
 										Write-Host ("`t`t Copying new $SourceFile to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")) + $SourceFileInfo.value.name)
 										Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
+										$UpdatesNeeded = $true
 										If ($Service) {
 											Write-Host ("`t`t Stopping Service: " + $Service)
 											$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "start",'"' + $Service + '"') -PassThru -NoNewWindow
@@ -550,6 +565,7 @@ Foreach ($Computer in $Computers) {
 										Write-Host ("`t`t Same or Older version: " + $NewName)
 										Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
 										Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.FileVersion)
+										$NoChange = $true
 									}
 								}
 							}Else{
@@ -611,8 +627,9 @@ Foreach ($Computer in $Computers) {
 										continue
 									} 
 								}
-								Write-Host ("`t copying missing $SourceFile to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
+								Write-Host ("`t Copying missing $SourceFile to destination: " + $("\\" +  $Computer + "\" + $Destination.replace(":","$")))
 								Copy-Item $SourceFile -Destination $("\\" +  $Computer + "\" + $Destination.replace(":","$"))
+								$MissingFiles = $true
 								If ($Service) {
 									Write-Host ("`t`t Stopping Service: " + $Service)
 									$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "start",'"' + $Service + '"') -PassThru -NoNewWindow
@@ -638,7 +655,7 @@ Foreach ($Computer in $Computers) {
 							Write-Warning -Message ("`t`t Host is Down")
 						}
 						Write-Host ("`t Logging Failed Computer")
-						Add-Content ($LogFile + "_error_computers.txt") ("$OldComputer")
+						$ComputerError = $true
 					}
 				}Else{
 					#Error missing folder or computer.
@@ -650,11 +667,19 @@ Foreach ($Computer in $Computers) {
 						Write-Warning -Message ("`t`t Host is Down")
 					}
 					Write-Host ("`t Logging Failed Computer")
-					Add-Content ($LogFile + "_error_computers.txt") ("$OldComputer")
+					$ComputerError = $true
 				}
 			}
 		}
 	}
+	#Extra logging
+	If ($Verbose) {
+		If ($NoChange) {Add-Content ($LogFile + "_NoChanges.txt") ("$Computer")}
+		If ($UpdatesNeeded) {Add-Content ($LogFile + "_UpdatesNeeded.txt") ("$Computer")}
+		If ($MissingFiles) {Add-Content ($LogFile + "_MissingFiles.txt") ("$Computer")}
+	}
+	IF ($ComputerError) {Add-Content ($LogFile + "_ErrorComputers.txt") ("$OldComputer")}
+	#Increase Progress counter
 	$count++
 }
 #############################################################################
