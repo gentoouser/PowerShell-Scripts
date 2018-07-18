@@ -32,6 +32,8 @@ Changes:
 	* Cleaned up code by adding PS-StopService,PS-Start-Service and PS-KillProgram function. Version 1.4.0
 	* Cleaned up code by testing computer is up before testing if file exsits. Verion 1.4.0
 	* Added elapsedTime tracking. Version 1.4.0
+	* Fixed typo. Version 1.4.1
+	* Added More Info to -Copy:$false Version 1.4.2
 #>
 PARAM (
     [Array]$Computers = $null, 
@@ -45,7 +47,7 @@ PARAM (
 	[switch]$VerboseLog = $false,
 	[switch]$Copy = $true
 )
-$ScriptVersion = "1.4.0"
+$ScriptVersion = "1.4.2"
 #############################################################################
 #region User Variables
 #############################################################################
@@ -125,25 +127,29 @@ Function FormatElapsedTime($ts)
     #https://stackoverflow.com/questions/3513650/timing-a-commands-execution-in-powershell
 	$elapsedTime = ""
 
-    if ( $ts.Minutes -gt 0 )
+    if ( $ts.Hours -gt 0 )
     {
-        $elapsedTime = [string]::Format( "{0:00} min. {1:00}.{2:00} sec.", $ts.Minutes, $ts.Seconds, $ts.Milliseconds / 10 );
-    }
-    else
-    {
-        $elapsedTime = [string]::Format( "{0:00}.{1:00} sec.", $ts.Seconds, $ts.Milliseconds / 10 );
-    }
+        $elapsedTime = [string]::Format( "{0:00} hours {2:00} min. {3:00}.{4:00} sec.", $ts.Hours, $ts.Minutes, $ts.Seconds, $ts.Milliseconds / 10 );
+    }else {
+        if ( $ts.Minutes -gt 0 )
+        {
+            $elapsedTime = [string]::Format( "{0:00} min. {1:00}.{2:00} sec.", $ts.Minutes, $ts.Seconds, $ts.Milliseconds / 10 );
+        }
+        else
+        {
+            $elapsedTime = [string]::Format( "{0:00}.{1:00} sec.", $ts.Seconds, $ts.Milliseconds / 10 );
+        }
 
-    if ($ts.Hours -eq 0 -and $ts.Minutes -eq 0 -and $ts.Seconds -eq 0)
-    {
-        $elapsedTime = [string]::Format("{0:00} ms.", $ts.Milliseconds);
-    }
+        if ($ts.Hours -eq 0 -and $ts.Minutes -eq 0 -and $ts.Seconds -eq 0)
+        {
+            $elapsedTime = [string]::Format("{0:00} ms.", $ts.Milliseconds);
+        }
 
-    if ($ts.Milliseconds -eq 0)
-    {
-        $elapsedTime = [string]::Format("{0} ms", $ts.TotalMilliseconds);
+        if ($ts.Milliseconds -eq 0)
+        {
+            $elapsedTime = [string]::Format("{0} ms", $ts.TotalMilliseconds);
+        }
     }
-
     return $elapsedTime
 }
 Function PS-StopService($Computer,$Service,$PSServicePath,$PSKillPath,$maximumRuntimeSeconds) 
@@ -263,6 +269,7 @@ Foreach ($Computer in $Computers) {
 			#Test Destination Path
 			If (Test-Path $("\\" +  $IP + "\" + $Destination.replace(":","$"))){
 				Foreach ($SourceFileInfo in $SourceFileObjects.GetEnumerator()) {
+					$DestinationFileInfo = $null
 					Write-Progress -Activity ("Testing File: " + (Split-Path -leaf -Path $SourceFileInfo.value.name )) -Status ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer + " IP: " + $IP + " Runtime: " + (FormatElapsedTime($sw.Elapsed))) -percentComplete ($count / $Computers.count*100)
 					#Test for File.
 					If (Test-Path $("\\" +  $IP + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) {
@@ -273,7 +280,6 @@ Foreach ($Computer in $Computers) {
 						If ($SourceFileInfo.value.VersionInfo.FileVersion -gt $DestinationFileInfo.VersionInfo.FileVersion) {
 							#Copy newer version
 							$NewName =($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.VersionInfo.FileVersion + "." + $DestinationFileInfo.Extension)
-							$DestinationFileInfo = $null
 							#Term Service
 							PS-StopService($IP,$Service,$PSServicePath,$PSKillPath,$maximumRuntimeSeconds)
 							#Term Program
@@ -285,6 +291,11 @@ Foreach ($Computer in $Computers) {
 								#copy 
 								Write-Host ("`t`t Copying new $SourceFile to destination: " + $("\\" + $Destination.replace(":","$")))
 								Copy-Item $SourceFile -Destination $("\\" +  $IP + "\" + $Destination.replace(":","$"))
+							} else {
+								# newer version
+								Write-Host ("`t`t New version: " + $NewName)
+								Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
+								Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.FileVersion)
 							}
 							$UpdatesNeeded = $true
 							#Start Service
@@ -293,7 +304,6 @@ Foreach ($Computer in $Computers) {
 							If ($SourceFileInfo.value.LastWriteTime.ToString("yyyyMMddHHmmssffff") -gt $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff")) {
 								#File is newer
 								$NewName =($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + "." + $DestinationFileInfo.Extension)
-								$DestinationFileInfo = $null
 								#Term Service
 								PS-StopService($IP,$Service,$PSServicePath,$PSKillPath,$maximumRuntimeSeconds)
 								#Term Program
@@ -305,6 +315,11 @@ Foreach ($Computer in $Computers) {
 									#copy 
 									Write-Host ("`t`t Copying new $SourceFile to destination: " + $("\\" +  $IP + "\" + $Destination.replace(":","$")) + $SourceFileInfo.value.name)
 									Copy-Item $SourceFile -Destination $("\\" +  $IP + "\" + $Destination.replace(":","$"))
+								} else {
+									# newer version
+									Write-Host ("`t`t New version: " + $NewName)
+									Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
+									Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.FileVersion)
 								}
 								$UpdatesNeeded = $true
 								#Start Service
@@ -336,7 +351,7 @@ Foreach ($Computer in $Computers) {
 		}
 	}Else{
 		#Error missing folder or computer.
-		Write-Warning -Message ("Error: $Computer has NO workingIP Addresses")
+		Write-Warning -Message ("Error: $Computer has NO working IP Addresses")
 		If (Test-Connection -ComputerName $Computer -Quiet){ 
 			Write-Host ("`t`t Host is up") -ForegroundColor green
 		}else{
