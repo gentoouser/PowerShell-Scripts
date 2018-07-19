@@ -37,6 +37,7 @@ Changes:
 	* Fixed issue with Run time formatting Version 1.4.3
 	* Added ErrorCSV logging Version 1.5.0
 	* Added UseDate testing control Version 1.5.0
+	* Fixed formating issues for console and new file name. Version 1.5.1
 	
 #>
 PARAM (
@@ -53,7 +54,7 @@ PARAM (
 	[switch]$UseDate = $true,
 	[switch]$Copy = $true
 )
-$ScriptVersion = "1.5.0"
+$ScriptVersion = "1.5.1"
 #############################################################################
 #region User Variables
 #############################################################################
@@ -282,30 +283,29 @@ Foreach ($Computer in $Computers) {
 			If (Test-Path $("\\" +  $IP + "\" + $Destination.replace(":","$"))){
 				Foreach ($SourceFileInfo in $SourceFileObjects.GetEnumerator()) {
 					$DestinationFileInfo = $null
+					$NewName = $null
 					Write-Progress -Activity ("Testing File: " + (Split-Path -leaf -Path $SourceFileInfo.value.name )) -Status ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer + " IP: " + $IP + " Runtime: " + (FormatElapsedTime($sw.Elapsed))) -percentComplete ($count / $Computers.count*100)
 					#Test for File.
 					If (Test-Path $("\\" +  $IP + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) {
 						Write-Host ("`t Found at destination: " + $("\\" +  $IP + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name))
 						$DestinationFileInfo = (Get-ChildItem $("\\" +  $IP + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name))
-						
 						#Test for Version Differences 
 						If ($SourceFileInfo.value.VersionInfo.ProductVersion -gt $DestinationFileInfo.VersionInfo.ProductVersion) {
 							#Copy newer version
-							$NewName =($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.VersionInfo.ProductVersion + "." + $DestinationFileInfo.Extension)
 							#Term Service
 							PS-StopService($IP,$Service,$PSServicePath,$PSKillPath,$maximumRuntimeSeconds)
 							#Term Program
 							PS-KillProgram($IP,$Program,$PSKillPath,$maximumRuntimeSeconds)
 							If ($Copy) {
 								#Backup Old 
-								Write-Host ("`t`t Renaming destination: " + $NewName)
-								Rename-Item -Path (Get-ChildItem $("\\" +  $IP + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) -NewName $NewName
+								Write-Host ("`t`t Renaming destination: " + ($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.VersionInfo.ProductVersion + $DestinationFileInfo.Extension))
+								Rename-Item -Path (Get-ChildItem $("\\" +  $IP + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) -NewName ($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.VersionInfo.ProductVersion + $DestinationFileInfo.Extension)
 								#copy 
 								Write-Host ("`t`t Copying new $SourceFile to destination: " + $("\\" + $Destination.replace(":","$")))
 								Copy-Item $SourceFile -Destination $("\\" +  $IP + "\" + $Destination.replace(":","$"))
 							} else {
 								# newer version
-								Write-Host ("`t`t New version: " + $NewName)
+								Write-Host ("`t`t New version: " + ($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.VersionInfo.ProductVersion + $DestinationFileInfo.Extension)) -foregroundcolor green
 								Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
 								Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.ProductVersion)
 							}
@@ -319,22 +319,20 @@ Foreach ($Computer in $Computers) {
 						}Else{
 							If ($UseDate) {
 								If ($SourceFileInfo.value.LastWriteTime.ToString("yyyyMMddHHmmssffff") -gt $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff")) {
-									#File is newer
-									$NewName =($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + "." + $DestinationFileInfo.Extension)
 									#Term Service
 									PS-StopService($IP,$Service,$PSServicePath,$PSKillPath,$maximumRuntimeSeconds)
 									#Term Program
 									PS-KillProgram($IP,$Program,$PSKillPath,$maximumRuntimeSeconds)
 									If ($Copy) {
 										#Backup Old
-										Write-Host ("`t`t Renaming destination: " + $NewName)
-										Rename-Item -Path (Get-ChildItem $("\\" +  $IP + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) -NewName $NewName
+										Write-Host ("`t`t Renaming destination: " + ($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + $DestinationFileInfo.Extension))
+										Rename-Item -Path (Get-ChildItem $("\\" +  $IP + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) -NewName ($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + $DestinationFileInfo.Extension)
 										#copy 
 										Write-Host ("`t`t Copying new $SourceFile to destination: " + $("\\" +  $IP + "\" + $Destination.replace(":","$")) + $SourceFileInfo.value.name)
 										Copy-Item $SourceFile -Destination $("\\" +  $IP + "\" + $Destination.replace(":","$"))
 									} else {
 										# newer version
-										Write-Host ("`t`t New version: " + $NewName)
+										Write-Host ("`t`t New version: " + ($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + $DestinationFileInfo.Extension)) -foregroundcolor green
 										Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
 										Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.ProductVersion)
 									}
@@ -347,16 +345,16 @@ Foreach ($Computer in $Computers) {
 									PS-Start-Service($IP,$Service,$PSServicePath,$maximumRuntimeSeconds)
 								}else{
 									# Older version or same version
-									Write-Host ("`t`t Same or Older version: " + $NewName)
-									Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
-									Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.ProductVersion)
+									Write-Host ("`t`t Same or Older version: " + ($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + $DestinationFileInfo.Extension)) -foregroundcolor darkgray
+									Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime) -foregroundcolor darkgray
+									Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.ProductVersion) -foregroundcolor darkgray
 									$NoChange = $true
 								}
 							}else{
 								# Older version or same version
-								Write-Host ("`t`t Same or Older version: " + $NewName)
-								Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
-								Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.ProductVersion)
+								Write-Host ("`t`t Same or Older version: " + ($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.VersionInfo.ProductVersion + $DestinationFileInfo.Extension)) -foregroundcolor darkgray
+								Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime) -foregroundcolor darkgray
+								Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.ProductVersion) -foregroundcolor darkgray
 								$NoChange = $true
 							}
 						}
@@ -367,7 +365,7 @@ Foreach ($Computer in $Computers) {
 						#Term Program
 						PS-KillProgram($IP,$Program,$PSKillPath,$maximumRuntimeSeconds)
 						If ($Copy) {
-							Write-Host ("`t copying missing $SourceFile to destination: " + $("\\" +  $IP + "\" + $Destination.replace(":","$")))
+							Write-Host ("`t`t Copying missing $SourceFile to destination: " + $("\\" +  $IP + "\" + $Destination.replace(":","$"))) -foregroundcolor green
 							Copy-Item $SourceFile -Destination $("\\" +  $IP + "\" + $Destination.replace(":","$"))
 						}
 						$MissingFiles = $true
