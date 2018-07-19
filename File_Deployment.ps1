@@ -34,6 +34,10 @@ Changes:
 	* Added elapsedTime tracking. Version 1.4.0
 	* Fixed typo. Version 1.4.1
 	* Added More Info to -Copy:$false Version 1.4.2
+	* Fixed issue with Run time formatting Version 1.4.3
+	* Added ErrorCSV logging Version 1.5.0
+	* Added UseDate testing control Version 1.5.0
+	
 #>
 PARAM (
     [Array]$Computers = $null, 
@@ -45,9 +49,11 @@ PARAM (
     [Parameter(Mandatory=$true)][Array]$SourceFiles = $null,
     [Parameter(Mandatory=$true)][string]$Destination = $null,
 	[switch]$VerboseLog = $false,
+	[switch]$ErrorCSV = $false,
+	[switch]$UseDate = $true,
 	[switch]$Copy = $true
 )
-$ScriptVersion = "1.4.2"
+$ScriptVersion = "1.5.0"
 #############################################################################
 #region User Variables
 #############################################################################
@@ -116,6 +122,12 @@ If (-Not ([string]::IsNullOrEmpty($Service))) {
 		throw ("psservice.exe is not found at: " + $PSServicePath)
 	}
 }
+
+If ($ErrorCSV) {
+	If (!(Test-Path -Path ($LogFile + "_errors.csv"))) {
+		Add-Content ($LogFile + "_errors.csv") ("Date,Computer,Source File,Source File Version,Source file Date,Destination File,Destination File Version,Destination File Date,Error")
+	}
+}
 #############################################################################
 #endregion Setup Sessions
 #############################################################################
@@ -129,7 +141,7 @@ Function FormatElapsedTime($ts)
 
     if ( $ts.Hours -gt 0 )
     {
-        $elapsedTime = [string]::Format( "{0:00} hours {2:00} min. {3:00}.{4:00} sec.", $ts.Hours, $ts.Minutes, $ts.Seconds, $ts.Milliseconds / 10 );
+        $elapsedTime = [string]::Format( "{0:00} hours {1:00} min. {2:00}.{3:00} sec.", $ts.Hours, $ts.Minutes, $ts.Seconds, $ts.Milliseconds / 10 );
     }else {
         if ( $ts.Minutes -gt 0 )
         {
@@ -277,9 +289,9 @@ Foreach ($Computer in $Computers) {
 						$DestinationFileInfo = (Get-ChildItem $("\\" +  $IP + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name))
 						
 						#Test for Version Differences 
-						If ($SourceFileInfo.value.VersionInfo.FileVersion -gt $DestinationFileInfo.VersionInfo.FileVersion) {
+						If ($SourceFileInfo.value.VersionInfo.ProductVersion -gt $DestinationFileInfo.VersionInfo.ProductVersion) {
 							#Copy newer version
-							$NewName =($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.VersionInfo.FileVersion + "." + $DestinationFileInfo.Extension)
+							$NewName =($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.VersionInfo.ProductVersion + "." + $DestinationFileInfo.Extension)
 							#Term Service
 							PS-StopService($IP,$Service,$PSServicePath,$PSKillPath,$maximumRuntimeSeconds)
 							#Term Program
@@ -295,40 +307,56 @@ Foreach ($Computer in $Computers) {
 								# newer version
 								Write-Host ("`t`t New version: " + $NewName)
 								Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
-								Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.FileVersion)
+								Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.ProductVersion)
+							}
+							If ($ErrorCSV) {
+								#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Error"
+								Add-Content ($LogFile + "_errors.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is newer by version")
 							}
 							$UpdatesNeeded = $true
 							#Start Service
 							PS-Start-Service($IP,$Service,$PSServicePath,$maximumRuntimeSeconds)
 						}Else{
-							If ($SourceFileInfo.value.LastWriteTime.ToString("yyyyMMddHHmmssffff") -gt $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff")) {
-								#File is newer
-								$NewName =($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + "." + $DestinationFileInfo.Extension)
-								#Term Service
-								PS-StopService($IP,$Service,$PSServicePath,$PSKillPath,$maximumRuntimeSeconds)
-								#Term Program
-								PS-KillProgram($IP,$Program,$PSKillPath,$maximumRuntimeSeconds)
-								If ($Copy) {
-									#Backup Old
-									Write-Host ("`t`t Renaming destination: " + $NewName)
-									Rename-Item -Path (Get-ChildItem $("\\" +  $IP + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) -NewName $NewName
-									#copy 
-									Write-Host ("`t`t Copying new $SourceFile to destination: " + $("\\" +  $IP + "\" + $Destination.replace(":","$")) + $SourceFileInfo.value.name)
-									Copy-Item $SourceFile -Destination $("\\" +  $IP + "\" + $Destination.replace(":","$"))
-								} else {
-									# newer version
-									Write-Host ("`t`t New version: " + $NewName)
+							If ($UseDate) {
+								If ($SourceFileInfo.value.LastWriteTime.ToString("yyyyMMddHHmmssffff") -gt $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff")) {
+									#File is newer
+									$NewName =($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + "." + $DestinationFileInfo.Extension)
+									#Term Service
+									PS-StopService($IP,$Service,$PSServicePath,$PSKillPath,$maximumRuntimeSeconds)
+									#Term Program
+									PS-KillProgram($IP,$Program,$PSKillPath,$maximumRuntimeSeconds)
+									If ($Copy) {
+										#Backup Old
+										Write-Host ("`t`t Renaming destination: " + $NewName)
+										Rename-Item -Path (Get-ChildItem $("\\" +  $IP + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name)) -NewName $NewName
+										#copy 
+										Write-Host ("`t`t Copying new $SourceFile to destination: " + $("\\" +  $IP + "\" + $Destination.replace(":","$")) + $SourceFileInfo.value.name)
+										Copy-Item $SourceFile -Destination $("\\" +  $IP + "\" + $Destination.replace(":","$"))
+									} else {
+										# newer version
+										Write-Host ("`t`t New version: " + $NewName)
+										Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
+										Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.ProductVersion)
+									}
+									If ($ErrorCSV) {
+										#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Error"
+										Add-Content ($LogFile + "_errors.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is newer by date")
+									}
+									$UpdatesNeeded = $true
+									#Start Service
+									PS-Start-Service($IP,$Service,$PSServicePath,$maximumRuntimeSeconds)
+								}else{
+									# Older version or same version
+									Write-Host ("`t`t Same or Older version: " + $NewName)
 									Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
-									Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.FileVersion)
+									Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.ProductVersion)
+									$NoChange = $true
 								}
-								$UpdatesNeeded = $true
-								#Start Service
-								PS-Start-Service($IP,$Service,$PSServicePath,$maximumRuntimeSeconds)
 							}else{
 								# Older version or same version
 								Write-Host ("`t`t Same or Older version: " + $NewName)
 								Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime)
-								Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.FileVersion)
+								Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.ProductVersion)
 								$NoChange = $true
 							}
 						}
@@ -343,6 +371,10 @@ Foreach ($Computer in $Computers) {
 							Copy-Item $SourceFile -Destination $("\\" +  $IP + "\" + $Destination.replace(":","$"))
 						}
 						$MissingFiles = $true
+						If ($ErrorCSV) {
+							#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Error"
+							Add-Content ($LogFile + "_errors.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Destination File is missing")
+						}
 						#Start Service
 						PS-Start-Service($IP,$Service,$PSServicePath,$maximumRuntimeSeconds)
 					}
@@ -355,7 +387,11 @@ Foreach ($Computer in $Computers) {
 		If (Test-Connection -ComputerName $Computer -Quiet){ 
 			Write-Host ("`t`t Host is up") -ForegroundColor green
 		}else{
-			Write-Warning -Message ("`t`t Host is Down")
+			Write-Warning -Message ("`t`t Host is Down") -ForegroundColor red
+		}
+		If ($ErrorCSV) {
+			#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Error"
+			Add-Content ($LogFile + "_errors.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + ",,,,Cannot access host")
 		}
 		$ComputerError = $true
 	}
