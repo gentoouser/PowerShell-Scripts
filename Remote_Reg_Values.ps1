@@ -2,12 +2,12 @@
 Operations:
 	*Read input
 	*Test if host is alive
-	*Add A or AAA records for alive hosts
+	* Powershell or PSExec to get registry Value Data
 
 Dependencies for this script:
-
+	* PsExec
 Changes:
-
+	*Conviert hex to decimal for REG_DWORD Version 1.0.1
 #>
 
 PARAM (
@@ -22,7 +22,7 @@ PARAM (
     [string]$PSExecPath = "PsExec.exe"
 )
 
-$ScriptVersion = "1.0.0"
+$ScriptVersion = "1.0.1"
 
 #############################################################################
 #region User Variables
@@ -165,6 +165,7 @@ Write-Progress -Activity ("Resolving Computer Name") -Status ("( " + $count + "\
 	
     If ($GoodIPs.count -gt 0)	{
 		Foreach ($IP in $GoodIPs ) {
+            $ValueData = $null
              #Main Code.
             if ($UsePSExec) {
                 Write-Host ("`t`t Trying Remove Registry on: " + $IP)
@@ -184,7 +185,12 @@ Write-Progress -Activity ("Resolving Computer Name") -Status ("( " + $count + "\
                     $stderr = $process.StandardError.ReadToEnd()
                     $arr = $stdout.Split([Environment]::NewLine,[System.StringSplitOptions]::RemoveEmptyEntries)
                     $arr =  ($arr[$arr.Count -1]).Split(" ",[System.StringSplitOptions]::RemoveEmptyEntries)
-                    $ValueData = $arr[$arr.Count -1]
+                    #Convert hex to dec
+                    If ( ($arr[$arr.Count -2 ]) -eq "REG_DWORD") {
+                        $ValueData = [Convert]::ToInt64($arr[$arr.Count -1],16)
+                    }else{
+                        $ValueData = $arr[$arr.Count -1]
+                    }
                     #Write-Host $stdout
                     #Write-Host $stderr
                     Write-Host ("`t`t Value Data: " + $ValueData + " Key: " + $Key + " Value: " + $Value)
@@ -224,7 +230,7 @@ Write-Progress -Activity ("Resolving Computer Name") -Status ("( " + $count + "\
 		If (Test-Connection -ComputerName $Computer -Quiet){ 
 			Write-Host ("`t`t Host is up") -ForegroundColor green
 		}else{
-			Write-Warning -Message ("`t`t Host is Down") -ForegroundColor red
+			Write-Warning -Message ("`t`t Host is Down")
 		}
 		If ($ErrorCSV) {
 			#Date,Computer,Key,Value,Value Data,Error
