@@ -38,7 +38,7 @@ Changes:
 	* Added ErrorCSV logging Version 1.5.0
 	* Added UseDate testing control Version 1.5.0
 	* Fixed formating issues for console and new file name. Version 1.5.1
-	
+	* Added AllCSV logging Version 1.5.2
 #>
 PARAM (
     [Array]$Computers = $null, 
@@ -51,10 +51,12 @@ PARAM (
     [Parameter(Mandatory=$true)][string]$Destination = $null,
 	[switch]$VerboseLog = $false,
 	[switch]$ErrorCSV = $false,
+	[switch]$ALLCSV = $true,
 	[switch]$UseDate = $true,
 	[switch]$Copy = $true
+	
 )
-$ScriptVersion = "1.5.1"
+$ScriptVersion = "1.5.2"
 #############################################################################
 #region User Variables
 #############################################################################
@@ -129,6 +131,12 @@ If ($ErrorCSV) {
 		Add-Content ($LogFile + "_errors.csv") ("Date,Computer,Source File,Source File Version,Source file Date,Destination File,Destination File Version,Destination File Date,Error")
 	}
 }
+If ($ALLCSV) {
+	If (!(Test-Path -Path ($LogFile + "_all.csv"))) {
+		Add-Content ($LogFile + "_all.csv") ("Date,Computer,Source File,Source File Version,Source file Date,Destination File,Destination File Version,Destination File Date,Status")
+	}
+}
+
 #############################################################################
 #endregion Setup Sessions
 #############################################################################
@@ -313,6 +321,10 @@ Foreach ($Computer in $Computers) {
 								#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Error"
 								Add-Content ($LogFile + "_errors.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is newer by version")
 							}
+							If ($AllCSV) {
+								#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Status"
+								Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is newer by version; copying file")
+							}
 							$UpdatesNeeded = $true
 							#Start Service
 							PS-Start-Service($IP,$Service,$PSServicePath,$maximumRuntimeSeconds)
@@ -340,6 +352,10 @@ Foreach ($Computer in $Computers) {
 										#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Error"
 										Add-Content ($LogFile + "_errors.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is newer by date")
 									}
+									If ($AllCSV) {
+										#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Status"
+										Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is newer by date; copying file")
+									}
 									$UpdatesNeeded = $true
 									#Start Service
 									PS-Start-Service($IP,$Service,$PSServicePath,$maximumRuntimeSeconds)
@@ -349,6 +365,10 @@ Foreach ($Computer in $Computers) {
 									Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime) -foregroundcolor darkgray
 									Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.ProductVersion) -foregroundcolor darkgray
 									$NoChange = $true
+									If ($AllCSV) {
+										#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Status"
+										Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is Same or older by date")
+									}
 								}
 							}else{
 								# Older version or same version
@@ -356,6 +376,10 @@ Foreach ($Computer in $Computers) {
 								Write-Host ("`t`t`t Destination Modified: " + $DestinationFileInfo.LastWriteTime) -foregroundcolor darkgray
 								Write-Host ("`t`t`t Destination Version: " + $DestinationFileInfo.VersionInfo.ProductVersion) -foregroundcolor darkgray
 								$NoChange = $true
+								If ($AllCSV) {
+									#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Status"
+									Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is Same or older by version")
+								}
 							}
 						}
 					}Else{
@@ -371,7 +395,11 @@ Foreach ($Computer in $Computers) {
 						$MissingFiles = $true
 						If ($ErrorCSV) {
 							#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Error"
-							Add-Content ($LogFile + "_errors.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Destination File is missing")
+							Add-Content ($LogFile + "_errors.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + ",,,,Destination File is missing; copying file")
+						}
+						If ($AllCSV) {
+							#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Status"
+							Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + ",,,,Destination File is missing; copying file")
 						}
 						#Start Service
 						PS-Start-Service($IP,$Service,$PSServicePath,$maximumRuntimeSeconds)
@@ -385,11 +413,15 @@ Foreach ($Computer in $Computers) {
 		If (Test-Connection -ComputerName $Computer -Quiet){ 
 			Write-Host ("`t`t Host is up") -ForegroundColor green
 		}else{
-			Write-Warning -Message ("`t`t Host is Down") -ForegroundColor red
+			Write-Warning -Message ("`t`t Host is Down")
 		}
 		If ($ErrorCSV) {
 			#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Error"
 			Add-Content ($LogFile + "_errors.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + ",,,,Cannot access host")
+		}
+		If ($AllCSV) {
+			#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Status"
+			Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + ",,,,Cannot access host")
 		}
 		$ComputerError = $true
 	}
@@ -402,6 +434,7 @@ Foreach ($Computer in $Computers) {
 	IF ($ComputerError) {Add-Content ($LogFile + "_ErrorComputers.txt") ("$OldComputer")}
 	#Increase Progress counter
 	$count++
+	
 }
 
 $sw.Stop()
