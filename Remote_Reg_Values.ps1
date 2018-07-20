@@ -7,22 +7,24 @@ Operations:
 Dependencies for this script:
 	* PsExec
 Changes:
-	*Conviert hex to decimal for REG_DWORD Version 1.0.1
+	*Convert hex to decimal for REG_DWORD Version 1.0.1
+    *Fixed -computer issue Version 1.0.3
+    *Fixed issue where psexec has and issue Version 1.0.4
 #>
 
 PARAM (
-	[string]$Computer, 
-	[string]$ComputerList = $null,
+    [string]$Computer = $null, 
+    [string]$ComputerList = $null,
     [string]$Key = "SOFTWARE\\Microsoft\\NET Framework Setup\\NDP\\v4\\Full",
     [string]$Hive = "HKLM",
     [string]$Value = "Release",
     [switch]$ErrorCSV = $false,
     [switch]$ALLCSV = $true,
     [switch]$UsePSExec = $true,
-    [string]$PSExecPath = "PsExec.exe"
+    [string]$PSExecPath = ".\PsExec.exe"
 )
 
-$ScriptVersion = "1.0.1"
+$ScriptVersion = "1.0.4"
 
 #############################################################################
 #region User Variables
@@ -55,12 +57,12 @@ If (-Not [string]::IsNullOrEmpty($LogFile)) {
 }	
 #Check which computer input to use to set $Computers
 If ([string]::IsNullOrEmpty($ComputerList)) {
-	If ([string]::IsNullOrEmpty($Computers)) {
-		throw " -Computers or -ComputerList is required."
+	If ([string]::IsNullOrEmpty($Computer)) {
+		throw " -Computer or -ComputerList is required."
 	}Else{
 		# $Computers is already set.
-		If (($Computers.GetType().BaseType).Name -eq "String") {
-			$Computers = $Computers.split(" ")
+		If (($Computer.GetType().BaseType).Name -eq "String") {
+			$Computers = $Computer.split(" ")
 		}
 	}
 }Else{
@@ -143,6 +145,7 @@ Function FormatElapsedTime($ts)
 #############################################################################
 #Loop thru servers
 Foreach ($Computer in $Computers) {
+$ValueData = $null
 Write-Progress -Activity ("Resolving Computer Name") -Status ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer) -percentComplete ($count / $Computers.count*100)
 	Write-Host ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer)
 	#test for good IPs from host
@@ -165,10 +168,15 @@ Write-Progress -Activity ("Resolving Computer Name") -Status ("( " + $count + "\
 	
     If ($GoodIPs.count -gt 0)	{
 		Foreach ($IP in $GoodIPs ) {
-            $ValueData = $null
              #Main Code.
             if ($UsePSExec) {
-                Write-Host ("`t`t Trying Remove Registry on: " + $IP)
+                Write-Host ("`t`t Trying Remote Registry on: " + $IP)
+                $ValueData = $null
+                $arr = $null
+                $stdout = $null
+                $stderr = $null
+                $pinfo = $null
+                $process = $null
                 try {		        
                     #$process = Start-Process -FilePath $PSExecPath -ArgumentList @("\\" + $IP, 'reg query "' + $Hive + $PSKey + '" /v ' + $Value) -PassThru -NoNewWindow
 		            $pinfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -176,7 +184,7 @@ Write-Progress -Activity ("Resolving Computer Name") -Status ("( " + $count + "\
                     $pinfo.RedirectStandardError = $true
                     $pinfo.RedirectStandardOutput = $true
                     $pinfo.UseShellExecute = $false
-                    $pinfo.Arguments = ("\\" + '10.5.1.18' +' reg query "' + $Hive + $PSKey + '" /v ' + $Value)
+                    $pinfo.Arguments = ("\\" + $IP +' reg query "' + $Hive + $PSKey + '" /v ' + $Value)
                     $process = New-Object System.Diagnostics.Process
                     $process.StartInfo = $pinfo
                     $process.Start() | Out-Null
@@ -190,6 +198,10 @@ Write-Progress -Activity ("Resolving Computer Name") -Status ("( " + $count + "\
                         $ValueData = [Convert]::ToInt64($arr[$arr.Count -1],16)
                     }else{
                         $ValueData = $arr[$arr.Count -1]
+                        If ($ValueData -eq "www.sysinternals.com") {
+                            $arr = $stderr.Split([Environment]::NewLine,[System.StringSplitOptions]::RemoveEmptyEntries)
+                            $ValueData = $arr.Count[$arr.Count -1]
+                        }
                     }
                     #Write-Host $stdout
                     #Write-Host $stderr
@@ -206,6 +218,7 @@ Write-Progress -Activity ("Resolving Computer Name") -Status ("( " + $count + "\
 					}
                 }
             }else{  
+                $ValueData = $null
                 try {
                     $Reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey($Hive, $IP)
                     $RegKey= $Reg.OpenSubKey($Key)
