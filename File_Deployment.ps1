@@ -38,7 +38,9 @@ Changes:
 	* Added ErrorCSV logging Version 1.5.0
 	* Added UseDate testing control Version 1.5.0
 	* Fixed formating issues for console and new file name. Version 1.5.1
-	* Added AllCSV logging Version 1.5.2
+	* Added AllCSV logging Version 1.5.1
+	* Fixed Issue calling functions Version 1.5.3
+	* Fixed issue where computer name would not work in ComputerList. Version 1.5.4
 #>
 PARAM (
     [Array]$Computers = $null, 
@@ -56,7 +58,7 @@ PARAM (
 	[switch]$Copy = $true
 	
 )
-$ScriptVersion = "1.5.2"
+$ScriptVersion = "1.5.4"
 #############################################################################
 #region User Variables
 #############################################################################
@@ -253,6 +255,7 @@ Function PS-KillProgram($Computer,$Program,$PSKillPath,$maximumRuntimeSeconds)
 		} 
 	}
 }
+
 #############################################################################
 #endregion Functions
 #############################################################################
@@ -270,7 +273,7 @@ Foreach ($Computer in $Computers) {
 	Write-Host ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer)
 	#test for good IPs from host
 	$GoodIPs=@()
-	If ([ipaddress]$Computer) {
+	If ([bool]($Computer -as [ipaddress])) {
 		If (Test-Connection -Cn $Computer -BufferSize 16 -Count 1 -ea 0 -quiet) {
 			Write-Host ("`t Responds with IP: " + $Computer)
 			$GoodIPs += $Computer
@@ -301,9 +304,9 @@ Foreach ($Computer in $Computers) {
 						If ($SourceFileInfo.value.VersionInfo.ProductVersion -gt $DestinationFileInfo.VersionInfo.ProductVersion) {
 							#Copy newer version
 							#Term Service
-							PS-StopService($IP,$Service,$PSServicePath,$PSKillPath,$maximumRuntimeSeconds)
+							PS-StopService $IP $Service $PSServicePath $PSKillPath $maximumRuntimeSeconds
 							#Term Program
-							PS-KillProgram($IP,$Program,$PSKillPath,$maximumRuntimeSeconds)
+							PS-KillProgram $IP $Program $PSKillPath $maximumRuntimeSeconds
 							If ($Copy) {
 								#Backup Old 
 								Write-Host ("`t`t Renaming destination: " + ($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.VersionInfo.ProductVersion + $DestinationFileInfo.Extension))
@@ -327,14 +330,14 @@ Foreach ($Computer in $Computers) {
 							}
 							$UpdatesNeeded = $true
 							#Start Service
-							PS-Start-Service($IP,$Service,$PSServicePath,$maximumRuntimeSeconds)
+							PS-Start-Service $IP $Service $PSServicePath $maximumRuntimeSeconds
 						}Else{
 							If ($UseDate) {
 								If ($SourceFileInfo.value.LastWriteTime.ToString("yyyyMMddHHmmssffff") -gt $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff")) {
 									#Term Service
-									PS-StopService($IP,$Service,$PSServicePath,$PSKillPath,$maximumRuntimeSeconds)
+									PS-StopService $IP $Service $PSServicePath $PSKillPath $maximumRuntimeSeconds
 									#Term Program
-									PS-KillProgram($IP,$Program,$PSKillPath,$maximumRuntimeSeconds)
+									PS-KillProgram $IP $Program $PSKillPath $maximumRuntimeSeconds
 									If ($Copy) {
 										#Backup Old
 										Write-Host ("`t`t Renaming destination: " + ($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + $DestinationFileInfo.Extension))
@@ -358,7 +361,7 @@ Foreach ($Computer in $Computers) {
 									}
 									$UpdatesNeeded = $true
 									#Start Service
-									PS-Start-Service($IP,$Service,$PSServicePath,$maximumRuntimeSeconds)
+									PS-Start-Service $IP $Service $PSServicePath $maximumRuntimeSeconds
 								}else{
 									# Older version or same version
 									Write-Host ("`t`t Same or Older version: " + ($DestinationFileInfo.Name.replace("." + $DestinationFileInfo.Extension,"") + "_" + $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff") + $DestinationFileInfo.Extension)) -foregroundcolor darkgray
@@ -385,9 +388,9 @@ Foreach ($Computer in $Computers) {
 					}Else{
 						#Copy; Missing
 						#Term Service
-						PS-StopService($IP,$Service,$PSServicePath,$PSKillPath,$maximumRuntimeSeconds)
+						PS-StopService $IP $Service $PSServicePath $PSKillPath $maximumRuntimeSeconds
 						#Term Program
-						PS-KillProgram($IP,$Program,$PSKillPath,$maximumRuntimeSeconds)
+						PS-KillProgram $IP $Program $PSKillPath $maximumRuntimeSeconds
 						If ($Copy) {
 							Write-Host ("`t`t Copying missing $SourceFile to destination: " + $("\\" +  $IP + "\" + $Destination.replace(":","$"))) -foregroundcolor green
 							Copy-Item $SourceFile -Destination $("\\" +  $IP + "\" + $Destination.replace(":","$"))
@@ -402,7 +405,7 @@ Foreach ($Computer in $Computers) {
 							Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + ",,,,Destination File is missing; copying file")
 						}
 						#Start Service
-						PS-Start-Service($IP,$Service,$PSServicePath,$maximumRuntimeSeconds)
+						PS-Start-Service $IP $Service $PSServicePath $maximumRuntimeSeconds
 					}
 				}
 			}
