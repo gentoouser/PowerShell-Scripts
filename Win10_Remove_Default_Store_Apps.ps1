@@ -18,50 +18,73 @@ else
    }
 #endregion
 
+#Windows 10 Rev. 1803 WhiteList
 #APSS to Keep:
-#"Microsoft.Appconnector", 
-#"Microsoft.BingWeather" 
-#"Microsoft.MicrosoftStickyNotes", 
-#"Microsoft.WindowsAlarms",
-#"Microsoft.WindowsCalculator",
-#"Windows.MiracastView",
-#"Microsoft.Windows.Cortana"
-
-#region Appx to be removed
-$Remove = "Microsoft.3DBuilder",
-"Microsoft.Advertising.Xaml",
-"Microsoft.Getstarted",
-"Microsoft.Messaging",
-"Microsoft.Microsoft.Microsoft3DViewer",
-"Microsoft.MicrosoftOfficeHub",
-"Microsoft.MicrosoftSolitaireCollection",
+$Keep =  "1527c705-839a-4832-9118-54d4Bd6a0c89",
+"c5e2524a-ea46-4f67-841f-6a9465d9d515",
+"E2A4F912-2574-4A75-9BB0-0D023378592B",
+"F46D4000-FD22-4DB4-AC8E-4E1DDDE828FE",
+"InputApp",
+"Microsoft.AAD.BrokerPlugin",
+"Microsoft.AccountsControl",
+"Microsoft.Appconnector",
+"Microsoft.AsyncTextService",
+"Microsoft.BingWeather", 
+"Microsoft.BioEnrollment",
+"Microsoft.CredDialogHost",
+"Microsoft.ECApp",
+"Microsoft.LockApp",
+"Microsoft.MSPaint",
+"Microsoft.MicrosoftEdge",
+"Microsoft.MicrosoftEdgeDevToolsClient",
+"Microsoft.MicrosoftStickyNotes", 
+"Microsoft.NET.Native.Framework.1.6",
+"Microsoft.NET.Native.Framework.1.7",
+"Microsoft.NET.Native.Framework.2.1",
+"Microsoft.NET.Native.Runtime.1.6",
+"Microsoft.NET.Native.Runtime.1.7",
+"Microsoft.NET.Native.Runtime.2.1",
 "Microsoft.Office.OneNote",
-"Microsoft.Office.Sway",
-"Microsoft.Office.Desktop.Access",
-"Microsoft.Office.Desktop.Excel",
-"Microsoft.Office.Desktop.Outlook",
-"Microsoft.Office.Desktop.PowerPoint",
-"Microsoft.Office.Desktop.Publisher",
-"Microsoft.Office.Desktop.Word",
-"Microsoft.Office.Desktop",
-"7EE7776C.LinkedInforWindows",
-"Microsoft.OneConnect",
+"Microsoft.PPIProjection",
 "Microsoft.People",
 "Microsoft.SkypeApp",
+"Microsoft.StorePurchaseApp",
+"Microsoft.VCLibs.140.00",
+"Microsoft.VCLibs.140.00.UWPDesktop",
 "Microsoft.Wallet",
+"Microsoft.Win32WebViewHost",
+"Microsoft.Windows.Apprep.ChxApp",
+"Microsoft.Windows.AssignedAccessLockApp",
+"Microsoft.Windows.CapturePicker",
+"Microsoft.Windows.CloudExperienceHost",
+"Microsoft.Windows.ContentDeliveryManager",
+"Microsoft.Windows.Cortana",
+"Microsoft.Windows.HolographicFirstRun",
+"Microsoft.Windows.OOBENetworkCaptivePortal",
+"Microsoft.Windows.OOBENetworkConnectionFlow",
+"Microsoft.Windows.ParentalControls",
+"Microsoft.Windows.PeopleExperienceHost",
+"Microsoft.Windows.Photos",
+"Microsoft.Windows.PinningConfirmationDialog",
+"Microsoft.Windows.SecHealthUI",
+"Microsoft.Windows.SecureAssessmentBrowser",
+"Microsoft.Windows.ShellExperienceHost",
+"Microsoft.WindowsAlarms",
+"Microsoft.WindowsCalculator",
 "Microsoft.WindowsCamera",
 "Microsoft.WindowsFeedbackHub",
 "Microsoft.WindowsMaps",
-"Microsoft.WindowsSoundRecorder",
-"Microsoft.XboxApp",
-"Microsoft.XboxIdentityProvider",
-"Microsoft.XboxSpeechToTextOverlay",
+"Microsoft.WindowsStore",
 "Microsoft.Xbox.TCUI",
-"Microsoft.ZuneMusic",
-"Microsoft.ZuneVideo",
-"microsoft.windowscommunicationsapps"
-#endregion
- 
+"Microsoft.XboxApp",
+"Microsoft.XboxGameCallableUI",
+"Microsoft.XboxIdentityProvider",
+"Windows.CBSPreview",
+"Windows.MiracastView",
+"Windows.PrintDialog",
+"windows.immersivecontrolpanel"
+
+
 #region Get list of currently installed and provisioned Appx packages
 $AllInstalled = Get-AppxPackage -AllUsers | Foreach {$_.Name}
 $AllProvisioned = Get-ProvisionedAppxPackage -Online | Foreach {$_.DisplayName}
@@ -77,9 +100,9 @@ Write-Host -NoNewline '           '
 Write-Host '#' -ForegroundColor Green
 Write-Host '#####################################' -ForegroundColor Green
 Write-Host "`n"
-Foreach($Appx in $Remove){
+Foreach($Appx in $AllInstalled){
     $error.Clear()
-    If($AllInstalled -like "*$Appx*"){
+    If(-Not $Keep.Contains($Appx)){
         Try{
             #Turn off the progress bar
             $ProgressPreference = 'silentlyContinue'
@@ -91,7 +114,7 @@ Foreach($Appx in $Remove){
         Catch{
             $ErrorMessage = $_.Exception.Message
             $FailedItem = $_.Exception.ItemName
-            Write-Host "There was an error removing Appx:"
+            Write-Host "There was an error removing Appx: $Appx"
             Write-Host $ErrorMessage
             Write-Host $FailedItem
         }
@@ -100,7 +123,7 @@ Foreach($Appx in $Remove){
         }
     }
     Else{
-        Write-Host "Appx Package not installed: $Appx"
+        Write-Host "Appx Package is whitelisted: $Appx" -ForegroundColor yellow
     }
 }
 #endregion
@@ -115,9 +138,9 @@ Write-Host -NoNewline '     '
 Write-Host '#' -ForegroundColor Green
 Write-Host '#####################################' -ForegroundColor Green
 Write-Host "`n"
-Foreach($Appx in $Remove){
+Foreach($Appx in $AllProvisioned){
     $error.Clear()
-    If($AllProvisioned -like "*$Appx*"){
+    If(-Not $Keep.Contains($Appx)){
         Try{
             Get-ProvisionedAppxPackage -Online | where {$_.DisplayName -eq $Appx} | Remove-ProvisionedAppxPackage -Online | Out-Null
         }
@@ -125,7 +148,7 @@ Foreach($Appx in $Remove){
         Catch{
             $ErrorMessage = $_.Exception.Message
             $FailedItem = $_.Exception.ItemName
-            Write-Host "There was an error removing Provisioned Appx:"
+            Write-Host "There was an error removing Provisioned Appx: $Appx"
             Write-Host $ErrorMessage
             Write-Host $FailedItem
         }
@@ -134,7 +157,7 @@ Foreach($Appx in $Remove){
         }
     }
     Else{
-        Write-Host "Provisioned Appx Package not installed: $Appx"
+        Write-Host "Appx Package is whitelisted: $Appx" -ForegroundColor yellow
     }
 }
 #endregion
