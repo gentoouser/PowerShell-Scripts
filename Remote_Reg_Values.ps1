@@ -9,27 +9,28 @@ Dependencies for this script:
 Changes:
 	*Convert hex to decimal for REG_DWORD Version 1.0.1
     *Fixed -computer issue Version 1.0.3
-    *Fixed issue where psexec has and issue Version 1.0.4
+    *Fixed issue where psexe has and issue Version 1.0.4
+    *Changed status of no value returned Version 1.0.5
 #>
 
 PARAM (
-    [string]$Computer = $null, 
-    [string]$ComputerList = $null,
-    [string]$Key = "SOFTWARE\\Microsoft\\NET Framework Setup\\NDP\\v4\\Full",
+	[string]$Computer = $null, 
+	[string]$ComputerList = $null,
+    [string]$Key = $null,
     [string]$Hive = "HKLM",
     [string]$Value = "Release",
     [switch]$ErrorCSV = $false,
     [switch]$ALLCSV = $true,
     [switch]$UsePSExec = $true,
-    [string]$PSExecPath = ".\PsExec.exe"
+    [string]$PSExecPath =$null
 )
 
-$ScriptVersion = "1.0.4"
+$ScriptVersion = "1.0.5"
 
 #############################################################################
 #region User Variables
 #############################################################################
-$LogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\" + `
+$LogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + `
 		   $MyInvocation.MyCommand.Name + "_" + `
 		   (Get-Date -format yyyyMMdd-hhmm) + ".log")
 $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -45,6 +46,9 @@ $GoodIPs=@()
 #############################################################################
 #Start logging.
 If (-Not [string]::IsNullOrEmpty($LogFile)) {
+	If (-Not( Test-Path (Split-Path -Path $LogFile -Parent))) {
+		New-Item -ItemType directory -Path (Split-Path -Path $LogFile -Parent)
+	}
 	try { 
 	Start-Transcript -Path $LogFile -Append
 	} catch { 
@@ -184,7 +188,7 @@ Write-Progress -Activity ("Resolving Computer Name") -Status ("( " + $count + "\
                     $pinfo.RedirectStandardError = $true
                     $pinfo.RedirectStandardOutput = $true
                     $pinfo.UseShellExecute = $false
-                    $pinfo.Arguments = ("\\" + $IP +' reg query "' + $Hive + $PSKey + '" /v ' + $Value)
+                    $pinfo.Arguments = ("\\" + $IP +' -accepteula -nobanner reg query "' + $Hive + $PSKey + '" /v ' + $Value)
                     $process = New-Object System.Diagnostics.Process
                     $process.StartInfo = $pinfo
                     $process.Start() | Out-Null
@@ -208,7 +212,11 @@ Write-Progress -Activity ("Resolving Computer Name") -Status ("( " + $count + "\
                     Write-Host ("`t`t Value Data: " + $ValueData + " Key: " + $Key + " Value: " + $Value)
                     If ($ALLCSV) {
 					   #"Date,Computer,Key,Value,Value Data,Status"
-					   Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $key + "," + $Value + "," + $ValueData + ",Success")
+                        If ([string]::IsNullOrEmpty($ValueData)) {
+					        Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $key + "," + $Value + "," + $ValueData + ",Issue")
+                        }else{
+                            Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $key + "," + $Value + "," + $ValueData + ",Success")
+                        }
 					}
                 } catch {
 					Write-Host ("`t`t Cannot connect to remote registry.") -ForegroundColor red
@@ -226,7 +234,11 @@ Write-Progress -Activity ("Resolving Computer Name") -Status ("( " + $count + "\
                     Write-Host ("`t`t Value Data: " + $ValueData + " Key: " + $Key + " Value: " + $Value)
                     If ($ALLCSV) {
                        #"Date,Computer,Key,Value,Value Data,Status"
-		               Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $key + "," + $Value + "," + $ValueData + ",Success")
+                       If ([string]::IsNullOrEmpty($ValueData)) {
+                        Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $key + "," + $Value + "," + $ValueData + ",Issue")
+                       }else{
+		                Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $key + "," + $Value + "," + $ValueData + ",Success")
+                       }
                     }
                 } catch {
                     Write-Host ("`t`t Cannot connect to remote registry.") -ForegroundColor red
