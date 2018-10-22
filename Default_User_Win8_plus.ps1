@@ -1018,12 +1018,12 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	Set-Reg ($HKEYIE + "\PageSetup") "margin_top" "0.500000" "String"
 	Set-Reg ($HKEYIE + "\PageSetup") "margin_left" "0.166000" "String"
 	Set-Reg ($HKEYIE + "\PageSetup") "margin_right" "0.166000" "String"
-	Set-Reg ($HKEYIE.replace("\Software\","\Software\Wow6432Node\") + "\PageSetup") "header" "" "String"
-	Set-Reg ($HKEYIE.replace("\Software\","\Software\Wow6432Node\") + "\PageSetup") "footer" "" "String"
-	Set-Reg ($HKEYIE.replace("\Software\","\Software\Wow6432Node\") + "\PageSetup") "margin_bottom" "0.500000" "String"
-	Set-Reg ($HKEYIE.replace("\Software\","\Software\Wow6432Node\") + "\PageSetup") "margin_top" "0.500000" "String"
-	Set-Reg ($HKEYIE.replace("\Software\","\Software\Wow6432Node\") + "\PageSetup") "margin_left" "0.166000" "String"
-	Set-Reg ($HKEYIE.replace("\Software\","\Software\Wow6432Node\") + "\PageSetup") "margin_right" "0.166000" "String"
+	#Set-Reg ($HKEYIE.replace("\Software\","\Software\Wow6432Node\") + "\PageSetup") "header" "" "String"
+	#Set-Reg ($HKEYIE.replace("\Software\","\Software\Wow6432Node\") + "\PageSetup") "footer" "" "String"
+	#Set-Reg ($HKEYIE.replace("\Software\","\Software\Wow6432Node\") + "\PageSetup") "margin_bottom" "0.500000" "String"
+	#Set-Reg ($HKEYIE.replace("\Software\","\Software\Wow6432Node\") + "\PageSetup") "margin_top" "0.500000" "String"
+	#Set-Reg ($HKEYIE.replace("\Software\","\Software\Wow6432Node\") + "\PageSetup") "margin_left" "0.166000" "String"
+	#Set-Reg ($HKEYIE.replace("\Software\","\Software\Wow6432Node\") + "\PageSetup") "margin_right" "0.166000" "String"
 
 	#Clean up old keys
 	Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Internet Settings\ZoneMap\Domains") -Recurse
