@@ -44,6 +44,8 @@
 	Sets user settings only and no machine settings
 .PARAMETER NoCacheUpdate
 	Skip updating local cache.
+.PARAMETER AllowClientTLS1
+	Enables Computer to go to TLS 1.0 and TLS 1.1 sites.
 .PARAMETER BackgroundFolder
 	Folder name of where customized default windows backgrounds are.
 .EXAMPLE
@@ -58,6 +60,9 @@
 	* Version 2.0.4 - Added Chrome default settings. Fixed Hiding Network in Windows Explorer to allow UNC browsing. 
 	* Version 2.0.5 - Fixed issue with Favorites
 	* Version 2.0.6 - Moved Custiom settings to variables 
+	* Version 2.0.7 - Fixed PSRemote does not exist. Setup Auto Arrange Icons. Fixed User Account copying issue. Add OEM Info. Hide last Logged in User.
+	* Version 2.0.8 - Getting away from LGPO for Store Users as settings are not kept after sysprep.
+	* Version 2.0.9 - Fixing logic issues with BGInfo. Updated Variables. Updated Chrome Settings. Updated Firewall settings. Updated Logon Background issues.
 #>
 PARAM (
 	[switch]$LockedDown	  	= $false,
@@ -68,13 +73,14 @@ PARAM (
 	[string]$StartLayoutXML	= "Win10_VDI.xml",
 	[string]$CARoot			= "RootCA.cer",
 	[string]$CAInter		= "InterCA.cer",
-	[string]$CSCert			= "ICode Signing.cer",
+	[string]$CSCert			= "Code Signing.cer",
 	[string]$LGPO			= "Windows10Ent",
-	[string]$LGPOSU			= "CompletePolicy",
+	[string]$LGPOSU			= "",
 	[String]$User		    = $null,
 	[String]$Password	    = $null,
 	[switch]$UserOnly		= $false,
 	[switch]$NoCacheUpdate	= $false,
+	[switch]$AllowClientTLS1= $false,
 	[String]$BackgroundFolder = "workstations"
 
 )
@@ -87,32 +93,36 @@ Break
 }
 #Fix issue for services
 cd \
-$ScriptVersion = "2.0.6"
+$ScriptVersion = "2.0.9"
 #############################################################################
 #############################################################################
 #############################################################################
 #region User Variables
 #############################################################################
 #region    +++++++ Company Specific Settings +++++++#
-$HomePage = "https://github.com"
+$HomePage = "http://example.com"
 $IE_Header = ""
 $IE_Footer = ""
 $IE_Margin_Top = "0.500000"
 $IE_Margin_Bottom = "0.500000"
 $IE_Margin_Left = "0.166000"
 $IE_Margin_Right = "0.166000"
-#$Custom_Software_Path = (${env:ProgramFiles(x86)} + "program")
+$Custom_Software_Path = (${env:ProgramFiles(x86)} + "\Custom")
 $Custom_Wallpaper_SubFolder = "Wallpapers"
 $Custom_User_Account_Pictures_SubFolder = ($Custom_Wallpaper_SubFolder + "\User Account Pictures")
+$Custom_OEM_Logo = "LOGO_OEM.bmp"
 $NTP_ManualPeerList = "time.nist.gov,0x08 north-america.pool.ntp.org,0x08"
 $NTP_ManualPeerList_Store = $NTP_ManualPeerList
 $BGInfo_StartupLink = "Bginfo Slient Start x64.lnk"
 $BGInfo_StartupLink_Store = "Bginfo Slient Start VDI.lnk"
+$RestrictCPL = "Printer,Mail,Java,Flash,Microsoft.Mouse"
+$SettingsPageVisibility = "showonly:printers;defaultapps;display;mousetouchpad;network-ethernet;notifications;usb"
 #Versions of Adobe Reader to setup for.
 $ARV = ("11.0","2005","DC")
 $UserRange = 1..20
 #region IE Domain Settings
 $ZoneMap = @(
+    New-Object PSObject -Property @{Site = "patchmypc.net";  Protocol = "https"; Zone = 2}
     New-Object PSObject -Property @{Site = "microsoft.com"; Protocol = "https"; Zone = 2}
     New-Object PSObject -Property @{Site = "microsoft.com"; Protocol = "http"; Zone = 2}
     New-Object PSObject -Property @{Site = "microsoft.com\download"; Protocol = "http"; Zone = 2}
@@ -124,12 +134,49 @@ $StoreDenyFolder = @(
 	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\Administrative Tools") #Administrative Tools
 	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\Server Manager.lnk") #Server Manager
 	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\System Tools") #System Tools	
+	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\Accessories\Remote Desktop Connection.lnk") #RDP Client	
+	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\Microsoft .NET Compact Framework 1.0 SP3 Installer.lnk") #.Net
+	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\HP") #HP
 )
 $StoreDenyFolderUser = @(
 	"\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Windows PowerShell" #PowerShell
+	"\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\System Tools" #System Tools
 )
 #endregion Deny Folder
-
+#region Blacked List Programs
+$BlackListPrograms = @(
+	"powershell.exe"
+	"PowerShell_ISE.exe"
+	"mmc.exe"
+	"ConfigWizards.exe"
+	"nlbmgr.exe"
+	"RecoveryDrive.exe"
+	"RAMgmtUI.exe"
+	"perfmon.exe"
+	"ServerManager.exe"
+	"ShieldingDataFileWizard.exe"
+	"msconfig.exe"
+	"msinfo32.exe"
+	"TemplateDiskWizard.exe"
+	"vmw.exe"
+	"MdSched.exe"
+	"licmgr.exe"
+	"ClusterUpdateUI.exe"
+	"dsac.exe"
+	"dfrgui.exe"
+	"cleanmgr.exe"
+	"iscsicpl.exe"
+	"odbcad32.exe"
+)
+#endregion Blacked List Programs
+#region Disable Known Folders
+$DisableKnownFolders = @(
+	"Videos"
+	"Music"
+	"Pictures"
+	"Network"
+)
+#endregion Disable Known Folders
 #endregion +++++++ Company Specific Settings +++++++#
 
 #region Services	
@@ -438,7 +485,15 @@ function Get-CurrentUserSID {
 }
 function Set-Reg ($regPath, $name, $value, $type) {
 	#Source: https://github.com/nichite/chill-out-windows-10/blob/master/chill-out-windows-10.ps1
-    If(!(Test-Path $regPath)) {
+	# String: Specifies a null-terminated string. Equivalent to REG_SZ.
+	# ExpandString: Specifies a null-terminated string that contains unexpanded references to environment variables that are expanded when the value is retrieved. Equivalent to REG_EXPAND_SZ.
+	# Binary: Specifies binary data in any form. Equivalent to REG_BINARY.
+	# DWord: Specifies a 32-bit binary number. Equivalent to REG_DWORD.
+	# MultiString: Specifies an array of null-terminated strings terminated by two null characters. Equivalent to REG_MULTI_SZ.
+	# Qword: Specifies a 64-bit binary number. Equivalent to REG_QWORD.
+	# Unknown: Indicates an unsupported registry data type, such as REG_RESOURCE_LIST.
+	
+	If(!(Test-Path $regPath)) {
         New-Item -Path $regPath -Force | Out-Null
     }
     New-ItemProperty -Path $regPath -Name $name -Value $value -PropertyType `
@@ -885,7 +940,7 @@ If ($Store) {
 #endregion Main Setup
 #============================================================================
 #============================================================================
-#region Main *Default User
+#region Main Set User Defaults 
 #============================================================================
 Write-Host ("-"*[console]::BufferWidth)
 Write-Host ("Starting User Profile Setup. . .")
@@ -1040,13 +1095,44 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	#endregion Start Menu
 	If ($LockedDown) {
 		write-host ("`t" + $CurrentProfile + ": Setting up LockDown Settings")
+		#Enable Auto Arrange Icons
+		#https://www.tenforums.com/tutorials/57518-turn-off-auto-arrange-desktop-icons-windows-10-a.html
+		#1075839520 = Auto arrange icons = OFF and Align icons to grid = OFF
+		#1075839521 = Auto arrange icons = ON and Align icons to grid = OFF
+		#1075839524 = Auto arrange icons = OFF and Align icons to grid = ON
+		#1075839525 = Auto arrange icons = ON and Align icons to grid = ON
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\Shell\Bags\1\Desktop") "FFlags" 1075839525 "DWORD"
+		#region Control Panel
+		If (Test-Path($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun")) {
+			Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun") -Recurse
+		}
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun") 1 $RestrictCPL "String"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "SCRNSAVE.EXE" "scrnsave.scr" "String"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Performance Control Panel") "PerfCplEnabled" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Performance Control Panel") "SolutionsEnabled" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Personalization") "NoChangingSoundScheme" 1 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows NT\Printers") "DisableHTTPPrinting" 1 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows NT\Printers") "DisableWebPnPDownload" 1 "DWORD"
+		#endregion Control Panel
 		#region LockDown Windows Explorer
 		Set-Reg ($HKEYWE + "\Advanced") "Start_ShowDownloads" 0 "DWORD"
 		Set-Reg ($HKEYWE + "\Advanced") "StartMenuAdminTools" 0 "DWORD"
 		Set-Reg ($HKEYWE + "\Advanced") "Start_AdminToolsRoot" 0 "DWORD"
 		Set-Reg ($HKEYWE + "\Advanced") "TaskbarSizeMove" 0 "DWORD"
 		Set-Reg ($HKEYWE + "\Advanced") "Start_ShowControlPanel" 1 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows NT\SharedFolders") "PublishSharedFolders" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows NT\SharedFolders") "PublishDfsRoots" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows NT\Terminal Services") "DisablePasswordSaving" 1 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\WindowsMediaCenter") "MediaCenter" 1 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\WindowsStore") "RemoveWindowsStore" 1 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\WindowsStore") "DisableOSUpgrade" 1 "DWORD"
 		#endregion LockDown Windows Explorer
+		#region Windows Media Player
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\WindowsMediaPlayer") "PreventRadioPresetsRetrieval" 1 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\WindowsMediaPlayer") "PreventMusicFileMetadataRetrieval" 1 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\WindowsMediaPlayer") "PreventCDDVDMetadataRetrieval" 1 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\WindowsMediaPlayer") "EnableScreenSaver" 1 "DWORD"
+		#endregion Windows Media Player
 		#region LockDown Start Menu
 		#Hide This PC
 		Set-Reg ($HKEYWE + "\HideDesktopIcons\NewStartPanel") "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 1 "DWORD"
@@ -1060,51 +1146,336 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		#endregion LockDown Start Menu
 		If ($Store) {
 			#region LockDown Store Windows Explorer
-			write-host ("`t" + $CurrentProfile + ": Setting up Store settings")
-			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "SettingsPageVisibility" "showonly:printers;defaultapps;display;mousetouchpad;network-ethernet;notifications;usb;windowsupdate" "String"
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Windows Explorer")
+			#Prevent Changing Wallpaper
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop") "NoChangingWallPaper" 1 "DWORD"	
+			
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "SettingsPageVisibility" $SettingsPageVisibility "String"
+			#Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoDrives" 67108863 "DWORD"		
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "ClearRecentDocsOnExit" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "ConfirmFileDelete" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "DisableThumbnails" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "DisableThumbnailsOnNetworkFolders" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "DisallowCPL" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "DisallowRun" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "ForceRunOnStartMenu" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "ForceStartMenuLogOff" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "GreyMSIAds" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "HideSCAHealth" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "LinkResolveIgnoreLinkInfo" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "LockTaskbar" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoAutoTrayNotify" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoCDBurning" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoChangeStartMenu" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoClose" 0 "DWORD"
-			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoDrives" 33554431 "DWORD"		
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoComputersNearMe" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoDFSTab" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoDriveTypeAutoRun" 255 "DWORD"		
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoDrives" 33554431 "DWORD"		
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoFileMenu" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoFind" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoFolderOptions" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoHardwareTab" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoInplaceSharing" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoInstrumentation" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoInternetOpenWith" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoLogoff" 0 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoLowDiskSpaceChecks" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoManageMyComputerVerb" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoNetConnectDisconnect" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoNetHood" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoNetworkConnections" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoOnlinePrintsWizard" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoPreviewPane" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoPropertiesMyComputer" 1 "DWORD"
-			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoPropertiesMyComputer" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoPropertiesRecycleBin" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoPublishingWizard" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoReadingPane" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoRecentDocsMenu" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoRecentDocsNetHood" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoRun" 1 "DWORD"
-			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoSetTaskbar" 1 "DWORD"
-			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoSharedDocuments" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoSMBalloonTip" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoSMConfigurePrograms" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoSMHelp" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoSMMyDocs" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoSMMyPictures" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoSearchCommInStartMenu" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoSearchComputerLinkInStartMenu" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoSearchFilesInStartMenu" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoSearchInternetInStartMenu" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoSecurityTab" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoSetTaskbar" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoSharedDocuments" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoShellSearchButton" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoStartBanner" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoStartMenuEjectPC" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoStartMenuMyGames" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoStartMenuMyMusic" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoStartMenuNetworkPlaces" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoStrCmpLogical" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoThemesTab" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoThumbnailCache" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoTrayContextMenu" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoTrayItemsDisplay" 0 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoViewContextMenu" 1 "DWORD"
-			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoViewOnDrive" 4 "DWORD"
-			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoWindowsUpdate" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoViewOnDrive" 67108863 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoWebServices" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoWinKeys" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoWindowsUpdate" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "PreventItemCreationInUsersFilesFolder" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "RestrictCpl" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "TurnOffSPIAnimations" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\System") "DisableChangePassword" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\System") "DisableCMD" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\System") "DisableLockWorkstation" 0 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\System") "DisableTaskMgr" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\System") "NoAdminPage" 1 "DWORD"
-			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Uninstall") "NoAddRemovePrograms" 1 "DWORD"
-			#endregion LockDown Store Windows Explorer
-			#region LockDown Store WUPOS and DaVinci IE Settings
-			Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings" "DisableCachingOfSSLPages" 0 "DWORD"
-			#endregion LockDown Store WUPOS and DaVinci IE Settings
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Uninstall") "NoAddRemovePrograms" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "AddSearchInternetLinkInStartMenu" 0 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "DisableContextMenusInStart" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "ForceStartSize" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "HidePeopleBar" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "NoSearchEverywhereLinkInStartMenu" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "NoStartMenuHomegroup" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "NoStartMenuRecordedTV" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "NoStartMenuVideos" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "NoUninstallFromStart" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "DisableNotificationCenter" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "NoPinningStoreToTaskbar" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "NoSystraySystemPromotion" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "ShowWindowsStoreAppsOnTaskbar" 2 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "DisableThumbsDBOnNetworkFolders" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "DisableSearchBoxSuggestions" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "NoSearchInternetTryHarderButton" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "DisableIndexedLibraryExperience" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "NoAutoplayfornonVolume" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "NoUseStoreOpenWith" 1 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "PowerButtonAction" 4 "DWORD"	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "NoBalloonFeatureAdvertisements" 1 "DWORD"	
+			#endregion LockDown Store Windows Explorer	
+			#region Known Folders Windows Explorer
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Windows Explorer Known Folders")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "DisableKnownFolders" 1 "DWORD"	
+			#Cleanup old
+			If ( Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer\DisableKnownFolders")) {
+				Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer\DisableKnownFolders") -Recurse
+			}
+			ForEach ( $item in $DisableKnownFolders) {
+				Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer\DisableKnownFolders") $item $item "String"
+			}			
+			#endregion Known Folders Windows Explorer
+			#region Programs
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Programs")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Programs") "NoDefaultPrograms" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Programs") "NoGetPrograms" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Programs") "NoInstalledUpdates" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Programs") "NoWindowsMarketplace" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Programs") "NoWindowsFeatures" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Programs") "NoProgramsAndFeatures" 1 "DWORD"
+			#endregion Programs
+			#region System
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings System")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\System") "NoDispScrSavPage" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\System") "NoVisualStyleChoice" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\System") "NoColorChoice" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\System") "DisableTaskMgr" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\System") "DisableRegistryTools" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\System") "DisableCMD" 1 "DWORD"
+			#endregion System
+			#region Updates
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Updates")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\WindowsUpdate") "DisableWindowsUpdateAccess" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\WindowsUpdate") "DisableWindowsUpdateAccessMode" 1 "DWORD"
+			#endregion Updates
+			#region Internet Explorer
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Internet Explorer")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Ext") "DisableAddonLoadTimePerformanceNotifications" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Ext") "IgnoreFrameApprovalCheck" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer") "AllowServicePoweredQSA" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer") "DisableImportExportFavorites" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Activities") "NoActivities" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Control Panel") "Autoconfig" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Control Panel") "Certificates" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Control Panel") "Connection Settings" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Control Panel") "Connwiz Admin Lock" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Control Panel") "HomePage" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Control Panel") "Proxy" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Control Panel") "Ratings" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Feed Discovery") "Enabled" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Feeds") "AllowBasicAuthInClear" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Feeds") "BackgroundSyncStatus" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Infodelivery\Restrictions") "NoSearchCustomization" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Infodelivery\Restrictions") "NoBrowserSaveWebComplete" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Infodelivery\Restrictions") "NoScheduledUpdates" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Infodelivery\Restrictions") "NoSubscriptionContent" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\LinksBar") "Enabled" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Main") "DisableFirstRunCustomize" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Main") "Start Page" $HomePage "String"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Main") "NoReportSiteProblems" "yes" "String"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\PhishingFilter") "EnabledV9" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\PhishingFilter") "Enabled" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Privacy") "EnableInPrivateBrowsing" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Restrictions") "NoBrowserOptions" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Restrictions") "NoHelpItemSendFeedback" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Restrictions") "NoHelpItemNetscapeHelp" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Restrictions") "NoHelpItemTipOfTheDay" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Restrictions") "NoHelpItemTutorial" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Restrictions") "NoHelpMenu" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Restrictions") "NoBrowserSaveAs" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Restrictions") "NoViewSource" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Restrictions") "NoSelectDownloadDir" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Safety\PrivacIE") "DisableInPrivateBlocking" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\SearchScopes") "ShowSearchSuggestionsGlobal" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Security") "DisableFixSecuritySettings" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Security") "DisableSecuritySettingsCheck" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Security\ActiveX") "BlockNonAdminActiveXInstall" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\SQM") "DisableCustomerImprovementProgram" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Suggested Sites") "Enabled" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings") "EnableAutoProxyResultCache" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings") "WarnOnBadCertRecving" 1 "DWORD"
+			#endregion Internet Explorer
+			#region Microsoft Edge
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Edge")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\MicrosoftEdge\Main") "FormSuggest Passwords" "no" "String"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\MicrosoftEdge\Main") "PreventFirstRunPage" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\MicrosoftEdge\Main") "SyncFavoritesBetweenIEAndMicrosoftEdge" 1 "DWORD"
+			#endregion Microsoft Edge
+			#region Messenger
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Messenger")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Messenger\Client") "PreventRun" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Messenger\Client") "CEIP" 2 "DWORD"
+			#endregion Messenger
+			#region Google Chrome
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Chrome")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "AdsSettingForIntrusiveAdsSites" 2 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "AllowDinosaurEasterEgg" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "AutofillCreditCardEnabled" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "BookmarkBarEnabled" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "BrowserAddPersonEnabled" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "BrowserGuestModeEnabled" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "BuiltInDnsClientEnabled" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "CloudPrintProxyEnabled" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "CloudPrintSubmitEnabled" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "EnableMediaRouter" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ForceGoogleSafeSearch" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "HomepageLocation" $HomePage "String"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ImportAutofillFormData" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ImportBookmarks" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ImportHistory" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ImportHomepage" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ImportSavedPasswords" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ImportSearchEngine" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "IncognitoModeAvailability" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "MediaRouterCastAllowAllIPs" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "PasswordManagerEnabled" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "PromotionalTabsEnabled" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ProxyMode" "direct" "String"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ReportMachineIDData" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ReportPolicyData" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ReportUserIDData" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ReportVersionData" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "SafeBrowsingEnabled" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "SearchSuggestEnabled" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ShowHomeButton" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "SyncDisabled" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "TranslateEnabled" 0 "DWORD"
+			If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\ExtensionInstallBlacklist")) {
+				Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\ExtensionInstallBlacklist") -Recurse | out-null
+			}
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\ExtensionInstallBlacklist") 1 "*" "String"
+			If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\RestoreOnStartupURLs")) {
+				Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\RestoreOnStartupURLs") -Recurse | out-null
+			}
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\RestoreOnStartupURLs") 1 $HomePage "String"				
+			#endregion Google Chrome
+			#region Assistance
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Assistance")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Assistance\Client\1.0") "NoExplicitFeedback" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Assistance\Client\1.0") "NoImplicitFeedback" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Assistance\Client\1.0") "NoOnlineAssist" 1 "DWORD"
+			#endregion Assistance
+			#region Conferencing
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Conferencing")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Conferencing") "NoChat" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Conferencing") "NoNewWhiteBoard" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Conferencing") "NoOldWhiteBoard" 1 "DWORD"
+			#endregion Conferencing
+			#region Dis-allow following programs to run
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Deny Programs")
+			#Cleanup old
+			If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun")) {
+				Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun") -Recurse | out-null
+			}
+			$i = 1
+			ForEach ( $Exe in $BlackListPrograms) {
+				write-host ("`t`tBlackListing: " + $Exe)
+				Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun") $i $Exe "String"
+				$i++
+			}
+			#endregion Dis-allow following programs to run			
+			#region Cloud Content
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Cloud")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\CloudContent") "DisableWindowsSpotlightOnSettings" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\CloudContent") "DisableWindowsSpotlightWindowsWelcomeExperience" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\CloudContent") "DisableWindowsSpotlightOnActionCenter" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\CloudContent") "DisableThirdPartySuggestions" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\CloudContent") "DisableTailoredExperiencesWithDiagnosticData" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\CloudContent") "DisableWindowsSpotlightFeatures" 1 "DWORD"
+			#endregion Cloud Content
+			#region NetCache
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings NetCache")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\NetCache") "WorkOfflineDisabled" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\NetCache") "NoMakeAvailableOffline" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\NetCache") "NoCacheViewer" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\NetCache") "DisableFRAdminPin" 1 "DWORD"
+			#endregion NetCache
+			#region Network Connections
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Network Connection")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Network Connections") "NC_ChangeBindState" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Network Connections") "NC_AddRemoveComponents" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Network Connections") "NC_LanChangeProperties" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Network Connections") "NC_LanProperties" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Network Connections") "NC_NewConnectionWizard" 0 "DWORD"
+			#endregion Network Connections
+			#region Powershell
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings PowerShell")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\PowerShell") "EnableScripts" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\PowerShell") "ExecutionPolicy" "AllSigned" "String"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging") "EnableScriptBlockLogging" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging") "EnableScriptBlockInvocationLogging" 1 "DWORD"
+			#endregion Powershell
+			#region VMware View
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\VMware, Inc.\VMware VDM\Security") "AcceptTicketSSLAuth" 1 "String"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\VMware, Inc.\VMware VDM\Client\Security") "EnableTicketSSLAuth" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\VMware, Inc.\VMware VDM\Client\Security") "LogInAsCurrentUser" "true" "String"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\VMware, Inc.\VMware VDM\Client\Security") "LogInAsCurrentUser_Display" "true" "String"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\VMware, Inc.\VMware VDM\Client\Security") "SSLCipherList" "All:!NONE:!SSLv3:!TLSv1:!MD5:!RC4:!3DES:!LOW:!EXP:!EXPORT:!DHE+AES-GCM:!DHE+AES:!DES-CBC3-SHA:!ECDHE-RSA-DES-CBC3-SHA:!AES256-SHA256:!AES256-SHA:!AES128-SHA256:!AES128-SHA:!AES256-GCM-SHA384:!AES128-GCM-SHA256:!CAMELLIA256-SHA:!ADH-AES256-GCM-SHA384:!CAMELLIA128-SHA:!ADH-AES128-GCM-SHA256:!DHE-RSA-CAMELLIA128-SHA:!DHE-RSA-CAMELLIA256-SHA" "String"
+			#endregion VMware View
+			#region Other ??
+			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Other Settings")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\MobilityCenter") "NoMobilityCenter" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Network") "NoEntireNetwork" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\NonEnum") "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\NonEnum") "{450D8FBA-AD25-11D0-98A8-0800361B1103}" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\PresentationSettings") "NoPresentationSettings" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\NetworkProjector") "DisableNetworkProjector" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\DataCollection") "AllowTelemetry" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\DriverSearching") "DontSearchFloppies" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\DriverSearching") "DontSearchCD" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\DriverSearching") "DontSearchWindowsUpdate" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\DriverSearching") "DontPromptForWindowsUpdate" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\HandwritingErrorReports") "PreventHandwritingErrorReports" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\RemovableStorageDevices") "Deny_All" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\SideShow") "AutoWakeDisabled" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\SideShow") "Disabled" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\TabletPC") "PreventHandwritingDataSharing" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\WCN\UI") "DisableWcnUi" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Windows Error Reporting") "DontSendAdditionalData" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Windows Error Reporting") "Disabled" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows Mail") "DisableCommunities" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows Mail") "ManualLaunchAllowed" 0 "DWORD"
+			#endregion Other ??
+			
 			#Remove Network
 			# If(Test-Path ($HKEYWE + "\Desktop\NameSpace\{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}")) {
 				# write-host ("`tNetwork from This PC ") -foregroundcolor "gray"
@@ -1112,6 +1483,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			# }	
 			# Set-Reg ($HKEYWE + "\CLSID\{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}\ShellFolder") "Attributes" 1048576 "DWORD"	
 			# Set-Reg ($HKEYWE.replace("\Software\","\Software\Wow6432Node\") + "\CLSID\{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}\ShellFolder") "Attributes" 1048576 "DWORD"	
+			
 		}
 	}else {
 		#region Windows Explorer, Start Menu Continued
@@ -1145,7 +1517,9 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Control Panel") "Autoconfig" 0 "DWORD"
 	#Set SSL Caching WUPOS
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings") "DisableCachingOfSSLPages" 0 "DWORD"
-
+	#region LockDown Store WUPOS and DaVinci IE Settings
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings" "DisableCachingOfSSLPages" 0 "DWORD"
+	#endregion LockDown Store WUPOS and DaVinci IE Settings
 	$HKEYIE = ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Internet Explorer")
 	#Additional Internet Explorer options
 	Set-Reg ($HKEYIE + "\TabbedBrowsing") "PopupsUseNewWindow" 0 "DWORD"
@@ -1176,7 +1550,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	Set-Reg ($HKEYIS.replace("\Software\","\Software\Wow6432Node\") + "\ZoneMap\EscDomains\blank") "about" 2 "DWORD"
 	#Company Set sites 
 	ForEach ( $item in $ZoneMap) {
-		write-host ("t`Adding Site: " + $item.Site + " to zone: " + $item.Protocol + " for protocol" + $item.Protocol)
+		write-host ("`t`tAdding Site: " + $item.Site + " to zone: " + $item.Protocol + " for protocol" + $item.Protocol)
 		Set-Reg ($HKEYIS + "\ZoneMap\Domains\" +  $item.Site) $item.Protocol $item.Zone "DWORD"
 	}
 	#endregion Internet Explorer
@@ -1209,6 +1583,14 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	#Search 
 	write-host ("`tSearch from This PC ...") -foregroundcolor "gray"
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\CurrentVersion\Search") "SearchboxTaskbarMode" 1 "DWORD"
+	#region Remove Chrome Settings
+	If (Test-Path ($UserProfile + "\AppData\Local\Google")) {
+		Remove-Item -Path ($UserProfile + "\AppData\Local\Google") -Recurse -Confirm:$false | out-null
+	}
+	If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Google")) {
+		Remove-Item -Recurse -Confirm:$false -Path ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Google") | out-null
+	}	
+	#endregion Remove Chrome Settings
 	# Unload the default profile hive
 	Write-Host ("`t" + $CurrentProfile + ": Unloading User Registry")
 	[gc]::collect()
@@ -1222,20 +1604,20 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		}
 	}
 	#region Load LGPO User Settings
-	write-host ("`tLoading more setting via LGPO.exe ...") -foregroundcolor "gray"
-	If ($CurrentProfile -ne "Default" -and $Store) {
-		If ([environment]::OSVersion.Version.Major -ge 10) {
-			$RPF = (((((Get-ChildItem -Directory -Path ($LICache + "\Security Templates\" + $LGPOSU) | Select -First 1).GetDirectories()| Where {$_.name -eq "DomainSysvol" }).GetDirectories()| Where {$_.name -eq "GPO" }).GetDirectories()| Where {$_.name -eq "User" }).GetFiles() | Where {$_.name -eq "registry.pol" })
-			If ($RPF.Exists) {
-				$process = Start-Process -FilePath ($LICache + "\LGPO.EXE") -ArgumentList @("/q",('/u:' + $CurrentProfile),('"' + $RPF.FullName + '"')) -PassThru -NoNewWindow -wait
-				If ($process.ExitCode -eq 0 ) {
-					Write-Host ("`t" + $CurrentProfile + ": Applied $LGPOSU GPO")
-				}else {
-					Write-error ("`t" + $CurrentProfile + ": Error Applying $LGPOSU GPO")
-				}
-			}
-		}
-	}
+	# write-host ("`tLoading more setting via LGPO.exe ...") -foregroundcolor "gray"
+	# If ($CurrentProfile -ne "Default" -and $Store) {
+		# If ([environment]::OSVersion.Version.Major -ge 10) {
+			# $RPF = (((((Get-ChildItem -Directory -Path ($LICache + "\Security Templates\" + $LGPOSU) | Select -First 1).GetDirectories()| Where {$_.name -eq "DomainSysvol" }).GetDirectories()| Where {$_.name -eq "GPO" }).GetDirectories()| Where {$_.name -eq "User" }).GetFiles() | Where {$_.name -eq "registry.pol" })
+			# If ($RPF.Exists) {
+				# $process = Start-Process -FilePath ($LICache + "\LGPO.EXE") -ArgumentList @("/q",('/u:' + $CurrentProfile),('"' + $RPF.FullName + '"')) -PassThru -NoNewWindow -wait
+				# If ($process.ExitCode -eq 0 ) {
+					# Write-Host ("`t" + $CurrentProfile + ": Applied $LGPOSU GPO")
+				# }else {
+					# Write-error ("`t" + $CurrentProfile + ": Error Applying $LGPOSU GPO")
+				# }
+			# }
+		# }
+	# }
 	#endregion Load LGPO User Settings
 	#region Replace Favorites
 	If (Test-Path ($LICache + "\Favorites")) {
@@ -1262,7 +1644,7 @@ Write-Host ("-"*[console]::BufferWidth)
 Write-Host ("Ending User Profile Setup. . .")
 Write-Host ("-"*[console]::BufferWidth)
 #============================================================================
-#endregion Main *Default User
+#endregion Main Set User Defaults 
 #============================================================================
 #============================================================================
 #region Main Local Machine
@@ -1352,6 +1734,7 @@ If (-Not $UserOnly) {
 		Set-Reg ($HKLWE + "\HideDesktopIcons\NewStartPanel") "{645FF040-5081-101B-9F08-00AA002F954E}" 1 "DWORD"
 		#Hide Settings
 		# Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" "SettingsPageVisibility" "showonly:printers;defaultapps;display;mousetouchpad;network-ethernet;notifications;usb;windowsupdate" "String"
+		Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" "shutdownwithoutlogon" 0 "DWORD"
 	}else{
 		#This PC
 		Set-Reg ($HKLWE + "\HideDesktopIcons\ClassicStartMenu") "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 0 "DWORD"
@@ -1616,6 +1999,8 @@ If (-Not $UserOnly) {
 	Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" "fDisableCpm" 1 "DWORD"
 	#Do not set default client printer to be default printer in a session
 	Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" "fForceClientLptDef" 1 "DWORD"
+	#Hide Users on login screen
+	Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" "dontdisplaylastusername" 1 "DWORD"
 }
 #============================================================================
 #endregion Main Local Machine Tweaks
@@ -1687,11 +2072,19 @@ If (-Not $UserOnly) {
 	Set-Reg ($HKSCH + "\Protocols\SSL 3.0\Client") "DisabledByDefault" 1 "DWORD"
 	Set-Reg ($HKSCH + "\Protocols\SSL 3.0\Server") "Enabled" 0 "DWORD"
 	Set-Reg ($HKSCH + "\Protocols\SSL 3.0\Server") "DisabledByDefault" 1 "DWORD"
-	Set-Reg ($HKSCH + "\Protocols\TLS 1.0\Client") "Enabled" 0 "DWORD"
+	If ($AllowClientTLS1) {
+		Set-Reg ($HKSCH + "\Protocols\TLS 1.0\Client") "Enabled" 1"DWORD"
+	}else{
+		Set-Reg ($HKSCH + "\Protocols\TLS 1.0\Client") "Enabled" 0 "DWORD"
+	}
 	Set-Reg ($HKSCH + "\Protocols\TLS 1.0\Client") "DisabledByDefault" 1 "DWORD"
 	Set-Reg ($HKSCH + "\Protocols\TLS 1.0\Server") "Enabled" 0 "DWORD"
 	Set-Reg ($HKSCH + "\Protocols\TLS 1.0\Server") "DisabledByDefault" 1 "DWORD"
-	Set-Reg ($HKSCH + "\Protocols\TLS 1.1\Client") "Enabled" 0 "DWORD"
+	If ($AllowClientTLS1) {
+		Set-Reg ($HKSCH + "\Protocols\TLS 1.1\Client") "Enabled" 1 "DWORD"
+	}else{
+		Set-Reg ($HKSCH + "\Protocols\TLS 1.1\Client") "Enabled" 0 "DWORD"
+	}
 	Set-Reg ($HKSCH + "\Protocols\TLS 1.1\Client") "DisabledByDefault" 1 "DWORD"
 	Set-Reg ($HKSCH + "\Protocols\TLS 1.1\Server") "Enabled" 0 "DWORD"
 	Set-Reg ($HKSCH + "\Protocols\TLS 1.1\Server") "DisabledByDefault" 1 "DWORD"
@@ -1709,7 +2102,7 @@ If (-Not $UserOnly) {
 If (-Not $UserOnly) {
 	Write-Host "Setting up User Icons . . . "
 	If (Test-Path ($LICache + "\" + $Custom_User_Account_Pictures_SubFolder)) {
-		copy-item ($LICache + $Custom_User_Account_Pictures_SubFolder + "\*.*") -Destination ($env:programdata + "\Microsoft\User Account Pictures") -force
+		copy-item ($LICache + "\" + $Custom_User_Account_Pictures_SubFolder + "\*.*") -Destination ($env:programdata + "\Microsoft\User Account Pictures") -force
 		Remove-Item ($env:programdata + "\Microsoft\User Account Pictures\*.dat") -force
 	}
 }
@@ -1732,6 +2125,12 @@ If (-Not $UserOnly) {
 	Set-Acl $Folderpath $Acl
 	If (Test-Path ($LICache + "\" + $Custom_Wallpaper_SubFolder + "\" + $BackgroundFolder + "\img0.jpg")) {	
 		copy-item ($LICache + "\" + $Custom_Wallpaper_SubFolder + "\" + $BackgroundFolder + "\img0.jpg") -Destination ($env:windir + "\Web\Wallpaper\Windows\img0.jpg") -force
+	}
+	If (Test-Path ($LICache + "\" + $Custom_Wallpaper_SubFolder + "\" + $BackgroundFolder + "\Backgrounds")) {	
+		If (-Not( Test-Path ($env:windir + "\System32\oobe\info\backgrounds\"))) {
+			New-Item -ItemType directory -Path ($env:windir + "\system32\oobe\info\backgrounds")
+		}
+		copy-item ($LICache + "\" + $Custom_Wallpaper_SubFolder + "\" + $BackgroundFolder + "\Backgrounds\*.*") -Destination ($env:windir + "\System32\oobe\info\backgrounds\") -force
 	}
 	#High Res BG
 	Set-Owner -Path ($env:windir + "\Web\4K\Wallpaper\Windows") -Recurse
@@ -1782,10 +2181,11 @@ If (-Not $UserOnly) {
 	Write-Host "Setting up BGInfo . . . "
 	If (Test-Path ($LICache + "\BgInfo")) {
 		copy-item ($LICache + "\BgInfo") -Destination ($env:programfiles) -Force -Recurse
+		Remove-Item ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp\*BGInfo*.lnk")
 		If ($Store) {
-			copy-item ($env:programfiles + "\BgInfo\" + $BGInfo_StartupLink) ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp")
+			copy-item ($env:programfiles + "\BgInfo\" + $BGInfo_StartupLink_Store) ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp") -Force
 		}else{
-			copy-item ($env:programfiles + "\BgInfo\" + $BGInfo_StartupLink_Store) ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp")
+			copy-item ($env:programfiles + "\BgInfo\" + $BGInfo_StartupLink) ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp") -Force
 		}
 	}
 }
@@ -1798,6 +2198,7 @@ If (-Not $UserOnly) {
 #Custom Software Firewall
 If (-Not $UserOnly) {
 	Write-Host "Setting up Firewall . . . "
+	Remove-NetFirewallRule -Group (split-path $Custom_Software_Path -Leaf )
 	If (Test-Path $Custom_Software_Path) {
 		Write-Host ("Adding " + (split-path $Custom_Software_Path -Leaf ) + " to Firewall...") -foregroundcolor darkgray
 		Get-ChildItem -Path $Custom_Software_Path -Filter *.exe -Recurse| ForEach {
@@ -1805,6 +2206,19 @@ If (-Not $UserOnly) {
 			New-NetFirewallRule -DisplayName $_.Name -Direction Inbound -Program $_.VersionInfo.FileName -Group (split-path $Custom_Software_Path -Leaf ) -Action Allow | out-null
 		}
 	}
+	Write-Host "Disabling un-needed Firewall Rules . . . " -foregroundcolor darkgray
+	Disable-NetFirewallRule -DisplayGroup "AllJoyn Router"
+	Disable-NetFirewallRule -DisplayGroup "Cast to Device functionality"
+	Disable-NetFirewallRule -DisplayGroup "cortana"	
+	Disable-NetFirewallRule -DisplayGroup "Media Center Extenders"
+	Disable-NetFirewallRule -DisplayGroup "Proximity Sharing"
+	Disable-NetFirewallRule -DisplayGroup "Routing and Remote Access"
+	Disable-NetFirewallRule -DisplayGroup "Wi-Fi Direct Network Discovery"
+	Disable-NetFirewallRule -DisplayGroup "Windows Media Player Network Sharing Service"
+	Disable-NetFirewallRule -DisplayGroup "Work or school account"
+	Disable-NetFirewallRule -DisplayGroup "Your account"
+	Disable-NetFirewallRule -DisplayGroup "iSCSI Service"
+	Disable-NetFirewallRule -DisplayGroup "Xbox Game UI"
 }
 #============================================================================
 #endregion Main Local Firewall Setup
@@ -1946,7 +2360,21 @@ If (-Not $UserOnly) {
 #============================================================================
 #endregion Main Local Microsoft Store
 #============================================================================
-
+#============================================================================
+#region Main Local Set OEM Info
+#============================================================================
+$Bios_Info = Get-CimInstance -ClassName Win32_BIOS
+Write-Host "Setup System OEM Info . . ."
+Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Manufacturer" ((Get-CimInstance -ClassName Win32_BIOS).Manufacturer) "String"
+Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Model" ((Get-CimInstance -ClassName Win32_ComputerSystem).model) "String"
+If (-Not (Test-Path ($env:windir + "\system32\oobe\info\"))) {
+	New-Item -ItemType directory -Path ($env:windir + "\system32\oobe\info\")
+}
+Copy-Item  ($LICache + "\" + $Custom_Wallpaper_SubFolder + "\" + $Custom_OEM_Logo) -Destination ($env:windir + "\system32\oobe\info\" + $Custom_OEM_Logo ) -Recurse -Force
+Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Logo" ($env:windir + "\system32\oobe\info\" + $Custom_OEM_Logo ) "String"
+#============================================================================
+#region Main Local Set OEM Info
+#============================================================================
 #============================================================================
 #region Main Local Disable Netbios
 #============================================================================
@@ -1978,7 +2406,9 @@ If (-Not $UserOnly) {
 #============================================================================
 #region Main Local Cleanup
 #============================================================================
-Remove-PSDrive -Name "PSRemote"
+If (Test-Path "PSRemote:\") {
+	Remove-PSDrive -Name "PSRemote"
+}
 
 $sw.Stop()
 Write-Host ("Script took: " + (FormatElapsedTime($sw.Elapsed)) + " to run.")
