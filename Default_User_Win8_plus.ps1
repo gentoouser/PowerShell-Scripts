@@ -54,28 +54,31 @@
 .NOTES
  Author: Paul Fuller
  Changes:
-	* Version 2.0.1 - Added Notes and locked down Powershell and Administrative tools. Also added Option to skip updating local cache.
-	* Version 2.0.2 - Blocking Powershell and MMC from launching.
-	* Version 2.0.3 - Added Setting up of Favorites for users. Fixed order of operations. 
-	* Version 2.0.4 - Added Chrome default settings. Fixed Hiding Network in Windows Explorer to allow UNC browsing. 
-	* Version 2.0.5 - Fixed issue with Favorites
-	* Version 2.0.6 - Moved Custiom settings to variables 
-	* Version 2.0.7 - Fixed PSRemote does not exist. Setup Auto Arrange Icons. Fixed User Account copying issue. Add OEM Info. Hide last Logged in User.
-	* Version 2.0.8 - Getting away from LGPO for Store Users as settings are not kept after sysprep.
-	* Version 2.0.9 - Fixing logic issues with BGInfo. Updated Variables. Updated Chrome Settings. Updated Firewall settings. Updated Logon Background issues.
+	* Version 2.0.01 - Added Notes and locked down Powershell and Administrative tools. Also added Option to skip updating local cache.
+	* Version 2.0.02 - Blocking Powershell and MMC from launching.
+	* Version 2.0.03 - Added Setting up of Favorites for users. Fixed order of operations. 
+	* Version 2.0.04 - Added Chrome default settings. Fixed Hiding Network in Windows Explorer to allow UNC browsing. 
+	* Version 2.0.05 - Fixed issue with Favorites
+	* Version 2.0.06 - Moved Custiom settings to variables 
+	* Version 2.0.07 - Fixed PSRemote does not exist. Setup Auto Arrange Icons. Fixed User Account copying issue. Add OEM Info. Hide last Logged in User.
+	* Version 2.0.08 - Getting away from LGPO for Store Users as settings are not kept after sysprep.
+	* Version 2.0.09 - Fixing logic issues with BGInfo. Updated Variables. Updated Chrome Settings. Updated Firewall settings. Updated Logon Background issues.
+	* Version 2.0.10 - StoreDenyFolderUser files/folders are also hidden. Fixed Issues to Show Control Panel. Testing for Updated NTFS Permissions. Added work around for Logon Screen Cache.
+	* Version 2.0.11 - Setting up Chrome base profile.
+	* Version 2.0.12 - Exclude Default from Store hardening.
 #>
 PARAM (
 	[switch]$LockedDown	  	= $false,
 	[string]$LICache	  	= "C:\IT_Updates",
 	[array]$Profiles  	  	= @("Default"),
 	[switch]$Store	  	  	= $false,
-	[string]$RemoteFiles  	= "",
+	[string]$RemoteFiles  	= "\\server\Hardening_Files",
 	[string]$StartLayoutXML	= "Win10_VDI.xml",
 	[string]$CARoot			= "RootCA.cer",
 	[string]$CAInter		= "InterCA.cer",
 	[string]$CSCert			= "Code Signing.cer",
 	[string]$LGPO			= "Windows10Ent",
-	[string]$LGPOSU			= "",
+	[string]$LGPOSU			= "CompletePolicy",
 	[String]$User		    = $null,
 	[String]$Password	    = $null,
 	[switch]$UserOnly		= $false,
@@ -93,9 +96,10 @@ Break
 }
 #Fix issue for services
 cd \
-$ScriptVersion = "2.0.9"
+$ScriptVersion = "2.0.12"
 #############################################################################
 #############################################################################
+
 #############################################################################
 #region User Variables
 #############################################################################
@@ -107,7 +111,7 @@ $IE_Margin_Top = "0.500000"
 $IE_Margin_Bottom = "0.500000"
 $IE_Margin_Left = "0.166000"
 $IE_Margin_Right = "0.166000"
-$Custom_Software_Path = (${env:ProgramFiles(x86)} + "\Custom")
+$Custom_Software_Path = (${env:ProgramFiles(x86)} + "\app")
 $Custom_Wallpaper_SubFolder = "Wallpapers"
 $Custom_User_Account_Pictures_SubFolder = ($Custom_Wallpaper_SubFolder + "\User Account Pictures")
 $Custom_OEM_Logo = "LOGO_OEM.bmp"
@@ -115,8 +119,8 @@ $NTP_ManualPeerList = "time.nist.gov,0x08 north-america.pool.ntp.org,0x08"
 $NTP_ManualPeerList_Store = $NTP_ManualPeerList
 $BGInfo_StartupLink = "Bginfo Slient Start x64.lnk"
 $BGInfo_StartupLink_Store = "Bginfo Slient Start VDI.lnk"
-$RestrictCPL = "Printer,Mail,Java,Flash,Microsoft.Mouse"
 $SettingsPageVisibility = "showonly:printers;defaultapps;display;mousetouchpad;network-ethernet;notifications;usb"
+$ChromeBaseZip = "Google_Profile_Base.zip"
 #Versions of Adobe Reader to setup for.
 $ARV = ("11.0","2005","DC")
 $UserRange = 1..20
@@ -143,6 +147,15 @@ $StoreDenyFolderUser = @(
 	"\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\System Tools" #System Tools
 )
 #endregion Deny Folder
+#region Show Control Panel Items
+$RestrictCPL = @(
+	"Printer"
+	"Mail"
+	"Java"
+	"Flash"
+	"Microsoft.Mouse"
+)
+#endregion Show Control Panel Items
 #region Blacked List Programs
 $BlackListPrograms = @(
 	"powershell.exe"
@@ -855,16 +868,19 @@ If (-Not $NoCacheUpdate) {
 If (-Not $UserOnly) {
 	write-host ("Hardening Permissions: " + ($env:systemdrive + "\"))
 	$acl = Get-Acl ($env:systemdrive + "\")
-	$usersid = New-Object System.Security.Principal.Ntaccount ("NT AUTHORITY\Authenticated Users")
-	$acl.PurgeAccessRules($usersid)
-	#$acl.Access
-	$acl | Set-Acl ($env:systemdrive + "\")
+	If ($acl.Access | where { $_.IdentityReference -eq "NT AUTHORITY\Authenticated Users" }) {
+		$usersid = New-Object System.Security.Principal.Ntaccount ("NT AUTHORITY\Authenticated Users")
+		$acl.PurgeAccessRules($usersid)
+		$acl | Set-Acl ($env:systemdrive + "\")
+	}
 	If (Test-Path $Custom_Software_Path) {
 		write-host ("Setting Permissions: " + $Custom_Software_Path)
 		$acl = Get-Acl $Custom_Software_Path
-		$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule('Users', "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
-		$Acl.Setaccessrule($Ar)
-		Set-Acl $Custom_Software_Path $Acl
+		If (-Not ($acl.Access | where { $_.IdentityReference -eq "BUILTIN\Users" -and $_.FileSystemRights -eq "FullControl"})) {
+			$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule('Users', "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+			$Acl.Setaccessrule($Ar)
+			Set-Acl $Custom_Software_Path $Acl
+		}
 	}
 }
 #============================================================================
@@ -949,7 +965,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	write-host ("Working with user: " + $CurrentProfile) -foregroundcolor "Magenta"
 	$HKEY = ("HKU\H_" + $CurrentProfile)
 	If (-Not (Test-Path $HKEY)) {
-		If ($CurrentProfile -eq "Default") {
+		If ($CurrentProfile.ToUpper() -eq "DEFAULT") {
 			If (Test-Path ($UsersProfileFolder + "\Default\ntuser.dat")) {
 				#REG LOAD $HKEY ($UsersProfileFolder + "\Default\ntuser.dat")
 				[gc]::collect()
@@ -994,22 +1010,25 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 					continue
 				}
 			}
-			#Add Deny ACL
-			foreach ( $file in $StoreDenyFolder) {
-				If (Test-Path $file) {
-					$Acl = Get-Acl ($file)
-					$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "Read", "Deny")
-					$Acl.Setaccessrule($Ar)
-					Set-Acl ($file) $Acl	
+			If ($Store) {
+				#Add Deny ACL
+				foreach ( $file in $StoreDenyFolder) {
+					If (Test-Path $file) {
+						$Acl = Get-Acl ($file)
+						$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "Read", "Deny")
+						$Acl.Setaccessrule($Ar)
+						Set-Acl ($file) $Acl	
+					}
 				}
-			}
-			#Add Deny ACL User Profile
-			foreach ( $file in $StoreDenyFolderUser) {
-				If (Test-Path ($UserProfile + "\"+ $file)) {
-					$Acl = Get-Acl ($UserProfile + "\"+ $file)
-					$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "Read", "Deny")
-					$Acl.Setaccessrule($Ar)
-					Set-Acl ($UserProfile + "\"+ $file) $Acl	
+				#Add Deny ACL User Profile
+				foreach ( $file in $StoreDenyFolderUser) {
+					If (Test-Path ($UserProfile + "\"+ $file)) {
+						$Acl = Get-Acl ($UserProfile + "\"+ $file)
+						$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "Read", "Deny")
+						$Acl.Setaccessrule($Ar)
+						Set-Acl ($UserProfile + "\"+ $file) $Acl	
+						Get-ChildItem -path ($UserProfile + "\"+ $file) -Recurse -Force | foreach {$_.attributes = "Hidden"}
+					}
 				}
 			}
 		}
@@ -1103,10 +1122,15 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		#1075839525 = Auto arrange icons = ON and Align icons to grid = ON
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\Shell\Bags\1\Desktop") "FFlags" 1075839525 "DWORD"
 		#region Control Panel
-		If (Test-Path($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun")) {
-			Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun") -Recurse
+		If (Test-Path($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\RestrictCpl")) {
+			Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\RestrictCpl") -Recurse
 		}
-		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun") 1 $RestrictCPL "String"
+		$i = 1
+		ForEach ( $item in $RestrictCPL) {
+				Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\RestrictCpl") $i $item "String"
+				$i++
+			}	
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "RestrictCpl" 1 "DWORD"
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "SCRNSAVE.EXE" "scrnsave.scr" "String"
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Performance Control Panel") "PerfCplEnabled" 0 "DWORD"
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Performance Control Panel") "SolutionsEnabled" 0 "DWORD"
@@ -1144,7 +1168,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		Set-Reg ($HKEYWE + "\Advanced") "LaunchTo" 1 "DWORD"	
 		#Hide All Drives Tc
 		#endregion LockDown Start Menu
-		If ($Store) {
+		If (($Store) -and ($CurrentProfile.ToUpper() -ne "DEFAULT" )) {
 			#region LockDown Store Windows Explorer
 			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Windows Explorer")
 			#Prevent Changing Wallpaper
@@ -1223,7 +1247,6 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoWinKeys" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoWindowsUpdate" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "PreventItemCreationInUsersFilesFolder" 1 "DWORD"
-			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "RestrictCpl" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "TurnOffSPIAnimations" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\System") "DisableChangePassword" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\System") "DisableCMD" 1 "DWORD"
@@ -1400,7 +1423,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Conferencing") "NoNewWhiteBoard" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Conferencing") "NoOldWhiteBoard" 1 "DWORD"
 			#endregion Conferencing
-			#region Dis-allow following programs to run
+			#region Deny Programs to run
 			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Deny Programs")
 			#Cleanup old
 			If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun")) {
@@ -1412,7 +1435,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun") $i $Exe "String"
 				$i++
 			}
-			#endregion Dis-allow following programs to run			
+			#endregion Deny Programs to run
 			#region Cloud Content
 			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Cloud")
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\CloudContent") "DisableWindowsSpotlightOnSettings" 1 "DWORD"
@@ -1581,8 +1604,11 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	Write-Host ("`t" + $CurrentProfile + ": Disabling Bing search...")
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\CurrentVersion\Search") "BingSearchEnabled" 0x0
 	#Search 
-	write-host ("`tSearch from This PC ...") -foregroundcolor "gray"
-	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\CurrentVersion\Search") "SearchboxTaskbarMode" 1 "DWORD"
+	write-host ("`t" + $CurrentProfile + ": Search from This PC ...")
+	#0 = Hidden
+	#1 = Show search or Cortana icon
+	#2 = Show search box
+	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\CurrentVersion\Search") "SearchboxTaskbarMode" 0 "DWORD"
 	#region Remove Chrome Settings
 	If (Test-Path ($UserProfile + "\AppData\Local\Google")) {
 		Remove-Item -Path ($UserProfile + "\AppData\Local\Google") -Recurse -Confirm:$false | out-null
@@ -1591,6 +1617,12 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		Remove-Item -Recurse -Confirm:$false -Path ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Google") | out-null
 	}	
 	#endregion Remove Chrome Settings
+	#region Deploy Chrome Base Profile
+	If (Test-Path ($LICache + "\" + $ChromeBaseZip)) {
+		Write-Host ("`t" + $CurrentProfile + ": Setting-up Chrome Base Settings...")
+		Expand-Archive -Path ($LICache + "\" + $ChromeBaseZip) -DestinationPath ($UserProfile + "\AppData\Local") -Force	
+	}
+	#endregion Deploy Chrome Base Profile
 	# Unload the default profile hive
 	Write-Host ("`t" + $CurrentProfile + ": Unloading User Registry")
 	[gc]::collect()
@@ -1880,31 +1912,33 @@ If (-Not $UserOnly) {
 	}else{
 
 	}
-	#Set Default Bookmarks
-	If ((Test-Path ($LICache + "\Bookmarks.html")) -And (Test-Path (${env:ProgramFiles(x86)} + "\Google\Chrome\Application\master_preferences"))) {
-		write-host ("`tSetting up Chrome Bookmarks...") -foregroundcolor "gray"
-		$MPJson = Get-Content -Raw -Path (${env:ProgramFiles(x86)} + "\Google\Chrome\Application\master_preferences") | ConvertFrom-Json
-		Copy-Item  ($LICache + "\Bookmarks.html") -Destination (${env:ProgramFiles(x86)} + "\Google\Chrome\Application\Bookmarks.html") -Force
-		If (Test-Path (${env:ProgramFiles(x86)} + "\Google\Chrome\Application\Bookmarks.html")) {
-			#Import skeleton bookmarks
-			If (-Not $MPJson.distribution.import_bookmarks_from_file) {
-				$MPJson.distribution | Add-Member import_bookmarks_from_file (${env:ProgramFiles(x86)} + "\Google\Chrome\Application\Bookmarks.html")
-			}else{
-				$MPJson.distribution.import_bookmarks_from_file = (${env:ProgramFiles(x86)} + "\Google\Chrome\Application\Bookmarks.html")
-			}
-			#Show Bookmark Bar
-			If (-Not $MPJson.bookmark_bar ) {
-				$MPJson | Add-Member @{"bookmark_bar"=@{"show_on_all_tabs"="true"}}
-			}else{
-				If (-Not $MPJson.bookmark_bar.show_on_all_tabs) {
-					$MPJson.bookmark_bar | Add-Member "show_on_all_tabs" 'true'
-				}else{
-					$MPJson.bookmark_bar.show_on_all_tabs = 'true'
-				}
-			}
-			$MPJson | ConvertTo-Json -Compress | Out-File -filepath (${env:ProgramFiles(x86)} + "\Google\Chrome\Application\master_preferences") -Force
-		}
-	}	
+	#region Chrome Default Bookmarks
+	#Set Default Bookmarks <-- Was not working will revisit later.
+	# If ((Test-Path ($LICache + "\Bookmarks.html")) -And (Test-Path (${env:ProgramFiles(x86)} + "\Google\Chrome\Application\master_preferences"))) {
+		# write-host ("`tSetting up Chrome Bookmarks...") -foregroundcolor "gray"
+		# $MPJson = Get-Content -Raw -Path (${env:ProgramFiles(x86)} + "\Google\Chrome\Application\master_preferences") | ConvertFrom-Json
+		# Copy-Item  ($LICache + "\Bookmarks.html") -Destination (${env:ProgramFiles(x86)} + "\Google\Chrome\Application\Bookmarks.html") -Force
+		# If (Test-Path (${env:ProgramFiles(x86)} + "\Google\Chrome\Application\Bookmarks.html")) {
+			 ##Import skeleton bookmarks
+			# If (-Not $MPJson.distribution.import_bookmarks_from_file) {
+				# $MPJson.distribution | Add-Member import_bookmarks_from_file (${env:ProgramFiles(x86)} + "\Google\Chrome\Application\Bookmarks.html")
+			# }else{
+				# $MPJson.distribution.import_bookmarks_from_file = (${env:ProgramFiles(x86)} + "\Google\Chrome\Application\Bookmarks.html")
+			# }
+			 ##Show Bookmark Bar
+			# If (-Not $MPJson.bookmark_bar ) {
+				# $MPJson | Add-Member @{"bookmark_bar"=@{"show_on_all_tabs"="true"}}
+			# }else{
+				# If (-Not $MPJson.bookmark_bar.show_on_all_tabs) {
+					# $MPJson.bookmark_bar | Add-Member "show_on_all_tabs" 'true'
+				# }else{
+					# $MPJson.bookmark_bar.show_on_all_tabs = 'true'
+				# }
+			# }
+			# $MPJson | ConvertTo-Json -Compress | Out-File -filepath (${env:ProgramFiles(x86)} + "\Google\Chrome\Application\master_preferences") -Force
+		# }
+	# }	
+	#endregion Chrome Default Bookmarks
 }
 #============================================================================
 #endregion Main Local Machine
@@ -2132,6 +2166,39 @@ If (-Not $UserOnly) {
 		}
 		copy-item ($LICache + "\" + $Custom_Wallpaper_SubFolder + "\" + $BackgroundFolder + "\Backgrounds\*.*") -Destination ($env:windir + "\System32\oobe\info\backgrounds\") -force
 	}
+	#region Clear Lock Screen Cache
+	#Add Administrators with full control
+	$user_account='Administrators'
+	$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule($user_account,"FullControl", "None", "None", "Allow")
+	$Folderpath=Get-item ($env:programdata + "\Microsoft\Windows\SystemData")
+	$Acl = Get-Acl $Folderpath.FullName
+	$Acl.Setaccessrule($Ar)
+	Set-Acl $Folderpath.FullName $Acl
+	ForEach ($F1 in (Get-ChildItem $Folderpath)) {
+		#Add Permissions on S-1-5-18
+		$Acl = Get-Acl $F1.FullName
+		$Acl.Setaccessrule($Ar)
+		Set-Acl $F1.FullName $Acl
+		ForEach ($F2 in (Get-ChildItem $F1.FullName)) {
+			#ReadOnly
+			$Acl = Get-Acl $F2.FullName
+			$Acl.Setaccessrule($Ar)
+			Set-Acl $F2.FullName $Acl
+			ForEach ($F3 in (Get-ChildItem $F2.FullName)) {
+				#LockScreen
+				$Acl = Get-Acl $F3.FullName
+				$Acl.Setaccessrule($Ar)
+				Set-Acl $F3.FullName $Acl
+				ForEach ($File in (Get-ChildItem $F3.FullName)) {
+					$Acl = Get-Acl $File.fullname
+					$Acl.Setaccessrule($Ar)
+					Set-Acl $File.fullname $Acl
+					Remove-Item $File.fullname -Force
+				}
+			}	
+		}
+	}
+	#endregion Clear Lock Screen Cache	
 	#High Res BG
 	Set-Owner -Path ($env:windir + "\Web\4K\Wallpaper\Windows") -Recurse
 	#Add Administrators with full control
@@ -2365,8 +2432,8 @@ If (-Not $UserOnly) {
 #============================================================================
 $Bios_Info = Get-CimInstance -ClassName Win32_BIOS
 Write-Host "Setup System OEM Info . . ."
-Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Manufacturer" ((Get-CimInstance -ClassName Win32_BIOS).Manufacturer) "String"
-Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Model" ((Get-CimInstance -ClassName Win32_ComputerSystem).model) "String"
+Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Manufacturer" ((Get-CimInstance -ClassName Win32_ComputerSystem).Manufacturer) "String"
+Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Model" ((Get-CimInstance -ClassName Win32_ComputerSystem).model + " (Serial Number: " + (Get-CimInstance -ClassName Win32_BIOS).SerialNumber + ")") "String"
 If (-Not (Test-Path ($env:windir + "\system32\oobe\info\"))) {
 	New-Item -ItemType directory -Path ($env:windir + "\system32\oobe\info\")
 }
