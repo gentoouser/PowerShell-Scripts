@@ -66,14 +66,15 @@
 	* Version 2.0.10 - StoreDenyFolderUser files/folders are also hidden. Fixed Issues to Show Control Panel. Testing for Updated NTFS Permissions. Added work around for Logon Screen Cache.
 	* Version 2.0.11 - Setting up Chrome base profile.
 	* Version 2.0.12 - Exclude Default from Store hardening.
+	* Version 2.0.13 - Make launch updated script after updating cache. Disable Windows Defender AntiSpyware
 #>
 PARAM (
 	[switch]$LockedDown	  	= $false,
 	[string]$LICache	  	= "C:\IT_Updates",
 	[array]$Profiles  	  	= @("Default"),
 	[switch]$Store	  	  	= $false,
-	[string]$RemoteFiles  	= "\\server\Hardening_Files",
-	[string]$StartLayoutXML	= "Win10_VDI.xml",
+	[string]$RemoteFiles  	= "\\share\Hardening_Files",
+	[string]$StartLayoutXML	= "Win10.xml",
 	[string]$CARoot			= "RootCA.cer",
 	[string]$CAInter		= "InterCA.cer",
 	[string]$CSCert			= "Code Signing.cer",
@@ -96,7 +97,7 @@ Break
 }
 #Fix issue for services
 cd \
-$ScriptVersion = "2.0.12"
+$ScriptVersion = "2.0.13"
 #############################################################################
 #############################################################################
 
@@ -104,7 +105,7 @@ $ScriptVersion = "2.0.12"
 #region User Variables
 #############################################################################
 #region    +++++++ Company Specific Settings +++++++#
-$HomePage = "http://example.com"
+$HomePage = "http://github.com"
 $IE_Header = ""
 $IE_Footer = ""
 $IE_Margin_Top = "0.500000"
@@ -112,7 +113,7 @@ $IE_Margin_Bottom = "0.500000"
 $IE_Margin_Left = "0.166000"
 $IE_Margin_Right = "0.166000"
 $Custom_Software_Path = (${env:ProgramFiles(x86)} + "\app")
-$Custom_Wallpaper_SubFolder = "Wallpapers"
+$Custom_Wallpaper_SubFolder = "PLS Wallpapers"
 $Custom_User_Account_Pictures_SubFolder = ($Custom_Wallpaper_SubFolder + "\User Account Pictures")
 $Custom_OEM_Logo = "LOGO_OEM.bmp"
 $NTP_ManualPeerList = "time.nist.gov,0x08 north-america.pool.ntp.org,0x08"
@@ -363,10 +364,10 @@ $ProfileList =  New-Object System.Collections.ArrayList
 #Start logging.
 If (-Not [string]::IsNullOrEmpty($LogFile)) {
 	If (-Not( Test-Path (Split-Path -Path $LogFile -Parent))) {
-		New-Item -ItemType directory -Path (Split-Path -Path $LogFile -Parent)
+		New-Item -ItemType directory -Path (Split-Path -Path $LogFile -Parent) | Out-Null
 	}
 	try { 
-	Start-Transcript -Path $LogFile -Append
+		Start-Transcript -Path $LogFile -Append
 	} catch { 
 		Stop-transcript
 		Start-Transcript -Path $LogFile -Append
@@ -814,13 +815,11 @@ If (-Not $NoCacheUpdate) {
 	#Setup Local Install Cache
 	If (-Not( Test-Path $LICache)) {
 		write-host ("Creating Local Install cache: " + $LICache)
-		New-Item -ItemType directory -Path $LICache
-		$Folderpath=$LICache
-		$user_account='Users'
-		$Acl = Get-Acl $Folderpath
-		$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule($user_account, "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+		New-Item -ItemType directory -Path $LICache | Out-Null
+		$Acl = Get-Acl $LICache
+		$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule('Users', "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
 		$Acl.Setaccessrule($Ar)
-		Set-Acl $Folderpath $Acl
+		Set-Acl $LICache $Acl
 	}
 	#Map UNC path or local path as PSDrive
 	If (-Not (Test-Path $RemoteFiles -erroraction 'silentlycontinue')) {
@@ -860,7 +859,14 @@ If (-Not $NoCacheUpdate) {
 	#Sync files to local cache
 	If (Test-Path "PSRemote:\") {
 		write-host ("Copying to Local Install cache: " + $LICache)
+		$CurrentScriptUTC = $(Get-Item $MyInvocation.MyCommand.Definition).LastWriteTimeUtc		
 		Copy-Item  "PSRemote:\*" -Destination $LICache -Recurse -Force
+		If ($(Get-Item ($LICache + "\" + $MyInvocation.MyCommand.Name)).LastWriteTimeUtc -gt $CurrentScriptUTC) {
+			write-host ("Starting newer copy of script...")
+			Stop-transcript
+			&$MyInvocation.MyCommand.Definition  $MyInvocation.MyCommand.Parameters 
+			exit
+		}
 	}
 }
 #Harden Permission on the c:\
@@ -916,7 +922,7 @@ If ($Store) {
 				write-host ("Creating User: " +("Window" + $i))
 				New-LocalUser -Name ("Window" + $i).ToLower() -Description "LiveWire Window User" -FullName ("Window" + $i) -Password (ConvertTo-SecureString ("Window" + $i).ToLower() -AsPlainText -Force) -AccountNeverExpires -UserMayNotChangePassword | Out-Null
 				Add-LocalGroupMember -Name 'Administrators' -Member ("Window" + $i) | Out-Null
-				Write-Host "Working on Creating user profile: " ("Window" + $i)
+				Write-Host "`tWorking on Creating user profile: " ("Window" + $i)
 				#launch process as user to create user profile
 				# https://msdn.microsoft.com/en-us/library/system.diagnostics.processstartinfo(v=vs.110).aspx
 				$processStartInfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -934,7 +940,7 @@ If ($Store) {
 				If (Test-Path ($UsersProfileFolder + "\Window" + $i) ) {
 					$ProfileList.Add(("Window" + $i).ToLower()) | Out-Null
 					#Grant Current user rights on new Profiles
-					Write-Host ("Updating ACLs and adding to Profile List:" + ($UsersProfileFolder + "\Window" + $i))
+					Write-Host ("`tUpdating ACLs and adding to Profile List: " + ($UsersProfileFolder + "\Window" + $i))
 					$Folderpath=($UsersProfileFolder + "\Window" + $i)
 					$user_account=$env:username
 					$Acl = Get-Acl $Folderpath
@@ -1573,7 +1579,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	Set-Reg ($HKEYIS.replace("\Software\","\Software\Wow6432Node\") + "\ZoneMap\EscDomains\blank") "about" 2 "DWORD"
 	#Company Set sites 
 	ForEach ( $item in $ZoneMap) {
-		write-host ("`t`tAdding Site: " + $item.Site + " to zone: " + $item.Protocol + " for protocol" + $item.Protocol)
+		write-host ("`t`tAdding Site: " + $item.Site + " to zone: " + $item.Protocol + " for protocol: " + $item.Protocol)
 		Set-Reg ($HKEYIS + "\ZoneMap\Domains\" +  $item.Site) $item.Protocol $item.Zone "DWORD"
 	}
 	#endregion Internet Explorer
@@ -1708,6 +1714,9 @@ If (-Not $UserOnly) {
 
 	Write-Host "Disabling P2P Windows Update download and hosting..."
 	Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" "DownloadMode" 0 "DWORD"
+	
+	Write-Host "Disabling Windows Defender AntiSpyware ..."
+	Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" "DisableAntiSpyware" 1 "DWORD"
 	
 	# WiFi Sense: HotSpot Sharing: Disable
 	If (-Not (Test-Path "HKLM:\Software\Microsoft\PolicyManager\default\WiFi\AllowWiFiHotSpotReporting")) {
@@ -2462,8 +2471,10 @@ If (-Not $UserOnly) {
 #============================================================================
 If (-Not $UserOnly) {
 	If ([environment]::OSVersion.Version.Major -ge 10) {
-		$process = Start-Process -FilePath ($LICache + "\LGPO.EXE") -ArgumentList ('/g "' + $LICache + '\Security Templates\Windows10Ent"') -PassThru -NoNewWindow -Wait
-		Write-Host
+		If ((Test-Path ($LICache + "\LGPO.EXE")) -and (Test-Path ($LICache + '\Security Templates\Windows10Ent'))) {
+			$process = Start-Process -FilePath ($LICache + "\LGPO.EXE") -ArgumentList ('/g "' + $LICache + '\Security Templates\Windows10Ent"') -PassThru -NoNewWindow -Wait
+			Write-Host
+		}
 	}
 }
 
