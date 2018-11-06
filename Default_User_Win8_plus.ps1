@@ -46,10 +46,12 @@
 	Skip updating local cache.
 .PARAMETER AllowClientTLS1
 	Enables Computer to go to TLS 1.0 and TLS 1.1 sites.
+.PARAMETER NoOEMInfo
+	Keeps from reseting the OEM Info.	
 .PARAMETER BackgroundFolder
 	Folder name of where customized default windows backgrounds are.
 .EXAMPLE
-   & Default_User_Win8.1_+.ps1 -Store:$true
+   & Default_User_Win8.1_+.ps1 -Store -Profile @("Default")
 
 .NOTES
  Author: Paul Fuller
@@ -67,14 +69,17 @@
 	* Version 2.0.11 - Setting up Chrome base profile.
 	* Version 2.0.12 - Exclude Default from Store hardening.
 	* Version 2.0.13 - Make launch updated script after updating cache. Disable Windows Defender AntiSpyware
+	* Version 2.0.14 - Fixed Hard Coded Path for LGPO.exe. Update Logic for Store and TLS 1.0 and TLS 1.1. Fixed showing only select Contol Panel items. Added Chrome $ChromeURLBlackList 
+	* Version 2.0.15 - Hiding User Accounts from Logon Screen. Test if users need to be created before changing local policy. Added make sure that SHA is enabled when TLS 1.0 is enabled. Hide VMWare Tools
+	* Version 2.0.16 - FortiClient copy and run RemoveFCTID.exe for System-Prep. Created new fuction to copy only changed files.
 #>
 PARAM (
 	[switch]$LockedDown	  	= $false,
 	[string]$LICache	  	= "C:\IT_Updates",
 	[array]$Profiles  	  	= @("Default"),
 	[switch]$Store	  	  	= $false,
-	[string]$RemoteFiles  	= "\\share\Hardening_Files",
-	[string]$StartLayoutXML	= "Win10.xml",
+	[string]$RemoteFiles  	= "\\server\Hardening_Files",
+	[string]$StartLayoutXML	= "Win10_VDI.xml",
 	[string]$CARoot			= "RootCA.cer",
 	[string]$CAInter		= "InterCA.cer",
 	[string]$CSCert			= "Code Signing.cer",
@@ -85,6 +90,7 @@ PARAM (
 	[switch]$UserOnly		= $false,
 	[switch]$NoCacheUpdate	= $false,
 	[switch]$AllowClientTLS1= $false,
+	[switch]$NoOEMInfo		= $false,
 	[String]$BackgroundFolder = "workstations"
 
 )
@@ -97,7 +103,7 @@ Break
 }
 #Fix issue for services
 cd \
-$ScriptVersion = "2.0.13"
+$ScriptVersion = "2.0.16"
 #############################################################################
 #############################################################################
 
@@ -113,15 +119,17 @@ $IE_Margin_Bottom = "0.500000"
 $IE_Margin_Left = "0.166000"
 $IE_Margin_Right = "0.166000"
 $Custom_Software_Path = (${env:ProgramFiles(x86)} + "\app")
-$Custom_Wallpaper_SubFolder = "PLS Wallpapers"
+$Custom_Wallpaper_SubFolder = "Wallpapers"
 $Custom_User_Account_Pictures_SubFolder = ($Custom_Wallpaper_SubFolder + "\User Account Pictures")
 $Custom_OEM_Logo = "LOGO_OEM.bmp"
+$Custom_Security_Templates = "Security Templates"
 $NTP_ManualPeerList = "time.nist.gov,0x08 north-america.pool.ntp.org,0x08"
 $NTP_ManualPeerList_Store = $NTP_ManualPeerList
 $BGInfo_StartupLink = "Bginfo Slient Start x64.lnk"
 $BGInfo_StartupLink_Store = "Bginfo Slient Start VDI.lnk"
 $SettingsPageVisibility = "showonly:printers;defaultapps;display;mousetouchpad;network-ethernet;notifications;usb"
 $ChromeBaseZip = "Google_Profile_Base.zip"
+$ChromeDelegateWhiteList = "https://*.github.com"
 #Versions of Adobe Reader to setup for.
 $ARV = ("11.0","2005","DC")
 $UserRange = 1..20
@@ -140,21 +148,24 @@ $StoreDenyFolder = @(
 	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\Server Manager.lnk") #Server Manager
 	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\System Tools") #System Tools	
 	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\Accessories\Remote Desktop Connection.lnk") #RDP Client	
-	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\Microsoft .NET Compact Framework 1.0 SP3 Installer.lnk") #.Net
-	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\HP") #HP
 )
 $StoreDenyFolderUser = @(
 	"\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Windows PowerShell" #PowerShell
 	"\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\System Tools" #System Tools
 )
 #endregion Deny Folder
+#region Hide Accounts from Logon screen
+$HideAccounts = @(
+	"Admin"
+	"Administrator"
+	"ASPNET"
+	"Guest"
+)
+#endregion Hide Accounts from Logon screen
 #region Show Control Panel Items
-$RestrictCPL = @(
-	"Printer"
-	"Mail"
-	"Java"
-	"Flash"
-	"Microsoft.Mouse"
+$ShowOnlyCPL = @(
+	"Devices and Printers"
+	"Microsoft.DevicesAndPrinters"
 )
 #endregion Show Control Panel Items
 #region Blacked List Programs
@@ -191,6 +202,11 @@ $DisableKnownFolders = @(
 	"Network"
 )
 #endregion Disable Known Folders
+#region Chrome URL BlackList
+$ChromeURLBlackList = @(
+	"file://*"
+)
+#endregion Chrome URL BlackList
 #endregion +++++++ Company Specific Settings +++++++#
 
 #region Services	
@@ -391,6 +407,7 @@ if ( $User -and $Password) {
 ForEach ($Profile in $Profiles) {
 	If ($Profile) {
 		$ProfileList.Add($Profile)
+		$HideAccounts += $Profile
 	}
 }
 
@@ -800,6 +817,68 @@ function Set-QuickAccess {
 				} 
 		} 
  }
+Function Copy-Newer{
+	 <#
+	.Synopsis
+	  Copy Most Recent File from Source to Destination
+	.DESCRIPTION
+	  Copy Most Recent File from Source to Destination
+
+	.EXAMPLE
+	  Copy-Newer -Source $localDir -Destination $BackupShare -Overwrite
+	.EXAMPLE
+	  Copy-Newer -Source $localDir -Destination $BackupShare -Exclude @("logs") -Overwrite
+	#>
+  Param
+    (
+        [Parameter(Mandatory=$true, ValueFromPipeline=$True, Position=0)][string[]]$Source,
+        [Parameter(Mandatory=$true, ValueFromPipeline=$True, Position=1)][string]$Destination,
+        [Array]$Exclude,
+        [switch]$Overwrite = $False
+    )
+    Begin{
+        write-host "Destination Prefix $destPrefix"
+    }
+    Process{
+		$PSDestination = Get-Item $Destination
+		$PSSource = Get-Item $Source
+		$Files = Get-ChildItem $Source -rec | where { ! $_.PSIsContainer }
+		$i = 1
+        foreach($File in $Files)
+        {
+			#Get Relative path
+			If (($PSSource.FullName) -ne (Split-Path $File.FullName -Parent)) {
+				$RelativeFile = ($File.FullName).Remove(0,($PSSource.FullName).Length -1)			
+			}else{
+				$RelativeFile = ("\" + $File.name)
+			}
+			#See if file exists
+			If ( (Test-Path (($PSDestination.FullName).remove(($PSDestination.FullName).Length -1) + $RelativeFile)) -and $Overwrite) {
+				$PDSFile = Get-Item (($PSDestination.FullName).remove(($PSDestination.FullName).Length -1) + $RelativeFile)
+				If ($PDSFile) {
+					#See if file are different
+					If (($File.LastWriteTimeUtc -gt $PDSFile.LastWriteTimeUtc) -and ($File.Length -ne $PDSFile.Length)) {
+						#See if file is on Exclude list
+						If ($Exclude.GetEnumerator() | where { ($File.FullName).contains($_)}) {
+							Write-Progress -Activity ("Updating local cache: " + $Source) -Status ("Copying " + $i + " of " + $Files.Count) -CurrentOperation ("Skipping: " + $File.name) -PercentComplete (($i/$Files.Count) * 100)
+						}else{
+							Write-Progress -Activity ("Updating local cache: " + $Source) -Status ("Copying " + $i + " of " + $Files.Count) -CurrentOperation ("Copying: " + $File.name) -PercentComplete (($i/$Files.Count) * 100)
+							copy-item -Path $File.FullName -Destination (Split-Path $PDSFile.FullName -Parent) -Force
+						}
+					}else{
+						#Update Progress
+						Write-Progress -Activity ("Updating local cache: " + $Source) -Status ("Copying " + $i + " of " + $Files.Count) -CurrentOperation ("Skipping: " + $File.name) -PercentComplete (($i/$Files.Count) * 100)
+					}
+				}
+			}else{
+				#Update Progress
+				Write-Progress -Activity ("Updating local cache: " + $Source) -Status ("Copying " + $i + " of " + $Files.Count) -CurrentOperation ("Skipping: " + $File.name) -PercentComplete (($i/$Files.Count) * 100)
+			}
+			$i++
+        }
+    }
+    End{}
+}
 #############################################################################
 #endregion Functions
 #############################################################################
@@ -860,7 +939,8 @@ If (-Not $NoCacheUpdate) {
 	If (Test-Path "PSRemote:\") {
 		write-host ("Copying to Local Install cache: " + $LICache)
 		$CurrentScriptUTC = $(Get-Item $MyInvocation.MyCommand.Definition).LastWriteTimeUtc		
-		Copy-Item  "PSRemote:\*" -Destination $LICache -Recurse -Force
+		#Copy-Item  "PSRemote:\*" -Destination $LICache -Recurse -Force
+		Copy-Newer -Source "PSRemote:\" -Destination $LICache -Exclude @("logs") -Overwrite
 		If ($(Get-Item ($LICache + "\" + $MyInvocation.MyCommand.Name)).LastWriteTimeUtc -gt $CurrentScriptUTC) {
 			write-host ("Starting newer copy of script...")
 			Stop-transcript
@@ -896,6 +976,7 @@ If (-Not $UserOnly) {
 If (-Not $UserOnly) {
 	If ([environment]::OSVersion.Version.Major -ge 10) {
 		If (Test-Path ($LICache + "\" + $StartLayoutXML)) {
+			write-host ("Setting Taskbar and Start Menu: " + ($LICache + "\" + $StartLayoutXML))
 			Import-StartLayout -LayoutPath ($LICache + "\" + $StartLayoutXML) -MountPath ($env:systemdrive + "\")
 		}
 	}
@@ -905,54 +986,67 @@ If (-Not $UserOnly) {
 #============================================================================
 #Create Local Store users
 If ($Store) {
-	#Disable Password Requirements for creating new accounts
-	#secedit /export /cfg c:\secpol.cfg
-	Write-Host 'Changing Password Policy to create "Window" users . . .'
-	$process = Start-Process -FilePath ("secedit") -ArgumentList @("/export","/cfg","c:\secpol.cfg") -PassThru -NoNewWindow -wait
-	(gc C:\secpol.cfg).replace("PasswordComplexity = 1", "PasswordComplexity = 0") | Out-File C:\secpol.cfg
-	(gc C:\secpol.cfg).replace("MinimumPasswordAge = 1", "MinimumPasswordAge = 0") | Out-File C:\secpol.cfg
-	(gc C:\secpol.cfg).replace("MinimumPasswordLength = 14", "MinimumPasswordLength = 0") | Out-File C:\secpol.cfg
-	#secedit /configure /db c:\windows\security\local.sdb /cfg c:\secpol.cfg /areas SECURITYPOLICY
-	$process = Start-Process -FilePath ("secedit") -ArgumentList @("/configure","/db","c:\windows\security\local.sdb","/cfg","c:\secpol.cfg","/areas","SECURITYPOLICY") -PassThru -NoNewWindow -wait
-	rm -force c:\secpol.cfg -confirm:$false
-	# net accounts /minpwage:0 /minpwlen:0
+	#Testing if we need to create any accounts
+	Write-Host 'Testing for exsiting "Window" users . . .'
+	$CreateUsers = $False
 	ForEach ( $i in $UserRange) {	
 		If ($i) {
 			If (-Not (Get-LocalUser -Name ("Window" + $i) -erroraction 'silentlycontinue')) {
-				write-host ("Creating User: " +("Window" + $i))
-				New-LocalUser -Name ("Window" + $i).ToLower() -Description "LiveWire Window User" -FullName ("Window" + $i) -Password (ConvertTo-SecureString ("Window" + $i).ToLower() -AsPlainText -Force) -AccountNeverExpires -UserMayNotChangePassword | Out-Null
-				Add-LocalGroupMember -Name 'Administrators' -Member ("Window" + $i) | Out-Null
-				Write-Host "`tWorking on Creating user profile: " ("Window" + $i)
-				#launch process as user to create user profile
-				# https://msdn.microsoft.com/en-us/library/system.diagnostics.processstartinfo(v=vs.110).aspx
-				$processStartInfo = New-Object System.Diagnostics.ProcessStartInfo
-				$processStartInfo.UserName = ("Window" + $i)
-				$processStartInfo.Domain = "."
-				$processStartInfo.Password = (ConvertTo-SecureString ("Window" + $i).ToLower() -AsPlainText -Force)
-				$processStartInfo.FileName = "cmd"
-				$processStartInfo.Arguments = "/C echo . && echo %username% && echo ."
-				$processStartInfo.LoadUserProfile = $true
-				$processStartInfo.UseShellExecute = $false
-				$processStartInfo.RedirectStandardOutput = $false
-				$process = [System.Diagnostics.Process]::Start($processStartInfo)
-				$Process.WaitForExit()   
-				#Add setup user to profiles created to allow registry to be created. 
+				$CreateUsers = $True
+			}else {
 				If (Test-Path ($UsersProfileFolder + "\Window" + $i) ) {
+					Write-Host ("`tAdding to Profile List: " + ($UsersProfileFolder + "\Window" + $i))
 					$ProfileList.Add(("Window" + $i).ToLower()) | Out-Null
-					#Grant Current user rights on new Profiles
-					Write-Host ("`tUpdating ACLs and adding to Profile List: " + ($UsersProfileFolder + "\Window" + $i))
-					$Folderpath=($UsersProfileFolder + "\Window" + $i)
-					$user_account=$env:username
-					$Acl = Get-Acl $Folderpath
-					$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule($user_account, "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
-					$Acl.Setaccessrule($Ar)
-					Set-Acl $Folderpath $Acl	
+					$HideAccounts += ("Window" + $i).ToLower()
 				}
-
-			}else{
-				If (Test-Path ($UsersProfileFolder + "\Window" + $i) ) {
-					Write-Host ("Adding to Profile List:" + ($UsersProfileFolder + "\Window" + $i))
-					$ProfileList.Add(("Window" + $i).ToLower()) | Out-Null
+			}
+		}
+	}
+	#Disable Password Requirements for creating new accounts
+	If ($CreateUsers) {
+		#secedit /export /cfg c:\secpol.cfg
+		Write-Host 'Changing Password Policy to create "Window" users . . .'
+		$process = Start-Process -FilePath ("secedit") -ArgumentList @("/export","/cfg","c:\secpol.cfg") -PassThru -NoNewWindow -wait
+		(gc C:\secpol.cfg).replace("PasswordComplexity = 1", "PasswordComplexity = 0") | Out-File C:\secpol.cfg
+		(gc C:\secpol.cfg).replace("MinimumPasswordAge = 1", "MinimumPasswordAge = 0") | Out-File C:\secpol.cfg
+		(gc C:\secpol.cfg).replace("MinimumPasswordLength = 14", "MinimumPasswordLength = 0") | Out-File C:\secpol.cfg
+		#secedit /configure /db c:\windows\security\local.sdb /cfg c:\secpol.cfg /areas SECURITYPOLICY
+		$process = Start-Process -FilePath ("secedit") -ArgumentList @("/configure","/db","c:\windows\security\local.sdb","/cfg","c:\secpol.cfg","/areas","SECURITYPOLICY") -PassThru -NoNewWindow -wait
+		rm -force c:\secpol.cfg -confirm:$false
+		# net accounts /minpwage:0 /minpwlen:0
+		ForEach ( $i in $UserRange) {	
+			If ($i) {
+				If (-Not (Get-LocalUser -Name ("Window" + $i) -erroraction 'silentlycontinue')) {
+					write-host ("Creating User: " +("Window" + $i))
+					New-LocalUser -Name ("Window" + $i).ToLower() -Description "LiveWire Window User" -FullName ("Window" + $i) -Password (ConvertTo-SecureString ("Window" + $i).ToLower() -AsPlainText -Force) -AccountNeverExpires -UserMayNotChangePassword | Out-Null
+					Add-LocalGroupMember -Name 'Administrators' -Member ("Window" + $i) | Out-Null
+					Write-Host "`tWorking on Creating user profile: " ("Window" + $i)
+					#launch process as user to create user profile
+					# https://msdn.microsoft.com/en-us/library/system.diagnostics.processstartinfo(v=vs.110).aspx
+					$processStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+					$processStartInfo.UserName = ("Window" + $i)
+					$processStartInfo.Domain = "."
+					$processStartInfo.Password = (ConvertTo-SecureString ("Window" + $i).ToLower() -AsPlainText -Force)
+					$processStartInfo.FileName = "cmd"
+					$processStartInfo.Arguments = "/C echo . && echo %username% && echo ."
+					$processStartInfo.LoadUserProfile = $true
+					$processStartInfo.UseShellExecute = $false
+					$processStartInfo.RedirectStandardOutput = $false
+					$process = [System.Diagnostics.Process]::Start($processStartInfo)
+					$Process.WaitForExit()   
+					#Add setup user to profiles created to allow registry to be created. 
+					If (Test-Path ($UsersProfileFolder + "\Window" + $i) ) {
+						$ProfileList.Add(("Window" + $i).ToLower()) | Out-Null
+						$HideAccounts += ("Window" + $i).ToLower()
+						#Grant Current user rights on new Profiles
+						Write-Host ("`tUpdating ACLs and adding to Profile List: " + ($UsersProfileFolder + "\Window" + $i))
+						$Folderpath=($UsersProfileFolder + "\Window" + $i)
+						$user_account=$env:username
+						$Acl = Get-Acl $Folderpath
+						$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule($user_account, "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+						$Acl.Setaccessrule($Ar)
+						Set-Acl $Folderpath $Acl	
+					}
 				}
 			}
 		}
@@ -1132,7 +1226,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\RestrictCpl") -Recurse
 		}
 		$i = 1
-		ForEach ( $item in $RestrictCPL) {
+		ForEach ( $item in $ShowOnlyCPL) {
 				Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\RestrictCpl") $i $item "String"
 				$i++
 			}	
@@ -1376,8 +1470,10 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			#endregion Messenger
 			#region Google Chrome
 			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Chrome")
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "AbusiveExperienceInterventionEnforce" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "AdsSettingForIntrusiveAdsSites" 2 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "AllowDinosaurEasterEgg" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "AuthNegotiateDelegateWhitelist" $ChromeDelegateWhiteList "String"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "AutofillCreditCardEnabled" 0 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "BookmarkBarEnabled" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "BrowserAddPersonEnabled" 0 "DWORD"
@@ -1403,19 +1499,32 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ReportPolicyData" 0 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ReportUserIDData" 0 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ReportVersionData" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "RestoreOnStartup" 4 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "SafeBrowsingEnabled" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "SearchSuggestEnabled" 0 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ShowHomeButton" 1 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "ShowCastIconInToolbar" 0 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "SyncDisabled" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "TranslateEnabled" 0 "DWORD"
+			#Disables all extensions
 			If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\ExtensionInstallBlacklist")) {
 				Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\ExtensionInstallBlacklist") -Recurse | out-null
 			}
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\ExtensionInstallBlacklist") 1 "*" "String"
+			#Sets Startup page
 			If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\RestoreOnStartupURLs")) {
 				Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\RestoreOnStartupURLs") -Recurse | out-null
 			}
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\RestoreOnStartupURLs") 1 $HomePage "String"				
+			#$ChromeURLBlackList Stops local browsing
+			If (Test-Path($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\URLBlacklist")) {
+				Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\URLBlacklist") -Recurse
+			}
+			$i = 1
+			ForEach ( $item in $ChromeURLBlackList) {
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\URLBlacklist") $i $item "String"
+					$i++
+				}			
 			#endregion Google Chrome
 			#region Assistance
 			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Assistance")
@@ -1579,7 +1688,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	Set-Reg ($HKEYIS.replace("\Software\","\Software\Wow6432Node\") + "\ZoneMap\EscDomains\blank") "about" 2 "DWORD"
 	#Company Set sites 
 	ForEach ( $item in $ZoneMap) {
-		write-host ("`t`tAdding Site: " + $item.Site + " to zone: " + $item.Protocol + " for protocol: " + $item.Protocol)
+		write-host ("`t`tAdding Site: " + $item.Site + " to zone: " + $item.Zone + " for protocol: " + $item.Protocol)
 		Set-Reg ($HKEYIS + "\ZoneMap\Domains\" +  $item.Site) $item.Protocol $item.Zone "DWORD"
 	}
 	#endregion Internet Explorer
@@ -1615,6 +1724,10 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	#1 = Show search or Cortana icon
 	#2 = Show search box
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\CurrentVersion\Search") "SearchboxTaskbarMode" 0 "DWORD"
+	#Hide VMWare Tools
+	If (Test-Path ("HKLM:\SOFTWARE\VMware, Inc.\VMware Tools") ) {
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\VMware, Inc.\VMware Tools") "ShowTray" 0 "DWORD"
+	}
 	#region Remove Chrome Settings
 	If (Test-Path ($UserProfile + "\AppData\Local\Google")) {
 		Remove-Item -Path ($UserProfile + "\AppData\Local\Google") -Recurse -Confirm:$false | out-null
@@ -1689,6 +1802,22 @@ Write-Host ("-"*[console]::BufferWidth)
 #============================================================================
 
 If (-Not $UserOnly) {
+	#region Hiding Accounts
+	Write-Host "Hiding accounts from login screen ..."
+	If (-Not (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon")) {
+		New-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" | Out-Null
+	}
+	If (-Not (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts")) {
+		New-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts" | Out-Null
+	}
+	If (-Not (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList")) {
+		New-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" | Out-Null
+	}	
+	ForEach ($Account in $HideAccounts) {
+		Write-Host ("`tHiding: " + $Account) -foregroundcolor "gray"
+		Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" $Account 0 "DWORD"
+	}
+	#endregion Hiding Accounts
 
 	# Cortana as running in Task View.
 	Write-Host "Disabling Cortana..."
@@ -1721,7 +1850,7 @@ If (-Not $UserOnly) {
 	# WiFi Sense: HotSpot Sharing: Disable
 	If (-Not (Test-Path "HKLM:\Software\Microsoft\PolicyManager\default\WiFi\AllowWiFiHotSpotReporting")) {
 		Write-Host "WiFi Sense: HotSpot Sharing: Disable"
-		New-Item -Path HKLM:\Software\Microsoft\PolicyManager\default\WiFi\AllowWiFiHotSpotReporting | Out-Null
+		New-Item -Path "HKLM:\Software\Microsoft\PolicyManager\default\WiFi\AllowWiFiHotSpotReporting" | Out-Null
 	}
 	
 	#Remove OneDrive from This PC
@@ -1759,6 +1888,8 @@ If (-Not $UserOnly) {
 	#Harden lsass Processing|Print
 	# https://windowsforum.com/threads/windows-hardening-guide-securing-the-lsass-process.230793/
 	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" "RunAsPPL" 1 "DWORD"
+	#https://docs.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-R2-and-2012/dn408187(v=ws.11)
+	Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\LSASS.exe" "AuditLevel" 8 "DWORD"
 	
 	write-host ("Setting up Desktop Icons")
 	# Start Menu
@@ -2071,7 +2202,7 @@ If (-Not $UserOnly) {
 #endregion Main Local Machine Certs
 #============================================================================
 #============================================================================
-#region Main Local Schannel for PCI
+#region Main Local Machine Schannel for PCI
 #============================================================================
 If (-Not $UserOnly) {
 	Write-Host "Setting up SSL PCI 2018 Standard. . . "
@@ -2089,7 +2220,12 @@ If (-Not $UserOnly) {
 	Set-Reg ($HKSCH + "\Ciphers\Triple DES 168") "Enabled" 0 "DWORD"
 
 	Set-Reg ($HKSCH + "\Hashes\MD5") "Enabled" 0 "DWORD"
-	Set-Reg ($HKSCH + "\Hashes\SHA") "Enabled" 0 "DWORD"
+	If ($AllowClientTLS1 -or $Store) {
+		Set-Reg ($HKSCH + "\Hashes\SHA") "Enabled" 4294967295 "DWORD"
+		Write-Host "`tKeeping SHA Enabled . . ." -foregroundcolor Darkred
+	}else{
+		Set-Reg ($HKSCH + "\Hashes\SHA") "Enabled" 0 "DWORD"
+	}
 	Set-Reg ($HKSCH + "\Hashes\SHA256") "Enabled" 4294967295 "DWORD"
 	Set-Reg ($HKSCH + "\Hashes\SHA384") "Enabled" 4294967295 "DWORD"
 	Set-Reg ($HKSCH + "\Hashes\SHA512") "Enabled" 4294967295 "DWORD"
@@ -2115,16 +2251,18 @@ If (-Not $UserOnly) {
 	Set-Reg ($HKSCH + "\Protocols\SSL 3.0\Client") "DisabledByDefault" 1 "DWORD"
 	Set-Reg ($HKSCH + "\Protocols\SSL 3.0\Server") "Enabled" 0 "DWORD"
 	Set-Reg ($HKSCH + "\Protocols\SSL 3.0\Server") "DisabledByDefault" 1 "DWORD"
-	If ($AllowClientTLS1) {
-		Set-Reg ($HKSCH + "\Protocols\TLS 1.0\Client") "Enabled" 1"DWORD"
+	If ($AllowClientTLS1 -or $Store) {
+		Set-Reg ($HKSCH + "\Protocols\TLS 1.0\Client") "Enabled" 4294967295 "DWORD"
+		Write-Host "`tKeeping TLS 1.0 Enabled . . ." -foregroundcolor Darkred
 	}else{
 		Set-Reg ($HKSCH + "\Protocols\TLS 1.0\Client") "Enabled" 0 "DWORD"
 	}
 	Set-Reg ($HKSCH + "\Protocols\TLS 1.0\Client") "DisabledByDefault" 1 "DWORD"
 	Set-Reg ($HKSCH + "\Protocols\TLS 1.0\Server") "Enabled" 0 "DWORD"
 	Set-Reg ($HKSCH + "\Protocols\TLS 1.0\Server") "DisabledByDefault" 1 "DWORD"
-	If ($AllowClientTLS1) {
-		Set-Reg ($HKSCH + "\Protocols\TLS 1.1\Client") "Enabled" 1 "DWORD"
+	If ($AllowClientTLS1 -or $Store) {
+		Set-Reg ($HKSCH + "\Protocols\TLS 1.1\Client") "Enabled" 4294967295 "DWORD"
+		Write-Host "`tKeeping TLS 1.1 Enabled . . ." -foregroundcolor Darkred
 	}else{
 		Set-Reg ($HKSCH + "\Protocols\TLS 1.1\Client") "Enabled" 0 "DWORD"
 	}
@@ -2137,10 +2275,10 @@ If (-Not $UserOnly) {
 	Set-Reg ($HKSCH + "\Protocols\TLS 1.2\Server") "DisabledByDefault" 0 "DWORD"
 }
 #============================================================================
-#endregion Main Local Schannel for PCI
+#endregion Main Local Machine Schannel for PCI
 #============================================================================
 #============================================================================
-#region Main Local User Icons
+#region Main Local Machine User Icons
 #============================================================================
 If (-Not $UserOnly) {
 	Write-Host "Setting up User Icons . . . "
@@ -2150,10 +2288,10 @@ If (-Not $UserOnly) {
 	}
 }
 #============================================================================
-#endregion Main Local User Icons
+#endregion Main Local Machine User Icons
 #============================================================================
 #============================================================================
-#region Main Local Background
+#region Main Local Machine Background
 #============================================================================
 If (-Not $UserOnly) {
 	Write-Host "Setting up Background . . . "
@@ -2224,10 +2362,10 @@ If (-Not $UserOnly) {
     }
 }
 #============================================================================
-#endregion Main Local Background
+#endregion Main Local Machine Background
 #============================================================================
 #============================================================================
-#region Main Local Setup Windows Time
+#region Main Local Machine Setup Windows Time
 #============================================================================
 If (-Not $UserOnly) {
 	Write-Host "Setting up Time . . . "
@@ -2248,10 +2386,10 @@ If (-Not $UserOnly) {
 	}
 }
 #============================================================================
-#endregion Main Local Setup Windows Time
+#endregion Main Local Machine Setup Windows Time
 #============================================================================
 #============================================================================
-#region Main Local BGInfo
+#region Main Local Machine BGInfo
 #============================================================================
 If (-Not $UserOnly) {
 	Write-Host "Setting up BGInfo . . . "
@@ -2266,10 +2404,10 @@ If (-Not $UserOnly) {
 	}
 }
 #============================================================================
-#endregion Main Local BGInfo
+#endregion Main Local Machine BGInfo
 #============================================================================
 #============================================================================
-#region Main Local Firewall Setup
+#region Main Local Machine Firewall Setup
 #============================================================================
 #Custom Software Firewall
 If (-Not $UserOnly) {
@@ -2297,25 +2435,25 @@ If (-Not $UserOnly) {
 	Disable-NetFirewallRule -DisplayGroup "Xbox Game UI"
 }
 #============================================================================
-#endregion Main Local Firewall Setup
+#endregion Main Local Machine Firewall Setup
 #============================================================================
 #============================================================================
-#region Main Local Log and Performance Monitoring
-#============================================================================
-
-
-#============================================================================
-#endregion Main Local Log and Performance Monitoring
-#============================================================================
-#============================================================================
-#region Main Local FileShares
+#regionMain Local Machine Log and Performance Monitoring
 #============================================================================
 
+
 #============================================================================
-#endregion Main Local FileShares
+#endregion Main Local Machine Log and Performance Monitoring
 #============================================================================
 #============================================================================
-#region Main Local RDP
+#region Main Local Machine FileShares
+#============================================================================
+
+#============================================================================
+#endregion Main Local Machine FileShares
+#============================================================================
+#============================================================================
+#region Main Local Machine RDP
 #============================================================================
 #RDP
 If (-Not $UserOnly) {
@@ -2324,17 +2462,17 @@ If (-Not $UserOnly) {
 	# Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" "UserAuthentication" 0 "DWORD"
 }
 #============================================================================
-#endregion Main Local RDP
+#endregion Main Local Machine RDP
 #============================================================================
 #============================================================================
-#region Main Local FileShares
+#region Main Local Machine FileShares
 #============================================================================
 
 #============================================================================
-#endregion Main Local FileShares
+#endregion Main Local Machine FileShares
 #============================================================================
 #============================================================================
-#region Main Local Setup Screen Saver
+#region Main Local Machine Setup Screen Saver
 #============================================================================
 If (-Not $UserOnly) {
 	Write-Host "Setup Logon Screen Saver . . ."
@@ -2345,10 +2483,10 @@ If (-Not $UserOnly) {
 }
 
 #============================================================================
-#endregion Main Local Setup Screen Saver
+#endregion Main Local Machine Setup Screen Saver
 #============================================================================
 #============================================================================
-#region Main Local Microsoft Store
+#region Main Local Machine Microsoft Store
 #============================================================================
 #Disable MS Apps
 If (-Not $UserOnly) {
@@ -2434,25 +2572,55 @@ If (-Not $UserOnly) {
 	}
 }
 #============================================================================
-#endregion Main Local Microsoft Store
+#endregion Main Local Machine Microsoft Store
 #============================================================================
 #============================================================================
-#region Main Local Set OEM Info
+#region Main Local Machine Set OEM Info
 #============================================================================
-$Bios_Info = Get-CimInstance -ClassName Win32_BIOS
-Write-Host "Setup System OEM Info . . ."
-Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Manufacturer" ((Get-CimInstance -ClassName Win32_ComputerSystem).Manufacturer) "String"
-Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Model" ((Get-CimInstance -ClassName Win32_ComputerSystem).model + " (Serial Number: " + (Get-CimInstance -ClassName Win32_BIOS).SerialNumber + ")") "String"
-If (-Not (Test-Path ($env:windir + "\system32\oobe\info\"))) {
-	New-Item -ItemType directory -Path ($env:windir + "\system32\oobe\info\")
+if ($NoOEMInfo) {
+	$Bios_Info = Get-CimInstance -ClassName Win32_BIOS
+	Write-Host "Setup System OEM Info . . ."
+	Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Manufacturer" ((Get-CimInstance -ClassName Win32_ComputerSystem).Manufacturer) "String"
+	Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Model" ((Get-CimInstance -ClassName Win32_ComputerSystem).model + " (Serial Number: " + (Get-CimInstance -ClassName Win32_BIOS).SerialNumber + ")") "String"
+	If (-Not (Test-Path ($env:windir + "\system32\oobe\info\"))) {
+		New-Item -ItemType directory -Path ($env:windir + "\system32\oobe\info\")
+	}
+	Copy-Item  ($LICache + "\" + $Custom_Wallpaper_SubFolder + "\" + $Custom_OEM_Logo) -Destination ($env:windir + "\system32\oobe\info\" + $Custom_OEM_Logo ) -Recurse -Force
+	Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Logo" ($env:windir + "\system32\oobe\info\" + $Custom_OEM_Logo ) "String"
 }
-Copy-Item  ($LICache + "\" + $Custom_Wallpaper_SubFolder + "\" + $Custom_OEM_Logo) -Destination ($env:windir + "\system32\oobe\info\" + $Custom_OEM_Logo ) -Recurse -Force
-Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Logo" ($env:windir + "\system32\oobe\info\" + $Custom_OEM_Logo ) "String"
 #============================================================================
-#region Main Local Set OEM Info
+#endregion Main Local Machine Set OEM Info
 #============================================================================
 #============================================================================
-#region Main Local Disable Netbios
+#region Main Local Machine FortiClient
+#============================================================================
+If (Test-Path ($LICache + "\RemoveFCTID.exe")) {
+	#[IntPtr]::Size – Gets the size of this instance.  The value of this property is 4 in a 32-bit process, and 8 in a 64-bit process
+	If ([IntPtr]::Size -eq 4) {
+		If (Test-Path (${env:ProgramFiles(x86)} + "\Fortinet")) {
+			Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination (${env:ProgramFiles(x86)} + "\Fortinet") -Force
+		}else{
+			New-Item -ItemType directory -Path (${env:ProgramFiles(x86)} + "\Fortinet")
+			Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination (${env:ProgramFiles(x86)} + "\Fortinet") -Force
+		}
+		Write-Host "Running FortiClient ID Cleanup . . ."
+		$process = Start-Process -FilePath ('"' + ${env:ProgramFiles(x86)} + '\Fortinet\RemoveFCTID.exe"') -PassThru -NoNewWindow -Wait
+	}else{
+		If (Test-Path ($env:ProgramFiles + "\Fortinet")) {			
+			Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination ($env:ProgramFiles + "\Fortinet") -Force
+		}else{
+			New-Item -ItemType directory -Path ($env:ProgramFiles + "\Fortinet")
+			Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination ($env:ProgramFiles + "\Fortinet") -Force
+		}
+		Write-Host "Running FortiClient ID Cleanup . . ."
+		$process = Start-Process -FilePath ('"' +$env:ProgramFiles + '\Fortinet\RemoveFCTID.exe"') -PassThru -NoNewWindow -Wait
+	}
+}
+#============================================================================
+#endregion Main Local Machine FortiClient
+#============================================================================
+#============================================================================
+#region Main Local Machine Disable Netbios
 #============================================================================
 
 If (-Not $UserOnly) {
@@ -2463,26 +2631,26 @@ If (-Not $UserOnly) {
 	foreach { Set-ItemProperty -Path "$key\$($_.pschildname)" -Name NetbiosOptions -Value 2 -Verbose}
 }
 #============================================================================
-#endregion Main Local Disable Netbios
+#endregion Main Local Machine Disable Netbios
 #============================================================================
 #Disable Cast,WiFi
 #============================================================================
-#region Main Local Load Local GPO
+#region Main Local Machine Load Local GPO
 #============================================================================
 If (-Not $UserOnly) {
 	If ([environment]::OSVersion.Version.Major -ge 10) {
-		If ((Test-Path ($LICache + "\LGPO.EXE")) -and (Test-Path ($LICache + '\Security Templates\Windows10Ent'))) {
-			$process = Start-Process -FilePath ($LICache + "\LGPO.EXE") -ArgumentList ('/g "' + $LICache + '\Security Templates\Windows10Ent"') -PassThru -NoNewWindow -Wait
+		If ((Test-Path ($LICache + "\LGPO.EXE")) -and (Test-Path ($LICache + '\' + $Custom_Security_Templates + '\' + $LGPO ))) {
+			$process = Start-Process -FilePath ($LICache + "\LGPO.EXE") -ArgumentList ('/g "' + ($LICache + '\' + $Custom_Security_Templates + '\' + $LGPO ) + '"') -PassThru -NoNewWindow -Wait
 			Write-Host
 		}
 	}
 }
 
 #============================================================================
-#endregion Main Local Load Local GPO
+#endregion Main Local Machine Load Local GPO
 #============================================================================
 #============================================================================
-#region Main Local Cleanup
+#regionMain Local Machine Cleanup
 #============================================================================
 If (Test-Path "PSRemote:\") {
 	Remove-PSDrive -Name "PSRemote"
@@ -2491,11 +2659,11 @@ If (Test-Path "PSRemote:\") {
 $sw.Stop()
 Write-Host ("Script took: " + (FormatElapsedTime($sw.Elapsed)) + " to run.")
 #============================================================================
-#endregion Main Local Cleanup
+#endregion Main Local Machine Cleanup
 #============================================================================
-#############################################################################
-#endregion Main
-#############################################################################
 If (-Not [string]::IsNullOrEmpty($LogFile)) {
 	Stop-Transcript
 }
+#############################################################################
+#endregion Main
+#############################################################################
