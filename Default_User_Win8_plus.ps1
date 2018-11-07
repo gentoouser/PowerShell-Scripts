@@ -72,6 +72,7 @@
 	* Version 2.0.14 - Fixed Hard Coded Path for LGPO.exe. Update Logic for Store and TLS 1.0 and TLS 1.1. Fixed showing only select Contol Panel items. Added Chrome $ChromeURLBlackList 
 	* Version 2.0.15 - Hiding User Accounts from Logon Screen. Test if users need to be created before changing local policy. Added make sure that SHA is enabled when TLS 1.0 is enabled. Hide VMWare Tools
 	* Version 2.0.16 - FortiClient copy and run RemoveFCTID.exe for System-Prep. Created new fuction to copy only changed files.
+	* Version 2.0.17 - Updated Windows Store Apps White-List. Fixed issue where new files were not copying to Local Cache.
 #>
 PARAM (
 	[switch]$LockedDown	  	= $false,
@@ -103,7 +104,7 @@ Break
 }
 #Fix issue for services
 cd \
-$ScriptVersion = "2.0.16"
+$ScriptVersion = "2.0.17"
 #############################################################################
 #############################################################################
 
@@ -283,73 +284,80 @@ $AutomaticServices = @(
 #region Microsoft Store
 	#Windows 10 Rev. 1803 WhiteList
 	#APSS to Keep:
-	$Keep =  "1527c705-839a-4832-9118-54d4Bd6a0c89",
-	"c5e2524a-ea46-4f67-841f-6a9465d9d515",
-	"E2A4F912-2574-4A75-9BB0-0D023378592B",
-	"F46D4000-FD22-4DB4-AC8E-4E1DDDE828FE",
-	"InputApp",
-	"Microsoft.AAD.BrokerPlugin",
-	"Microsoft.AccountsControl",
-	"Microsoft.Appconnector",
-	"Microsoft.AsyncTextService",
-	"Microsoft.BingWeather", 
-	"Microsoft.BioEnrollment",
-	"Microsoft.CredDialogHost",
-	"Microsoft.ECApp",
-	"Microsoft.LockApp",
-	"Microsoft.MSPaint",
-	"Microsoft.MicrosoftEdge",
-	"Microsoft.MicrosoftEdgeDevToolsClient",
-	"Microsoft.MicrosoftStickyNotes", 
-	"Microsoft.NET.Native.Framework.1.6",
-	"Microsoft.NET.Native.Framework.1.7",
-	"Microsoft.NET.Native.Framework.2.1",
-	"Microsoft.NET.Native.Runtime.1.6",
-	"Microsoft.NET.Native.Runtime.1.7",
-	"Microsoft.NET.Native.Runtime.2.1",
-	"Microsoft.Office.OneNote",
-	"Microsoft.PPIProjection",
-	"Microsoft.People",
-	"Microsoft.Services.Store.Engagement",
-	"Microsoft.SkypeApp",
-	"Microsoft.StorePurchaseApp",
-	"Microsoft.VCLibs.140.00",
-	"Microsoft.VCLibs.140.00.UWPDesktop",
-	"Microsoft.Wallet",
-	"Microsoft.Win32WebViewHost",
-	"Microsoft.Windows.Apprep.ChxApp",
-	"Microsoft.Windows.AssignedAccessLockApp",
-	"Microsoft.Windows.CapturePicker",
-	"Microsoft.Windows.CloudExperienceHost",
-	"Microsoft.Windows.ContentDeliveryManager",
-	"Microsoft.Windows.Cortana",
-	"Microsoft.Windows.HolographicFirstRun",
-	"Microsoft.Windows.OOBENetworkCaptivePortal",
-	"Microsoft.Windows.OOBENetworkConnectionFlow",
-	"Microsoft.Windows.ParentalControls",
-	"Microsoft.Windows.PeopleExperienceHost",
-	"Microsoft.Windows.Photos",
-	"Microsoft.Windows.PinningConfirmationDialog",
-	"Microsoft.Windows.SecHealthUI",
-	"Microsoft.Windows.SecondaryTileExperience",
-	"Microsoft.Windows.SecureAssessmentBrowser",
-	"Microsoft.Windows.ShellExperienceHost",
-	"Microsoft.WindowsAlarms",
-	"Microsoft.WindowsCalculator",
-	"Microsoft.WindowsCamera",
-	"Microsoft.WindowsFeedbackHub",
-	"Microsoft.WindowsMaps",
-	"Microsoft.WindowsStore",
-	"Microsoft.Xbox.TCUI",
-	"Microsoft.XboxApp",
-	"Microsoft.XboxGameCallableUI",
-	"Microsoft.XboxIdentityProvider",
-	"Windows.CBSPreview",
-	"Windows.MiracastView",
-	"Windows.PrintDialog",
-	"windows.immersivecontrolpanel",
-	"Microsoft.Advertising",
+	$Keep =  @(
+	"1527c705-839a-4832-9118-54d4Bd6a0c89"
+	"E2A4F912-2574-4A75-9BB0-0D023378592B"
+	"F46D4000-FD22-4DB4-AC8E-4E1DDDE828FE"
+	"InputApp"
+	"Microsoft.AAD.BrokerPlugin"
+	"Microsoft.AccountsControl"
+	"Microsoft.Advertising"
 	"Microsoft.Advertising.Xaml"
+	"Microsoft.Appconnector"
+	"Microsoft.AsyncTextService"
+	"Microsoft.BingWeather" 
+	"Microsoft.BioEnrollment"
+	"Microsoft.CredDialogHost"
+	"Microsoft.DesktopAppInstaller"
+	"Microsoft.ECApp"
+	"Microsoft.LockApp"
+	"Microsoft.MSPaint"
+	"Microsoft.MicrosoftEdge"
+	"Microsoft.MicrosoftEdgeDevToolsClient"
+	"Microsoft.MicrosoftStickyNotes" 
+	"Microsoft.NET.Native.Framework.1.3"
+	"Microsoft.NET.Native.Framework.1.6"
+	"Microsoft.NET.Native.Framework.1.7"
+	"Microsoft.NET.Native.Framework.2.1"
+	"Microsoft.NET.Native.Runtime.1.3"
+	"Microsoft.NET.Native.Runtime.1.4"
+	"Microsoft.NET.Native.Runtime.1.6"
+	"Microsoft.NET.Native.Runtime.1.7"
+	"Microsoft.NET.Native.Runtime.2.1"
+	"Microsoft.Office.OneNote"
+	"Microsoft.PPIProjection"
+	"Microsoft.People"
+	"Microsoft.Services.Store.Engagement"
+	"Microsoft.SkypeApp"
+	"Microsoft.StorePurchaseApp"
+	"Microsoft.VCLibs.120.00"
+	"Microsoft.VCLibs.140.00"
+	"Microsoft.VCLibs.140.00.UWPDesktop"
+	"Microsoft.Wallet"
+	"Microsoft.Win32WebViewHost"
+	"Microsoft.Windows.Apprep.ChxApp"
+	"Microsoft.Windows.AssignedAccessLockApp"
+	"Microsoft.Windows.CapturePicker"
+	"Microsoft.Windows.CloudExperienceHost"
+	"Microsoft.Windows.ContentDeliveryManager"
+	"Microsoft.Windows.Cortana"
+	"Microsoft.Windows.HolographicFirstRun"
+	"Microsoft.Windows.OOBENetworkCaptivePortal"
+	"Microsoft.Windows.OOBENetworkConnectionFlow"
+	"Microsoft.Windows.ParentalControls"
+	"Microsoft.Windows.PeopleExperienceHost"
+	"Microsoft.Windows.Photos"
+	"Microsoft.Windows.PinningConfirmationDialog"
+	"Microsoft.Windows.SecHealthUI"
+	"Microsoft.Windows.SecondaryTileExperience"
+	"Microsoft.Windows.SecureAssessmentBrowser"
+	"Microsoft.Windows.ShellExperienceHost"
+	"Microsoft.WindowsAlarms"
+	"Microsoft.WindowsCalculator"
+	"Microsoft.WindowsCamera"
+	"Microsoft.WindowsFeedbackHub"
+	"Microsoft.WindowsMaps"
+	"Microsoft.WindowsStore"
+	"Microsoft.Xbox.TCUI"
+	"Microsoft.XboxApp"
+	"Microsoft.XboxGameCallableUI"
+	"Microsoft.XboxIdentityProvider"
+	"Windows.CBSPreview"
+	"Windows.MiracastView"
+	"Windows.PrintDialog"
+	"c5e2524a-ea46-4f67-841f-6a9465d9d515"
+	"windows.immersivecontrolpanel"
+	)
 #endregion Microsoft Store
 
 $LogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + `
@@ -852,6 +860,7 @@ Function Copy-Newer{
 			}else{
 				$RelativeFile = ("\" + $File.name)
 			}
+			
 			#See if file exists
 			If ( (Test-Path (($PSDestination.FullName).remove(($PSDestination.FullName).Length -1) + $RelativeFile)) -and $Overwrite) {
 				$PDSFile = Get-Item (($PSDestination.FullName).remove(($PSDestination.FullName).Length -1) + $RelativeFile)
@@ -866,13 +875,18 @@ Function Copy-Newer{
 							copy-item -Path $File.FullName -Destination (Split-Path $PDSFile.FullName -Parent) -Force
 						}
 					}else{
-						#Update Progress
+						#File is the same. Update Progress
 						Write-Progress -Activity ("Updating local cache: " + $Source) -Status ("Copying " + $i + " of " + $Files.Count) -CurrentOperation ("Skipping: " + $File.name) -PercentComplete (($i/$Files.Count) * 100)
 					}
 				}
 			}else{
-				#Update Progress
-				Write-Progress -Activity ("Updating local cache: " + $Source) -Status ("Copying " + $i + " of " + $Files.Count) -CurrentOperation ("Skipping: " + $File.name) -PercentComplete (($i/$Files.Count) * 100)
+				#See if file is on Exclude list
+				If ($Exclude.GetEnumerator() | where { ($File.FullName).contains($_)}) {
+					Write-Progress -Activity ("Updating local cache: " + $Source) -Status ("Copying " + $i + " of " + $Files.Count) -CurrentOperation ("Skipping: " + $File.name) -PercentComplete (($i/$Files.Count) * 100)
+				}else{
+					Write-Progress -Activity ("Updating local cache: " + $Source) -Status ("Copying " + $i + " of " + $Files.Count) -CurrentOperation ("Copying: " + $File.name) -PercentComplete (($i/$Files.Count) * 100)
+					copy-item -Path $File.FullName -Destination (Split-Path (($PSDestination.FullName).remove(($PSDestination.FullName).Length -1) + $RelativeFile) -Parent) -Force
+				}
 			}
 			$i++
         }
