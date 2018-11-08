@@ -73,19 +73,20 @@
 	* Version 2.0.15 - Hiding User Accounts from Logon Screen. Test if users need to be created before changing local policy. Added make sure that SHA is enabled when TLS 1.0 is enabled. Hide VMWare Tools
 	* Version 2.0.16 - FortiClient copy and run RemoveFCTID.exe for System-Prep. Created new fuction to copy only changed files.
 	* Version 2.0.17 - Updated Windows Store Apps White-List. Fixed issue where new files were not copying to Local Cache.
+	* Version 2.0.18 - Found how to use RoboCopy for Local Cache update.
 #>
 PARAM (
 	[switch]$LockedDown	  	= $false,
 	[string]$LICache	  	= "C:\IT_Updates",
 	[array]$Profiles  	  	= @("Default"),
 	[switch]$Store	  	  	= $false,
-	[string]$RemoteFiles  	= "\\server\Hardening_Files",
+	[string]$RemoteFiles  	= "\\server\\Hardening_Files",
 	[string]$StartLayoutXML	= "Win10_VDI.xml",
 	[string]$CARoot			= "RootCA.cer",
 	[string]$CAInter		= "InterCA.cer",
 	[string]$CSCert			= "Code Signing.cer",
 	[string]$LGPO			= "Windows10Ent",
-	[string]$LGPOSU			= "CompletePolicy",
+	[string]$LGPOSU			= "v2CompletePolicy",
 	[String]$User		    = $null,
 	[String]$Password	    = $null,
 	[switch]$UserOnly		= $false,
@@ -104,7 +105,7 @@ Break
 }
 #Fix issue for services
 cd \
-$ScriptVersion = "2.0.17"
+$ScriptVersion = "2.0.18"
 #############################################################################
 #############################################################################
 
@@ -143,12 +144,25 @@ $ZoneMap = @(
     New-Object PSObject -Property @{Site = "microsoft.com\download"; Protocol = "https"; Zone = 2}
 )
 #endregion IE Domain Settings
+#region RoboCopy Options
+$LICRoboCopyOptions = @(
+	"/E"
+	"/R:3"
+	"/W:3"
+	"/NDL"
+	"/NFL"
+	"/NJH"
+	"/XD Logs"
+)
+#endregion RoboCopy Options
 #region Deny Folder
 $StoreDenyFolder = @(
 	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\Administrative Tools") #Administrative Tools
 	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\Server Manager.lnk") #Server Manager
 	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\System Tools") #System Tools	
 	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\Accessories\Remote Desktop Connection.lnk") #RDP Client	
+	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\Microsoft .NET Compact Framework 1.0 SP3 Installer.lnk") #.Net
+	($env:programdata + "\Microsoft\Windows\Start Menu\Programs\HP") #HP
 )
 $StoreDenyFolderUser = @(
 	"\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Windows PowerShell" #PowerShell
@@ -160,6 +174,7 @@ $HideAccounts = @(
 	"Admin"
 	"Administrator"
 	"ASPNET"
+	"plsadmin"
 	"Guest"
 )
 #endregion Hide Accounts from Logon screen
@@ -206,6 +221,9 @@ $DisableKnownFolders = @(
 #region Chrome URL BlackList
 $ChromeURLBlackList = @(
 	"file://*"
+	"chrome://settings/clearBrowserData"
+	"chrome://settings/clearBrowserData-frame"
+	"chrome://extensions"
 )
 #endregion Chrome URL BlackList
 #endregion +++++++ Company Specific Settings +++++++#
@@ -825,74 +843,6 @@ function Set-QuickAccess {
 				} 
 		} 
  }
-Function Copy-Newer{
-	 <#
-	.Synopsis
-	  Copy Most Recent File from Source to Destination
-	.DESCRIPTION
-	  Copy Most Recent File from Source to Destination
-
-	.EXAMPLE
-	  Copy-Newer -Source $localDir -Destination $BackupShare -Overwrite
-	.EXAMPLE
-	  Copy-Newer -Source $localDir -Destination $BackupShare -Exclude @("logs") -Overwrite
-	#>
-  Param
-    (
-        [Parameter(Mandatory=$true, ValueFromPipeline=$True, Position=0)][string[]]$Source,
-        [Parameter(Mandatory=$true, ValueFromPipeline=$True, Position=1)][string]$Destination,
-        [Array]$Exclude,
-        [switch]$Overwrite = $False
-    )
-    Begin{
-        write-host "Destination Prefix $destPrefix"
-    }
-    Process{
-		$PSDestination = Get-Item $Destination
-		$PSSource = Get-Item $Source
-		$Files = Get-ChildItem $Source -rec | where { ! $_.PSIsContainer }
-		$i = 1
-        foreach($File in $Files)
-        {
-			#Get Relative path
-			If (($PSSource.FullName) -ne (Split-Path $File.FullName -Parent)) {
-				$RelativeFile = ($File.FullName).Remove(0,($PSSource.FullName).Length -1)			
-			}else{
-				$RelativeFile = ("\" + $File.name)
-			}
-			
-			#See if file exists
-			If ( (Test-Path (($PSDestination.FullName).remove(($PSDestination.FullName).Length -1) + $RelativeFile)) -and $Overwrite) {
-				$PDSFile = Get-Item (($PSDestination.FullName).remove(($PSDestination.FullName).Length -1) + $RelativeFile)
-				If ($PDSFile) {
-					#See if file are different
-					If (($File.LastWriteTimeUtc -gt $PDSFile.LastWriteTimeUtc) -and ($File.Length -ne $PDSFile.Length)) {
-						#See if file is on Exclude list
-						If ($Exclude.GetEnumerator() | where { ($File.FullName).contains($_)}) {
-							Write-Progress -Activity ("Updating local cache: " + $Source) -Status ("Copying " + $i + " of " + $Files.Count) -CurrentOperation ("Skipping: " + $File.name) -PercentComplete (($i/$Files.Count) * 100)
-						}else{
-							Write-Progress -Activity ("Updating local cache: " + $Source) -Status ("Copying " + $i + " of " + $Files.Count) -CurrentOperation ("Copying: " + $File.name) -PercentComplete (($i/$Files.Count) * 100)
-							copy-item -Path $File.FullName -Destination (Split-Path $PDSFile.FullName -Parent) -Force
-						}
-					}else{
-						#File is the same. Update Progress
-						Write-Progress -Activity ("Updating local cache: " + $Source) -Status ("Copying " + $i + " of " + $Files.Count) -CurrentOperation ("Skipping: " + $File.name) -PercentComplete (($i/$Files.Count) * 100)
-					}
-				}
-			}else{
-				#See if file is on Exclude list
-				If ($Exclude.GetEnumerator() | where { ($File.FullName).contains($_)}) {
-					Write-Progress -Activity ("Updating local cache: " + $Source) -Status ("Copying " + $i + " of " + $Files.Count) -CurrentOperation ("Skipping: " + $File.name) -PercentComplete (($i/$Files.Count) * 100)
-				}else{
-					Write-Progress -Activity ("Updating local cache: " + $Source) -Status ("Copying " + $i + " of " + $Files.Count) -CurrentOperation ("Copying: " + $File.name) -PercentComplete (($i/$Files.Count) * 100)
-					copy-item -Path $File.FullName -Destination (Split-Path (($PSDestination.FullName).remove(($PSDestination.FullName).Length -1) + $RelativeFile) -Parent) -Force
-				}
-			}
-			$i++
-        }
-    }
-    End{}
-}
 #############################################################################
 #endregion Functions
 #############################################################################
@@ -954,11 +904,16 @@ If (-Not $NoCacheUpdate) {
 		write-host ("Copying to Local Install cache: " + $LICache)
 		$CurrentScriptUTC = $(Get-Item $MyInvocation.MyCommand.Definition).LastWriteTimeUtc		
 		#Copy-Item  "PSRemote:\*" -Destination $LICache -Recurse -Force
-		Copy-Newer -Source "PSRemote:\" -Destination $LICache -Exclude @("logs") -Overwrite
+		#Copy-Newer -Source "PSRemote:\" -Destination $LICache -Exclude @("logs") -Overwrite
+		$temp = @((Get-Item "PSRemote:\").FullName,$LICache)
+		$temp += $LICRoboCopyOptions
+		$process = Start-Process -FilePath ("robocopy.exe") -ArgumentList $temp -PassThru -NoNewWindow -wait
+
 		If ($(Get-Item ($LICache + "\" + $MyInvocation.MyCommand.Name)).LastWriteTimeUtc -gt $CurrentScriptUTC) {
-			write-host ("Starting newer copy of script...")
+			#write-host ("Starting newer copy of script...")
 			Stop-transcript
-			&$MyInvocation.MyCommand.Definition  $MyInvocation.MyCommand.Parameters 
+			#Need to fix getting the correct parameters sent to the new script instance
+			#$&$MyInvocation.MyCommand.Definition  $MyInvocation.MyCommand.Parameters 
 			exit
 		}
 	}
