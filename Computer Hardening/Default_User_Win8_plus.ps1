@@ -73,7 +73,10 @@
 	* Version 2.1.02 - Fixed issues with Default chrome profile. Fixed issues with automatic services. Added Switch to ignore NoBgInfo. 
 	* Version 2.1.03 - .Net Settings for TLS 1.2. Log path update. Update Setting to allow MS to update other products too. Added Windows version checking.
 	* Version 2.1.04 - Fix Issue with RemoveFCTID.exe being in wrong place. Added more insanity checks. 
-	* Version 2.1.05 - Stopped removing "Microsoft.Windows.Cortana" and "Microsoft.Windows.ShellExperienceHost" due to Start Menu Breaking. Updated WallpaperStyle. Change it so Remote files are where the script is launched from.
+	* Version 2.1.05 - Stopped removing "Microsoft.Windows.Cortana" and "Microsoft.Windows.ShellExperienceHost" due to Start Menu Breaking. Updated WallpaperStyle. Change it so Remote files are where the script is launched from. Disable more visual effects.
+	* Version 2.1.06 - More Tweaks and test to see of we are running in VM.
+	* Version 2.1.07 - Added ablity to change registry permissions. Fix bug with BGInfo Shortcut. Added $ScriptDateValue to know when the script was ran. Create Shortcut on Desktop for FortiClient ID Remover
+	
 #>
 PARAM (
 	[array]$Profiles  	  		= @("Default"),	
@@ -103,7 +106,7 @@ Break
 }
 #Fix issue for services
 cd \
-$ScriptVersion = "2.1.05"
+$ScriptVersion = "2.1.07"
 #############################################################################
 #############################################################################
 
@@ -118,31 +121,47 @@ $IE_Margin_Top = "0.500000"
 $IE_Margin_Bottom = "0.500000"
 $IE_Margin_Left = "0.166000"
 $IE_Margin_Right = "0.166000"
-$Custom_Software_Path = (${env:ProgramFiles(x86)} + "\github")
+$Custom_Software_Path = (${env:ProgramFiles(x86)} + "\app")
 $Custom_Wallpaper_SubFolder = "Wallpapers"
 $Custom_User_Account_Pictures_SubFolder = ($Custom_Wallpaper_SubFolder + "\User Account Pictures")
 $Custom_OEM_Logo = "LOGO_OEM.bmp"
-$Custom_Security_Templates = "Security Templates"
 $NTP_ManualPeerList = "time.nist.gov,0x08 north-america.pool.ntp.org,0x08"
 $NTP_ManualPeerList_Store = $NTP_ManualPeerList
 $BGInfo_StartupLink = "Bginfo Slient Start x64.lnk"
 $BGInfo_StartupLink_Store = "Bginfo Slient Start VDI.lnk"
 $SettingsPageVisibility = "showonly:printers;defaultapps;display;mousetouchpad;network-ethernet;notifications;usb"
 $ChromeBaseZip = "Google_Profile_Base.zip"
-$ChromeDelegateWhiteList = "https://*.github.com"
-$ScriptVersionKey = "github" 
+$ChromeDelegateWhiteList = "https://*.GitHub.com"
+$ScriptVersionKey = "GitHub" 
 $ScriptVersionValue = "Security Hardening Version"
+$ScriptDateValue = "Security Hardening Date"
 #Versions of Adobe Reader to setup for.
 $ARV = ("11.0","2005","DC")
 $UserRange = 1..20
 #region IE Domain Settings
+#https://support.microsoft.com/en-us/help/182569/internet-explorer-security-zones-registry-entries-for-advanced-users
+# Value    Setting
+# ------------------------------
+# 0        My Computer
+# 1        Local Intranet Zone
+# 2        Trusted sites Zone
+# 3        Internet Zone
+# 4        Restricted Sites Zone
 $ZoneMap = @(
+    New-Object PSObject -Property @{Site = "patchmypc.net";  Protocol = "https"; Zone = 2}
     New-Object PSObject -Property @{Site = "microsoft.com"; Protocol = "https"; Zone = 2}
     New-Object PSObject -Property @{Site = "microsoft.com"; Protocol = "http"; Zone = 2}
     New-Object PSObject -Property @{Site = "microsoft.com\download"; Protocol = "http"; Zone = 2}
     New-Object PSObject -Property @{Site = "microsoft.com\download"; Protocol = "https"; Zone = 2}
 )
 #endregion IE Domain Settings
+#region Registry Permissions
+# Options:
+#	FullControl, ReadKey, SetValue, CreateSubKey, Delete
+$RegPerms = @(
+	New-Object PSObject -Property @{Hive = "HKEY_LOCAL_MACHINE"; Key = "SOFTWARE\WOW6432Node\app";  User = "Users"; Perm = "FullControl"; Action = "Allow"}
+)
+#endregion Registry Permissions
 #region RoboCopy Options
 $LICRoboCopyOptions = @(
 	"/E"
@@ -264,12 +283,16 @@ $ChromeURLBlackList = @(
 $DisableServices = @(
 	"AdobeARMservice"							# Adobe Acrobat Update Service
 	"AJRouter"									# AllJoyn Router Service
+	"ALG"										# Application Layer Gateway Service
 	"Browser"									# Computer Browser
+	#"DeviceAssociationService"					#Device Association Service	#### Causes Log-on Delays
 	"diagnosticshub.standardcollector.service"  # Microsoft (R) Diagnostics Hub Standard Collector Service
 	"diagsvc"									# Diagnostic Execution Service
 	"DiagTrack"                              	# Diagnostics Tracking Service
 	#"dmwappushservice"                       	# WAP Push Message Routing Service (see known issues) ####Breaks SysPrep
 	"DPS"										# Diagnostic Policy Service
+	"FAX"										# Fax Service
+	"FDResPub"									# Function Discovery Resource Publication Service
 	#"HomeGroupListener"                      	# HomeGroup Listener
 	#"HomeGroupProvider"                      	# HomeGroup Provider
 	"HvHost"									# HV Host Service
@@ -283,16 +306,23 @@ $DisableServices = @(
 	"NetTcpPortSharing"                      	# Net.Tcp Port Sharing Service
 	"p2pimsvc"									# Peer Networking Identity Manager
 	"p2psvc"									# Peer Name Resolution Protocol
+	"PhoneSvc"									# Phone Service
 	"PNRPAutoReg"								# PNRP Machine Name Publication Service
 	"PNRPsvc"									# Peer Name Resolution Protocol
+	"QWAVE"										# Quality Windows Audio Video Experience Service
 	"RemoteAccess"                           	# Routing and Remote Access
 	"RemoteRegistry"                         	# Remote Registry
 	"RetailDemo"								# Retail Demo Service
+	#"RmSvc"									# Radio Management Service ##### Breaks Wi-Fi
 	#"RSoPProv"									# Resultant Set of Policy Provider
 	"SEMgrSvc"									# Payments and NFC/SE Manager
+	"SensorDataService"							# Sensor Data Service
+	"SensrSvc"									# Sensor Service
 	"SharedAccess"                           	# Internet Connection Sharing (ICS)
+	"smphost"									# Microsoft Storage Spaces SMP Service
 	"SNMPTRAP"									# SNMP Trap
 	#"SSDPSRV"									# SSDP Discovery	#####Breaks SMB
+	"svsvc"										# Spot Verifier Service
 	"Themes"									# Themes
 	"TrkWks"                                 	# Distributed Link Tracking Client
 	#"upnphost"									# UPnP Device Host    #####Breaks SMB
@@ -306,6 +336,9 @@ $DisableServices = @(
 	"vmicvss"									# Hyper-V Volume Shadow Copy Requestor
 	"WbioSrvc"                               	# Windows Biometric Service
 	"WdiServiceHost"							# Diagnostic Service Host
+	"WcsPlugInService"							# Windows Color System Service
+	"wcncsvc"									# Windows Connect Now - Config Registrar Service
+	"WerSvc"									# Windows Error Reporting Service
 	"WFDSConMgrSvc"								# Wi-Fi Direct Services Connection Manager Service
 	#"WlanSvc"                               	# WLAN AutoConfig ##### Breaks Wi-Fi
 	"WMPNetworkSvc"                          	# Windows Media Player Network Sharing Service
@@ -313,6 +346,7 @@ $DisableServices = @(
 	#"WSearch"                               	# Windows Search
 	"XblAuthManager"                        	# Xbox Live Auth Manager
 	"XblGameSave"                            	# Xbox Live Game Save Service
+	#"xbgm"										# Xbox Game Monitoring Service
 	"XboxGipSvc"								# Xbox Accessory Management Service
 	"XboxNetApiSvc"                          	# Xbox Live Networking Service
 	# Services which cannot be disabled
@@ -380,8 +414,10 @@ $AutomaticServices = @(
 	"Microsoft.VCLibs.120.00"
 	"Microsoft.VCLibs.140.00"
 	"Microsoft.VCLibs.140.00.UWPDesktop"
+	"Microsoft.UI.Xaml.2.0"
 	"Microsoft.Wallet"
 	"Microsoft.Win32WebViewHost"
+	"Microsoft.windowscommunicationsapps" ##Breaks Microsoft Accounts from UWP
 	"Microsoft.Windows.Apprep.ChxApp"
 	"Microsoft.Windows.AssignedAccessLockApp"
 	"Microsoft.Windows.CapturePicker"
@@ -422,6 +458,7 @@ $LogFile = ($LICache + "\Logs\" + `
 		   $env:computername + "_" + `
 		   (Get-Date -format yyyyMMdd-hhmm) + ".log")
 $sw = [Diagnostics.Stopwatch]::StartNew()
+$IsVM = $False
 $HKEY = "HKU\DEFAULTUSER"
 # Some paths that get used more than once
 $ContentDeliveryPath = ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager")
@@ -435,6 +472,7 @@ $HKAR = "HKLM:\SOFTWARE\Policies\Adobe\Acrobat Reader"
 $HKSCH = "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL"
 $UsersProfileFolder = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' -Name "ProfilesDirectory").ProfilesDirectory
 $ProfileList =  New-Object System.Collections.ArrayList
+$WScriptShell = New-Object -ComObject ("WScript.Shell")
 #############################################################################
 #endregion User Variables
 #############################################################################
@@ -886,6 +924,106 @@ function Set-QuickAccess {
 				} 
 		} 
  }
+Function Get-MachineType { 
+	<# 
+	.Synopsis 
+	   A quick function to determine if a computer is VM or physical box. 
+	.DESCRIPTION 
+	   This function is designed to quickly determine if a local or remote 
+	   computer is a physical machine or a virtual machine. 
+	.NOTES 
+	   Created by: Jason Wasser 
+	   Modified: 9/11/2015 04:12:51 PM   
+	 
+	   Changelog:  
+		* added credential support 
+	 
+	   To Do: 
+		* Find the Model information for other hypervisor VM's like Xen and KVM. 
+	.EXAMPLE 
+	   Get-MachineType 
+	   Query if the local machine is a physical or virtual machine. 
+	.EXAMPLE 
+	   Get-MachineType -ComputerName SERVER01  
+	   Query if SERVER01 is a physical or virtual machine. 
+	.EXAMPLE 
+	   Get-MachineType -ComputerName (Get-Content c:\temp\computerlist.txt) 
+	   Query if a list of computers are physical or virtual machines. 
+	.LINK 
+	   https://gallery.technet.microsoft.com/scriptcenter/Get-MachineType-VM-or-ff43f3a9 
+	#> 
+    [CmdletBinding()] 
+    [OutputType([int])] 
+    Param 
+    ( 
+        # ComputerName 
+        [Parameter(Mandatory=$false, 
+                   ValueFromPipeline=$true, 
+                   ValueFromPipelineByPropertyName=$true, 
+                   Position=0)] 
+        [string[]]$ComputerName=$env:COMPUTERNAME, 
+        $Credential = [System.Management.Automation.PSCredential]::Empty 
+    ) 
+ 
+    Begin 
+    { 
+    } 
+    Process 
+    { 
+        foreach ($Computer in $ComputerName) { 
+            Write-Verbose "Checking $Computer" 
+            try { 
+                $hostdns = [System.Net.DNS]::GetHostEntry($Computer) 
+                $ComputerSystemInfo = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $Computer -ErrorAction Stop -Credential $Credential 
+                 
+                switch ($ComputerSystemInfo.Model) { 
+                     
+                    # Check for Hyper-V Machine Type 
+                    "Virtual Machine" { 
+                        $MachineType="VM" 
+                        } 
+ 
+                    # Check for VMware Machine Type 
+                    "VMware Virtual Platform" { 
+                        $MachineType="VM" 
+                        } 
+ 
+                    # Check for Oracle VM Machine Type 
+                    "VirtualBox" { 
+                        $MachineType="VM" 
+                        } 
+ 
+                    # Check for Xen 
+                    # I need the values for the Model for which to check. 
+ 
+                    # Check for KVM 
+                    # I need the values for the Model for which to check. 
+ 
+                    # Otherwise it is a physical Box 
+                    default { 
+                        $MachineType="Physical" 
+                        } 
+                    } 
+                 
+                # Building MachineTypeInfo Object 
+                $MachineTypeInfo = New-Object -TypeName PSObject -Property ([ordered]@{ 
+                    ComputerName=$ComputerSystemInfo.PSComputername 
+                    Type=$MachineType 
+                    Manufacturer=$ComputerSystemInfo.Manufacturer 
+                    Model=$ComputerSystemInfo.Model 
+                    }) 
+                $MachineTypeInfo 
+                } 
+            catch [Exception] { 
+                Write-Output "$Computer`: $($_.Exception.Message)" 
+                } 
+            } 
+    } 
+    End 
+    { 
+ 
+    } 
+}
 #############################################################################
 #endregion Functions
 #############################################################################
@@ -896,6 +1034,10 @@ function Set-QuickAccess {
 #============================================================================
 #region Main Setup
 #============================================================================
+#Get Where we are running
+If ((Get-MachineType).type -ne "Physical") {
+	$IsVM = $True
+}
 #Skip updating local cache
 If (-Not $NoCacheUpdate) {
 	#Setup Local Install Cache
@@ -1231,6 +1373,25 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	#Show Web browser (default)
 	Set-Reg ($HKEYWE + "\HideDesktopIcons\NewStartPanel") "{871C5380-42A0-1069-A2EA-08002B30309D}" 0 "DWORD"
 	Set-Reg ($HKEYWE + "\HideDesktopIcons\ClassicStartMenu") "{871C5380-42A0-1069-A2EA-08002B30309D}" 0 "DWORD"
+	#UI Tweaks
+	If ($IsVM) {
+		write-host ("`t" + $CurrentProfile + ": Setting UI Optimizations")
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects") "VisualFXSetting" 3 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "ListviewAlphaSelect" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "ListviewShadow" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "MinAnimate" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "TaskbarAnimations" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Software\Microsoft\Windows\DWM") "EnableAeroPeek" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Software\Microsoft\Windows\DWM") "AlwaysHibernateThumbnails" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Control Panel\Desktop") "FontSmoothing" "0" "String"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Control Panel\Desktop") "MenuShowDelay" "0" "String"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Control Panel\Desktop") "CursorBlinkRate" "-1" "String"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Control Panel\Desktop") "UserPreferencesMask" "90,12,01,80" "Binary"
+		# DisableTransparency:
+		Write-Host "Removing Transparency Effects..." -ForegroundColor Green
+		Write-Host ""
+		Set-ItemProperty -Path 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name 'EnableTransparency' -Value '0'
+	}
 	#endregion Start Menu
 	If ($LockedDown) {
 		write-host ("`t" + $CurrentProfile + ": Setting up LockDown Settings")
@@ -1636,8 +1797,12 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Windows Error Reporting") "Disabled" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows Mail") "DisableCommunities" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows Mail") "ManualLaunchAllowed" 0 "DWORD"
-			#endregion Other ??
 			
+			#endregion Other ??
+			#region OnDrive
+			Remove-Itemproperty -Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Run") -name 'OneDriveSetup' -erroraction 'silentlycontinue'| out-null
+
+			#endregion OnDrive
 			#Remove Network
 			# If(Test-Path ($HKEYWE + "\Desktop\NameSpace\{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}")) {
 				# write-host ("`tNetwork from This PC ") -foregroundcolor "gray"
@@ -1707,6 +1872,9 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Internet Settings\ZoneMap\Domains")) {
 		Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Internet Settings\ZoneMap\Domains") -Recurse -Confirm:$false | out-null
 	}
+	If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Internet Settings\ZoneMap\EscDomains")) {
+		Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Internet Settings\ZoneMap\EscDomains") -Recurse -Confirm:$false | out-null
+	}
 	#IE Settings Trusted Sites
 	Set-Reg ($HKEYIS + "\ZoneMap\Domains\blank") "about" 2 "DWORD"
 	Set-Reg ($HKEYIS + "\ZoneMap\EscDomains\blank") "about" 2 "DWORD"
@@ -1715,6 +1883,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	ForEach ( $item in $ZoneMap) {
 		write-host ("`t`tAdding Site: " + $item.Site + " to zone: " + $item.Zone + " for protocol: " + $item.Protocol)
 		Set-Reg ($HKEYIS + "\ZoneMap\Domains\" +  $item.Site) $item.Protocol $item.Zone "DWORD"
+		Set-Reg ($HKEYIS + "\ZoneMap\EscDomains\" +  $item.Site) $item.Protocol $item.Zone "DWORD"
 	}
 	#endregion Internet Explorer
 	#region Windows Media Player
@@ -1894,6 +2063,36 @@ If (-Not $UserOnly) {
 		Disable-ScheduledTask -TaskName "Microsoft\Windows\Maps\MapsToastTask" -erroraction 'silentlycontinue'| Out-Null
 		Disable-ScheduledTask -TaskName "Microsoft\Windows\Maps\MapsUpdateTask" -erroraction 'silentlycontinue'| Out-Null
 
+		# Disable Scheduled Tasks:
+		Write-Host "Disabling Scheduled Tasks..." -ForegroundColor Cyan
+		Write-Host ""
+		Disable-ScheduledTask -TaskName "\Microsoft\Windows\Autochk\Proxy" -erroraction 'silentlycontinue'| Out-Null
+		Disable-ScheduledTask -TaskName "\Microsoft\Windows\Bluetooth\UninstallDeviceTask" -erroraction 'silentlycontinue'| Out-Null
+		If ($IsVM) {
+			Disable-ScheduledTask -TaskName "\Microsoft\Windows\Defrag\ScheduledDefrag" -erroraction 'silentlycontinue'| Out-Null
+			Disable-ScheduledTask -TaskName "\Microsoft\Windows\Diagnosis\Scheduled" -erroraction 'silentlycontinue'| Out-Null
+			Disable-ScheduledTask -TaskName "\Microsoft\Windows\DiskDiagnostic\Microsoft-Windows-DiskDiagnosticDataCollector" -erroraction 'silentlycontinue'| Out-Null
+			Disable-ScheduledTask -TaskName "\Microsoft\Windows\DiskDiagnostic\Microsoft-Windows-DiskDiagnosticResolver" -erroraction 'silentlycontinue'| Out-Null
+			Disable-ScheduledTask -TaskName "\Microsoft\Windows\Maintenance\WinSAT" -erroraction 'silentlycontinue'| Out-Null
+			Disable-ScheduledTask -TaskName "\Microsoft\Windows\MemoryDiagnostic\ProcessMemoryDiagnosticEvents" -erroraction 'silentlycontinue'| Out-Null
+			Disable-ScheduledTask -TaskName "\Microsoft\Windows\MemoryDiagnostic\RunFullMemoryDiagnostic" -erroraction 'silentlycontinue'| Out-Null
+			Disable-ScheduledTask -TaskName "\Microsoft\Windows\Power Efficiency Diagnostics\AnalyzeSystem" -erroraction 'silentlycontinue'| Out-Null
+			Disable-ScheduledTask -TaskName "\Microsoft\Windows\RecoveryEnvironment\VerifyWinRE" -erroraction 'silentlycontinue'| Out-Null
+		}
+		Disable-ScheduledTask -TaskName "\Microsoft\Windows\Mobile Broadband Accounts\MNO Metadata Parser" -erroraction 'silentlycontinue'| Out-Null	
+		Disable-ScheduledTask -TaskName "\Microsoft\Windows\Ras\MobilityManager" -erroraction 'silentlycontinue'| Out-Null	
+		Disable-ScheduledTask -TaskName "\Microsoft\Windows\Registry\RegIdleBackup" -erroraction 'silentlycontinue'| Out-Null
+		Disable-ScheduledTask -TaskName "\Microsoft\Windows\RetailDemo\CleanupOfflineContent" -erroraction 'silentlycontinue'| Out-Null
+		Disable-ScheduledTask -TaskName "\Microsoft\Windows\Shell\FamilySafetyMonitor" -erroraction 'silentlycontinue'| Out-Null
+		Disable-ScheduledTask -TaskName "\Microsoft\Windows\Shell\FamilySafetyRefresh" -erroraction 'silentlycontinue'| Out-Null
+		Disable-ScheduledTask -TaskName "\Microsoft\Windows\SystemRestore\SR" -erroraction 'silentlycontinue'| Out-Null
+		Disable-ScheduledTask -TaskName "\Microsoft\Windows\UPnP\UPnPHostConfig" -erroraction 'silentlycontinue'| Out-Null
+		Disable-ScheduledTask -TaskName "\Microsoft\Windows\WDI\ResolutionHost" -erroraction 'silentlycontinue'| Out-Null
+		Disable-ScheduledTask -TaskName "\Microsoft\Windows\Windows Media Sharing\UpdateLibrary" -erroraction 'silentlycontinue'| Out-Null
+		Disable-ScheduledTask -TaskName "\Microsoft\Windows\WOF\WIM-Hash-Management" -erroraction 'silentlycontinue'| Out-Null
+		Disable-ScheduledTask -TaskName "\Microsoft\Windows\WOF\WIM-Hash-Validation" -erroraction 'silentlycontinue'| Out-Null
+		
+		
 	}
 	Write-Host "Disabling Windows Defender AntiSpyware ..."
 	Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" "DisableAntiSpyware" 1 "DWORD"
@@ -2069,6 +2268,35 @@ If (-Not $UserOnly) {
 		# }	
 		# Set-Reg ($HKLWE + "\CLSID\{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}\ShellFolder") "Attributes" 1048576 "DWORD"	
 		# Set-Reg ($HKLWE.replace("\Software\","\Software\Wow6432Node\") + "\CLSID\{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}\ShellFolder") "Attributes" 1048576 "DWORD"	
+		
+		If ($IsVM) {
+			Write-Host "Disabling Hard Disk Timeouts..." -ForegroundColor Yellow
+			Write-Host ""
+			POWERCFG /SETACVALUEINDEX 381b4222-f694-41f0-9685-ff5bb260df2e 0012ee47-9041-4b5d-9b77-535fba8b1442 6738e2c4-e8a5-4a42-b16a-e040e769756e 0
+			POWERCFG /SETDCVALUEINDEX 381b4222-f694-41f0-9685-ff5bb260df2e 0012ee47-9041-4b5d-9b77-535fba8b1442 6738e2c4-e8a5-4a42-b16a-e040e769756e 0
+			# Disable Hibernate
+			Write-Host "Disabling Hibernate..." -ForegroundColor Green
+			Write-Host ""
+			POWERCFG -h off
+			# Disable System Restore
+			Write-Host "Disabling System Restore..." -ForegroundColor Green
+			Write-Host ""
+			Disable-ComputerRestore -Drive "C:\"
+			# Increase Service Startup Timeout:
+			Write-Host "Increasing Service Startup Timeout To 180 Seconds..." -ForegroundColor Yellow
+			Write-Host ""
+			Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control' -Name 'ServicesPipeTimeout' -Value '180000'
+			# Increase Disk I/O Timeout to 200 Seconds:
+			Write-Host "Increasing Disk I/O Timeout to 200 Seconds..." -ForegroundColor Green
+			Write-Host ""
+			Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Disk' -Name 'TimeOutValue' -Value '200'
+			# Disable New Network Dialog:
+			Write-Host "Disabling New Network Dialog..." -ForegroundColor Green
+			Write-Host ""
+			New-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Network' -Name 'NewNetworkWindowOff' | Out-Null
+
+		}
+		
 	}
 }
 #============================================================================
@@ -2416,7 +2644,7 @@ If (-Not $UserOnly) {
 		Write-Host "Setting up BGInfo . . . "
 		If (Test-Path ($LICache + "\BgInfo")) {
 			copy-item ($LICache + "\BgInfo") -Destination ($env:programfiles) -Force -Recurse
-			Remove-Item ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp\*BGInfo*.lnk")
+			Get-ChildItem ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp") | Where-Object Name -Like "*bginfo*.lnk" | ForEach-Object { Remove-Item $_.fullname}
 			If ($Store) {
 				copy-item ($env:programfiles + "\BgInfo\" + $BGInfo_StartupLink_Store) ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp") -Force
 			}else{
@@ -2446,18 +2674,18 @@ If (-Not $UserOnly) {
 	}
 	If ([environment]::OSVersion.Version.Major -ge 10) {
 		Write-Host "Disabling un-needed Firewall Rules . . . " -foregroundcolor darkgray
-		Disable-NetFirewallRule -DisplayGroup "AllJoyn Router" | out-null
-		Disable-NetFirewallRule -DisplayGroup "Cast to Device functionality" | out-null
-		Disable-NetFirewallRule -DisplayGroup "cortana"	 | out-null
-		Disable-NetFirewallRule -DisplayGroup "Media Center Extenders" | out-null
-		Disable-NetFirewallRule -DisplayGroup "Proximity Sharing" | out-null
-		Disable-NetFirewallRule -DisplayGroup "Routing and Remote Access" | out-null
-		Disable-NetFirewallRule -DisplayGroup "Wi-Fi Direct Network Discovery" | out-null
-		Disable-NetFirewallRule -DisplayGroup "Windows Media Player Network Sharing Service" | out-null
-		Disable-NetFirewallRule -DisplayGroup "Work or school account" | out-null
-		Disable-NetFirewallRule -DisplayGroup "Your account" | out-null
-		Disable-NetFirewallRule -DisplayGroup "iSCSI Service" | out-null
-		Disable-NetFirewallRule -DisplayGroup "Xbox Game UI" | out-null
+		Disable-NetFirewallRule -DisplayGroup "AllJoyn Router" -erroraction 'silentlycontinue' | out-null
+		Disable-NetFirewallRule -DisplayGroup "Cast to Device functionality" -erroraction 'silentlycontinue' | out-null
+		Disable-NetFirewallRule -DisplayGroup "cortana" -erroraction 'silentlycontinue' | out-null
+		Disable-NetFirewallRule -DisplayGroup "Media Center Extenders" -erroraction 'silentlycontinue' | out-null
+		Disable-NetFirewallRule -DisplayGroup "Proximity Sharing" -erroraction 'silentlycontinue' | out-null
+		Disable-NetFirewallRule -DisplayGroup "Routing and Remote Access" -erroraction 'silentlycontinue' | out-null
+		Disable-NetFirewallRule -DisplayGroup "Wi-Fi Direct Network Discovery" -erroraction 'silentlycontinue' | out-null
+		Disable-NetFirewallRule -DisplayGroup "Windows Media Player Network Sharing Service" -erroraction 'silentlycontinue' | out-null
+		Disable-NetFirewallRule -DisplayGroup "Work or school account" -erroraction 'silentlycontinue' | out-null
+		Disable-NetFirewallRule -DisplayGroup "Your account" -erroraction 'silentlycontinue' | out-null
+		Disable-NetFirewallRule -DisplayGroup "iSCSI Service" -erroraction 'silentlycontinue' | out-null
+		Disable-NetFirewallRule -DisplayGroup "Xbox Game UI" -erroraction 'silentlycontinue' | out-null
 	}
 }
 #============================================================================
@@ -2625,6 +2853,11 @@ If (-Not $UserOnly) {
 	Remove-Item -Recurse -Force -Path ($env:programdata + "\Microsoft\OneDrive") -erroraction 'silentlycontinue'| out-null
 	Remove-Item -Recurse -Force -Path ("HKCR:\CLSID\{018D5C66-4533-4307-9B53-224DE2ED1FE6}") -erroraction 'silentlycontinue'| out-null
 	Remove-Item -Recurse -Force -Path ("HKCR:\Wow6432Node\CLSID\{018D5C66-4533-4307-9B53-224DE2ED1FE6}") -erroraction 'silentlycontinue'| out-null
+	If (-Not (Test-Path ("HKLM:\SOFTWARE\Policies\Microsoft\Windows\Skydrive"))) {
+		New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\' -Name 'Skydrive' | Out-Null
+		New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Skydrive' -Name 'DisableFileSync' -PropertyType DWORD -Value '1' | Out-Null
+		New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Skydrive' -Name 'DisableLibrariesDefaultSaveToSkyDrive' -PropertyType DWORD -Value '1' | Out-Null 
+	}
 	#Removes OneDrive from This PC
 	write-host ("`tOneDrive from This PC ") -foregroundcolor "gray"
 	If (Test-Path ("HKCR:\CLSID\{018D5C66-4533-4307-9B53-224DE2ED1FE6}")) {
@@ -2664,24 +2897,79 @@ If (-Not $UserOnly) {
 	If (Test-Path ($LICache + "\RemoveFCTID.exe")) {
 		#[IntPtr]::Size – Gets the size of this instance.  The value of this property is 4 in a 32-bit process, and 8 in a 64-bit process
 		If ([IntPtr]::Size -eq 4) {
-			If (Test-Path (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient")) {
-				Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient") -Force
-			}else{
-				New-Item -ItemType directory -Path (${env:ProgramFiles(x86)} + "\Fortinet") | out-null
-				New-Item -ItemType directory -Path (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient") | out-null
-				Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient") -Force
+			If (-Not (Test-Path (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient\RemoveFCTID.exe"))) {
+				If (Test-Path (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient")) {
+					Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient") -Force
+				}else{
+					New-Item -ItemType directory -Path (${env:ProgramFiles(x86)} + "\Fortinet") | out-null
+					New-Item -ItemType directory -Path (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient") | out-null
+					Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient") -Force
+				}
+				If ((Test-Path ($env:USERPROFILE + "\Desktop")) -and -Not (Test-Path($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk"))) {				
+					$ShortCut = $WScriptShell.CreateShortcut($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk")
+					$ShortCut.TargetPath=(${env:ProgramFiles(x86)} + "\Fortinet\FortiClient\RemoveFCTID.exe")
+					$ShortCut.WorkingDirectory = (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient")
+					$ShortCut.Hotkey = "CTRL+SHIFT+F"
+					$ShortCut.IconLocation = "%SystemRoot%\System32\imageres.dll, 100"
+					$ShortCut.Description = "Run Before Imaging"
+					$ShortCut.Save()
+					#Make ShortCut ran as admin https://stackoverflow.com/questions/28997799/how-to-create-a-run-as-administrator-shortcut-using-powershell
+					$bytes = [System.IO.File]::ReadAllBytes($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk")
+					$bytes[0x15] = $bytes[0x15] -bor 0x20 #set byte 21 (0x15) bit 6 (0x20) ON
+					[System.IO.File]::WriteAllBytes($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk", $bytes)
+				}
+				If ((Test-Path ($UsersProfileFolder + "\administrator\Desktop")) -and -Not (Test-Path($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk"))) {				
+					$ShortCut = $WScriptShell.CreateShortcut($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk")
+					$ShortCut.TargetPath=(${env:ProgramFiles(x86)} + "\Fortinet\FortiClient\RemoveFCTID.exe")
+					$ShortCut.WorkingDirectory = (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient")
+					$ShortCut.Hotkey = "CTRL+SHIFT+F"
+					$ShortCut.IconLocation = "%SystemRoot%\System32\imageres.dll, 100"
+					$ShortCut.Description = "Run Before Imaging"
+					$ShortCut.Save()
+					#Make ShortCut ran as admin https://stackoverflow.com/questions/28997799/how-to-create-a-run-as-administrator-shortcut-using-powershell
+					$bytes = [System.IO.File]::ReadAllBytes($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk")
+					$bytes[0x15] = $bytes[0x15] -bor 0x20 #set byte 21 (0x15) bit 6 (0x20) ON
+					[System.IO.File]::WriteAllBytes($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk", $bytes)
+				}
 			}
 			Write-Host "Running FortiClient ID Cleanup . . ."
 			$process = Start-Process -FilePath ('"' + ${env:ProgramFiles(x86)} + '\Fortinet\FortiClient\RemoveFCTID.exe"') -PassThru -NoNewWindow -Wait
 		}
-		If (Test-Path ($env:ProgramFiles + "\Fortinet\FortiClient")) {			
-			Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination ($env:ProgramFiles + "\Fortinet\FortiClient") -Force
-		}else{
-			New-Item -ItemType directory -Path ($env:ProgramFiles + "\Fortinet") | out-null
-			New-Item -ItemType directory -Path ($env:ProgramFiles + "\Fortinet\FortiClient") | out-null
-			Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination ($env:ProgramFiles + "\Fortinet\FortiClient") -Force
+		If (-Not (Test-Path ($env:ProgramFiles + "\Fortinet\FortiClient\RemoveFCTID.exe"))) {
+			If (Test-Path ($env:ProgramFiles + "\Fortinet\FortiClient")) {			
+				Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination ($env:ProgramFiles + "\Fortinet\FortiClient") -Force
+			}else{
+				New-Item -ItemType directory -Path ($env:ProgramFiles + "\Fortinet") | out-null
+				New-Item -ItemType directory -Path ($env:ProgramFiles + "\Fortinet\FortiClient") | out-null
+				Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination ($env:ProgramFiles + "\Fortinet\FortiClient") -Force
+			}
+			If ((Test-Path ($env:USERPROFILE + "\Desktop")) -and -Not (Test-Path($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk"))){				
+				$ShortCut = $WScriptShell.CreateShortcut($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk")
+				$ShortCut.TargetPath=($env:ProgramFiles + "\Fortinet\FortiClient\RemoveFCTID.exe")
+				$ShortCut.WorkingDirectory = ($env:ProgramFiles + "\Fortinet\FortiClient")
+				$ShortCut.Hotkey = "CTRL+SHIFT+F"
+				$ShortCut.IconLocation = "%SystemRoot%\System32\imageres.dll, 100"
+				$ShortCut.Description = "Run Before Imaging"
+				$ShortCut.Save()
+				#Make ShortCut ran as admin https://stackoverflow.com/questions/28997799/how-to-create-a-run-as-administrator-shortcut-using-powershell
+				$bytes = [System.IO.File]::ReadAllBytes($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk")
+				$bytes[0x15] = $bytes[0x15] -bor 0x20 #set byte 21 (0x15) bit 6 (0x20) ON
+				[System.IO.File]::WriteAllBytes($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk", $bytes)
+			}
+			If ((Test-Path ($UsersProfileFolder + "\administrator\Desktop")) -and -Not (Test-Path($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk"))) {				
+				$ShortCut = $WScriptShell.CreateShortcut($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk")
+				$ShortCut.TargetPath=(${env:ProgramFiles(x86)} + "\Fortinet\FortiClient\RemoveFCTID.exe")
+				$ShortCut.WorkingDirectory = (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient")
+				$ShortCut.Hotkey = "CTRL+SHIFT+F"
+				$ShortCut.IconLocation = "%SystemRoot%\System32\imageres.dll, 100"
+				$ShortCut.Description = "Run Before Imaging"
+				$ShortCut.Save()
+				#Make ShortCut ran as admin https://stackoverflow.com/questions/28997799/how-to-create-a-run-as-administrator-shortcut-using-powershell
+				$bytes = [System.IO.File]::ReadAllBytes($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk")
+				$bytes[0x15] = $bytes[0x15] -bor 0x20 #set byte 21 (0x15) bit 6 (0x20) ON
+				[System.IO.File]::WriteAllBytes($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk", $bytes)
+			}
 		}
-		
 		Write-Host "Running FortiClient ID Cleanup . . ."
 		$process = Start-Process -FilePath ('"' +$env:ProgramFiles + '\Fortinet\FortiClient\RemoveFCTID.exe"') -PassThru -NoNewWindow -Wait
 
@@ -2704,6 +2992,33 @@ If (-Not $UserOnly) {
 #endregion Main Local Machine Disable Netbios
 #============================================================================
 #============================================================================
+#region Set Registry Permissions
+#============================================================================
+Write-Host ("Setting Registry Permissions ... ") -foregroundcolor darkgray
+	ForEach ( $item in $RegPerms) {
+		# Source: https://social.technet.microsoft.com/Forums/en-US/1f082309-dc39-4c7e-ab45-b19094c21877/powershell-script-to-change-permission-of-hkcu-registry-and-make-it-read-only-permission-for-the?forum=winserverpowershell
+		Write-Host ("`tUpdating: '" +  $rootKey + ":\" + $item.Key + "' for '" + $item.User + "' to '" + $item.Action + "' with '" + $item.Perm + "'")	
+		switch -regex ($item.Hive) {
+        'HKCU|HKEY_CURRENT_USER'    { $rootKey = 'HKCU' }
+        'HKLM|HKEY_LOCAL_MACHINE'   { $rootKey = 'HKLM' }
+        'HKCR|HKEY_CLASSES_ROOT'    { $rootKey = 'HKCR' }
+        'HKCC|HKEY_CURRENT_CONFIG'  { $rootKey = 'HKCC' }
+        'HKU|HKEY_USERS'            { $rootKey = 'HKU' }
+		}
+		$path = ($rootKey + ":\" + $item.Key)
+		If(!(Test-Path $path)) {
+			New-Item -Path $path -Force | Out-Null
+		}
+		Take-KeyPermissions $item.Hive $item.Key
+		$Acl = Get-ACL $path
+		$AccessRule= New-Object System.Security.AccessControl.RegistryAccessRule($item.User,$item.Perm,$item.Action)
+		$Acl.SetAccessRule($AccessRule)
+		Set-Acl $path $Acl
+	}
+#============================================================================
+#endregion Set Registry Permissions
+#============================================================================
+#============================================================================
 #region Main Local Machine Load Local GPO
 #============================================================================
 If (-Not $UserOnly) {
@@ -2717,6 +3032,7 @@ If (-Not $UserOnly) {
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" "NoPublishingWizard" "1" "DWord"
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" "NoWebServices" "1" "DWord"
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" "PreXPSP2ShellProtocolBehavior" "0" "DWord"
+	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" "AsyncRunOnce" "0" "DWord"
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Ext" "DisableAddonLoadTimePerformanceNotifications" "1" "DWord"
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Ext" "IgnoreFrameApprovalCheck" "1" "DWord"
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Ext" "NoFirsttimeprompt" "1" "DWord"
@@ -2725,6 +3041,7 @@ If (-Not $UserOnly) {
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" "EnableFirstLogonAnimation" "0" "DWord"
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" "LocalAccountTokenFilterPolicy" "0" "DWord"
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" "MSAOptional" "1" "DWord"
+	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" "DelayedDesktopSwitchTimeout" "0" "DWord"
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit" "ProcessCreationIncludeCmdLine_Enabled" "1" "DWord"
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters" "AllowEncryptionOracle" "0" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Biometrics\FacialFeatures" "EnhancedAntiSpoofing" "1" "DWord"
@@ -2765,6 +3082,7 @@ If (-Not $UserOnly) {
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services" "SecurityLayer" "2" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\AppCompat" "DisableInventory" "1" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\CloudContent" "DisableWindowsConsumerFeatures" "1" "DWord"
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\CloudContent" "DisableSoftLanding" "1" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\CredentialsDelegation" "AllowProtectedCreds" "1" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\DataCollection" "AllowTelemetry" "0" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\DeliveryOptimization" "DODownloadMode" "0" "DWord"
@@ -2841,8 +3159,14 @@ If (-Not $UserOnly) {
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service" "AllowBasic" "0" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service" "AllowUnencryptedTraffic" "0" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service" "DisableRunAs" "1" "DWord"
+	Set-Reg "HKLM:\System\CurrentControlSet\Control\CrashControl" "CrashDumpEnabled" 0 "DWord"	
+	Set-Reg "HKLM:\System\CurrentControlSet\Control\CrashControl" "LogEvent" 0 "DWord"	
+	Set-Reg "HKLM:\System\CurrentControlSet\Control\CrashControl" "SendAlert" 0 "DWord"	
+	Set-Reg "HKLM:\System\CurrentControlSet\Control\CrashControl" "AutoReboot" 1 "DWord"	
+	Set-Reg "HKLM:\System\CurrentControlSet\Control\FileSystem" "NtfsDisableLastAccessUpdate" 1 "DWord"	
 	Set-Reg "HKLM:\System\CurrentControlSet\Control\SecurityProviders\WDigest" "UseLogonCredential" "0" "DWord"
 	Set-Reg "HKLM:\System\CurrentControlSet\Control\Session Manager\kernel" "DisableExceptionChainValidation" "0" "DWord"
+	Set-Reg "HKLM:\System\CurrentControlSet\Control\Windows" "ErrorMode" 2 "DWord"
 	Set-Reg "HKLM:\System\CurrentControlSet\Services\LanmanServer\Parameters" "SMB1" "0" "DWord"
 	Set-Reg "HKLM:\System\CurrentControlSet\Services\MrxSmb10" "Start" "4" "DWord"
 	Set-Reg "HKLM:\System\CurrentControlSet\Services\Netbt\Parameters" "NoNameReleaseOnDemand" "1" "DWord"
@@ -2880,12 +3204,6 @@ If (-Not $UserOnly) {
 	If ($test -eq $False) {
 		Remove-ItemProperty -path $regkeypath -name $value
 	}
-
-	# If ((Test-Path ($LICache + "\LGPO.EXE")) -and (Test-Path ($LICache + '\' + $Custom_Security_Templates + '\' + $LGPO ))) {
-		# $process = Start-Process -FilePath ($LICache + "\LGPO.EXE") -ArgumentList ('/g "' + ($LICache + '\' + $Custom_Security_Templates + '\' + $LGPO ) + '"') -PassThru -NoNewWindow -Wait
-		# Write-Host
-	# }
-
 }
 
 #============================================================================
@@ -2894,9 +3212,10 @@ If (-Not $UserOnly) {
 #============================================================================
 #regionMain Local Machine Cleanup
 #============================================================================
-#Recording Versoin of script
+#Recording Version of script
 write-host ("Recording " + $ScriptVersionValue + ": " + $ScriptVersion + " in " + $ScriptVersionKey + " Key.") -foregroundcolor "Green"
 Set-Reg ("HKLM:\Software\" + $ScriptVersionKey) $ScriptVersionValue  $ScriptVersion "String"
+Set-Reg ("HKLM:\Software\" + $ScriptVersionKey) $ScriptDateValue  (Get-Date -format yyyyMMdd) "String"
 write-host
 #cleanup mapped drives
 If (Test-Path "PSRemote:\") {
