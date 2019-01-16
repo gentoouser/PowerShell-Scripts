@@ -51,7 +51,7 @@
 .EXAMPLE
    & Default_User_Win8.1_+.ps1 -AllowClientTLS1
 .EXAMPLE
-	powershell -executionpolicy unrestricted -file .\Default_User_Win8.1_+.ps1 -Store -Profile @("Default","User") -NoOEMInfo -AllowClientTLS1
+	powershell -executionpolicy unrestricted -file .\Default_User_Win8.1_+.ps1 -Store -AllowClientTLS1 -Profile '"Default","User"' -StartLayoutXML "Win10_VDI.xml" -BackgroundFolder "Store workstations"
 .NOTES
  Author: Paul Fuller
  Changes:
@@ -82,7 +82,7 @@
 	* Version 2.1.06 - More Tweaks and test to see of we are running in VM.
 	* Version 2.1.07 - Added ablity to change registry permissions. Fix bug with BGInfo Shortcut. Added $ScriptDateValue to know when the script was ran. Create Shortcut on Desktop for FortiClient ID Remover
 	* Version 2.1.08 - Fix Windows Update options. Tweaks to speed up running -store for a second time. If filename has store in it enable store switch. Added switch for OEMInfoAddSerial. Disabled register domain join computers as devices for Azure. Disable Secure Screen saver for store users. Disables "Recently added" Apps List on the Start Menu for Locked down users. Disable all store user accounts after profile is created. Added IPv6 switch; all IPv6 will be disabled by default. Set "Power Button" to shutdown. Disable Windows 10 managed default printer. Disable Network Discovery network rules. Auto Start Custom exe for all "Window users"
-	
+	* Version 2.1.09 - Fix Cache Issue. Fixed issue with $Custom_Software_Exec shortcut creation issue. Updated example code to convirt string ot array for powershell.exe launch
 #>
 PARAM (
 	[array]$Profiles  	  		= @("Default"),	
@@ -91,7 +91,7 @@ PARAM (
 	[string]$CARoot				= "RootCA.cer",
 	[string]$CAInter			= "InterCA.cer",
 	[string]$CSCert				= "Code Signing.cer",
-	[string]$StartLayoutXML		= "VDI.xml",
+	[string]$StartLayoutXML		= "Win10_VDI.xml",
 	[String]$BackgroundFolder 	= "Store workstations",
 	[String]$User		    	= $null,
 	[String]$Password	    	= $null,
@@ -114,7 +114,7 @@ Break
 }
 #Fix issue for services
 cd \
-$ScriptVersion = "2.1.08"
+$ScriptVersion = "2.1.09"
 #############################################################################
 #############################################################################
 
@@ -200,7 +200,7 @@ $StoreDenyFolderUser = @(
 $HideAccounts = @(
 	"Admin"
 	"Administrator"
-	"ASPNET"
+	"ASPNET"	   
 	"Guest"
 )
 #endregion Hide Accounts from Logon screen
@@ -494,10 +494,10 @@ $WScriptShell = New-Object -ComObject ("WScript.Shell")
 If (-Not [string]::IsNullOrEmpty($LogFile)) {
 	If (-Not( Test-Path (Split-Path -Path $LogFile -Parent))) {
 		New-Item -ItemType directory -Path (Split-Path -Path $LogFile -Parent) | Out-Null
-		$Acl = Get-Acl $LICache
+		$Acl = Get-Acl (Split-Path -Path $LogFile -Parent)
 		$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule('Users', "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
 		$Acl.Setaccessrule($Ar)
-		Set-Acl $LICache $Acl
+		Set-Acl (Split-Path -Path $LogFile -Parent) $Acl
 	}
 	try { 
 		Start-Transcript -Path $LogFile -Append
@@ -523,11 +523,22 @@ New-PSDrive -PSProvider Registry -Name HKCR -Root HKEY_CLASSES_ROOT
 if ( $User -and $Password) {
 	$Credential = New-Object System.Management.Automation.PSCredential ($User, (ConvertTo-SecureString $Password -AsPlainText -Force))
 }
-#Setup ProfileList
-ForEach ($Profile in $Profiles) {
-	If ($Profile) {
-		$ProfileList.Add($Profile)
-		$HideAccounts += $Profile
+#Powershell.exe launch cleanup
+If ($Profiles[0].Contains(",")){
+	#Setup ProfileList
+	ForEach ($Profile in $Profiles[0].split(",")) {
+		If ($Profile) {
+			$ProfileList.Add($Profile)
+			$HideAccounts += $Profile
+		}
+	}
+}else{
+	#Setup ProfileList
+	ForEach ($Profile in $Profiles) {
+		If ($Profile) {
+			$ProfileList.Add($Profile)
+			$HideAccounts += $Profile
+		}
 	}
 }
 
@@ -1739,17 +1750,17 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			#endregion Google Chrome
 			#region Auto Start Custom EXE
 			If ($Custom_Software_Exec -and $Custom_Software_Path) {
-				If (-Not (Test-Path ($UsersProfileFolder + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk"))) {
+				If (-Not (Test-Path ($UsersProfileFolder + "\" + $CurrentProfile + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk"))) {
 					If (Test-Path ($Custom_Software_Path + "\" + $Custom_Software_Exec)) {
-						$ShortCut = $WScriptShell.CreateShortcut($UsersProfileFolder + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk")
+						$ShortCut = $WScriptShell.CreateShortcut($UsersProfileFolder + "\" + $CurrentProfile + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk")
 						$ShortCut.TargetPath=($Custom_Software_Path + "\" + $Custom_Software_Exec)
 						$ShortCut.WorkingDirectory = ($Custom_Software_Path)
 						$ShortCut.IconLocation = ('"' + $Custom_Software_Path + ',0"')
 						$ShortCut.Save()
 						#Make ShortCut ran as admin https://stackoverflow.com/questions/28997799/how-to-create-a-run-as-administrator-shortcut-using-powershell
-						$bytes = [System.IO.File]::ReadAllBytes($UsersProfileFolder + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk")
+						$bytes = [System.IO.File]::ReadAllBytes($UsersProfileFolder + "\" + $CurrentProfile + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk")
 						$bytes[0x15] = $bytes[0x15] -bor 0x20 #set byte 21 (0x15) bit 6 (0x20) ON
-						[System.IO.File]::WriteAllBytes($UsersProfileFolder + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk", $bytes)
+						[System.IO.File]::WriteAllBytes($UsersProfileFolder + "\" + $CurrentProfile + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk", $bytes)
 					}
 				}
 			}
