@@ -10,29 +10,30 @@
 	* Lock down users by loading registry and appling settings
 	* Lock down users by appling GPO
 	
-	
+.PARAMETER Profiles
+	Array of users to lockdown. If Store is enabled all store Window users will be added to the array and locked down.	
+.PARAMETER LICache
+	Location of the local configureation files cache.	
+.PARAMETER RemoteFiles
+	Network path of configureation files are to copy down. 	
+.PARAMETER CARoot
+	Cert file of Domain Root CA.
+.PARAMETER CAInter
+	Cert file of Domain Intermediate  CA.
+.PARAMETER CSCert
+	Cert file of Code Signing cert.
+.PARAMETER StartLayoutXML
+	XML files that setup the defualt startmenu and task bar items.
+.PARAMETER BackgroundFolder
+	Folder name of where customized default windows backgrounds are.	
+.PARAMETER User
+	Username for network configureation share.
+.PARAMETER Password
+	Password that goes with useranme for network configureation share.
+.PARAMETER Store
+	Enables more locked down of users and creates store Local Windows accounts.
 .PARAMETER LockedDown
 	Lock down user accounts more
-.PARAMETER LICache
-	Location of the local configureation files cache
-.PARAMETER Profiles
-	Array of users to lockdown. If Store is enabled all store Window users will be added to the array and locked down.
-.PARAMETER Store
-	Enables more locked down of users and creates store Local Windows accounts 
-.PARAMETER RemoteFiles
-	Network path of configureation files are to copy down. 
-.PARAMETER StartLayoutXML
-	XML files that setup the defualt startmenu and task bar items
-.PARAMETER CARoot
-	Cert file of Domain Root CA
-.PARAMETER CAInter
-	Cert file of Domain Intermediate  CA
-.PARAMETER CSCert
-	Cert file of Code Signing cert
-.PARAMETER User
-	Username for network configureation share
-.PARAMETER Password
-	Password that goes with useranme for network configureation share
 .PARAMETER UserOnly
 	Sets user settings only and no machine settings
 .PARAMETER NoCacheUpdate
@@ -41,12 +42,16 @@
 	Enables Computer to go to TLS 1.0 and TLS 1.1 sites.
 .PARAMETER NoOEMInfo
 	Keeps from reseting the OEM Info.	
-.PARAMETER BackgroundFolder
-	Folder name of where customized default windows backgrounds are.
+.PARAMETER OEMInfoAddSerial
+	Added Serial number to the System Preferences.
+.PARAMETER NoBgInfo
+	Does not setup BGInfo to launch at startup.
+.PARAMETER IPv6
+	Keeps IPv6 enabled; otherwise IPv6 will be disabled. 
 .EXAMPLE
-   & Default_User_Win8.1_+.ps1 -Store -Profile @("Default")
+   & Default_User_Win8.1_+.ps1 -AllowClientTLS1
 .EXAMPLE
-	powershell -executionpolicy unrestricted -file .\Default_User_Win8.1_+.ps1 -LockDown -NoOEMInfo -AllowClientTLS1
+	powershell -executionpolicy unrestricted -file .\Default_User_Win8.1_+.ps1 -Store -Profile @("Default","User") -NoOEMInfo -AllowClientTLS1
 .NOTES
  Author: Paul Fuller
  Changes:
@@ -76,6 +81,7 @@
 	* Version 2.1.05 - Stopped removing "Microsoft.Windows.Cortana" and "Microsoft.Windows.ShellExperienceHost" due to Start Menu Breaking. Updated WallpaperStyle. Change it so Remote files are where the script is launched from. Disable more visual effects.
 	* Version 2.1.06 - More Tweaks and test to see of we are running in VM.
 	* Version 2.1.07 - Added ablity to change registry permissions. Fix bug with BGInfo Shortcut. Added $ScriptDateValue to know when the script was ran. Create Shortcut on Desktop for FortiClient ID Remover
+	* Version 2.1.08 - Fix Windows Update options. Tweaks to speed up running -store for a second time. If filename has store in it enable store switch. Added switch for OEMInfoAddSerial. Disabled register domain join computers as devices for Azure. Disable Secure Screen saver for store users. Disables "Recently added" Apps List on the Start Menu for Locked down users. Disable all store user accounts after profile is created. Added IPv6 switch; all IPv6 will be disabled by default. Set "Power Button" to shutdown. Disable Windows 10 managed default printer. Disable Network Discovery network rules. Auto Start Custom exe for all "Window users"
 	
 #>
 PARAM (
@@ -85,7 +91,7 @@ PARAM (
 	[string]$CARoot				= "RootCA.cer",
 	[string]$CAInter			= "InterCA.cer",
 	[string]$CSCert				= "Code Signing.cer",
-	[string]$StartLayoutXML		= "Win10_VDI.xml",
+	[string]$StartLayoutXML		= "VDI.xml",
 	[String]$BackgroundFolder 	= "Store workstations",
 	[String]$User		    	= $null,
 	[String]$Password	    	= $null,
@@ -95,7 +101,9 @@ PARAM (
 	[switch]$NoCacheUpdate		= $false,
 	[switch]$AllowClientTLS1	= $false,
 	[switch]$NoOEMInfo			= $false,
-	[switch]$NoBgInfo			= $false
+	[switch]$OEMInfoAddSerial	= $false,
+	[switch]$NoBgInfo			= $false,
+	[switch]$IPv6				= $false
 )
 #Force Running Script as Admin
 If (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator"))
@@ -106,7 +114,7 @@ Break
 }
 #Fix issue for services
 cd \
-$ScriptVersion = "2.1.07"
+$ScriptVersion = "2.1.08"
 #############################################################################
 #############################################################################
 
@@ -121,7 +129,8 @@ $IE_Margin_Top = "0.500000"
 $IE_Margin_Bottom = "0.500000"
 $IE_Margin_Left = "0.166000"
 $IE_Margin_Right = "0.166000"
-$Custom_Software_Path = (${env:ProgramFiles(x86)} + "\app")
+$Custom_Software_Path = (${env:ProgramFiles(x86)} + "\Custom_app")
+$Custom_Software_Exec = "Custom.exe"
 $Custom_Wallpaper_SubFolder = "Wallpapers"
 $Custom_User_Account_Pictures_SubFolder = ($Custom_Wallpaper_SubFolder + "\User Account Pictures")
 $Custom_OEM_Logo = "LOGO_OEM.bmp"
@@ -131,8 +140,8 @@ $BGInfo_StartupLink = "Bginfo Slient Start x64.lnk"
 $BGInfo_StartupLink_Store = "Bginfo Slient Start VDI.lnk"
 $SettingsPageVisibility = "showonly:printers;defaultapps;display;mousetouchpad;network-ethernet;notifications;usb"
 $ChromeBaseZip = "Google_Profile_Base.zip"
-$ChromeDelegateWhiteList = "https://*.GitHub.com"
-$ScriptVersionKey = "GitHub" 
+$ChromeDelegateWhiteList = "https://*.git.com"
+$ScriptVersionKey = "Git Hub" 
 $ScriptVersionValue = "Security Hardening Version"
 $ScriptDateValue = "Security Hardening Date"
 #Versions of Adobe Reader to setup for.
@@ -159,7 +168,7 @@ $ZoneMap = @(
 # Options:
 #	FullControl, ReadKey, SetValue, CreateSubKey, Delete
 $RegPerms = @(
-	New-Object PSObject -Property @{Hive = "HKEY_LOCAL_MACHINE"; Key = "SOFTWARE\WOW6432Node\app";  User = "Users"; Perm = "FullControl"; Action = "Allow"}
+	New-Object PSObject -Property @{Hive = "HKEY_LOCAL_MACHINE"; Key = "SOFTWARE\WOW6432Node\Custom\app";  User = "Users"; Perm = "FullControl"; Action = "Allow"}
 )
 #endregion Registry Permissions
 #region RoboCopy Options
@@ -450,6 +459,7 @@ $AutomaticServices = @(
 	"Windows.PrintDialog"
 	"c5e2524a-ea46-4f67-841f-6a9465d9d515"
 	"windows.immersivecontrolpanel"
+    "winstore"
 	)
 #endregion Microsoft Store
 
@@ -500,6 +510,9 @@ If (-Not [string]::IsNullOrEmpty($LogFile)) {
 	Write-Host (" ")
 }	
 #Store Setup
+If ($MyInvocation.MyCommand.Name -match "store") {
+	$Store = $True
+}
 If ($Store) {
 	$LockedDown = $True
 }
@@ -1147,11 +1160,13 @@ If ($Store) {
 		If ($i) {
 			If (-Not (Get-LocalUser -Name ("Window" + $i) -erroraction 'silentlycontinue')) {
 				$CreateUsers = $True
-			}else {
-				If (Test-Path ($UsersProfileFolder + "\Window" + $i) ) {
+			}else{
+				If (Test-Path ($UsersProfileFolder + "\Window" + $i)) {
 					Write-Host ("`tAdding to Profile List: " + ($UsersProfileFolder + "\Window" + $i))
 					$ProfileList.Add(("Window" + $i).ToLower()) | Out-Null
 					$HideAccounts += ("Window" + $i).ToLower()
+				}else{
+					$CreateUsers = $True
 				}
 			}
 		}
@@ -1170,36 +1185,42 @@ If ($Store) {
 		# net accounts /minpwage:0 /minpwlen:0
 		ForEach ( $i in $UserRange) {	
 			If ($i) {
+				#Only create profile if user is a local user
 				If (-Not (Get-LocalUser -Name ("Window" + $i) -erroraction 'silentlycontinue')) {
-					write-host ("Creating User: " +("Window" + $i))
-					New-LocalUser -Name ("Window" + $i).ToLower() -Description "LiveWire Window User" -FullName ("Window" + $i) -Password (ConvertTo-SecureString ("Window" + $i).ToLower() -AsPlainText -Force) -AccountNeverExpires -UserMayNotChangePassword | Out-Null
-					Add-LocalGroupMember -Name 'Administrators' -Member ("Window" + $i) | Out-Null
-					Write-Host "`tWorking on Creating user profile: " ("Window" + $i)
-					#launch process as user to create user profile
-					# https://msdn.microsoft.com/en-us/library/system.diagnostics.processstartinfo(v=vs.110).aspx
-					$processStartInfo = New-Object System.Diagnostics.ProcessStartInfo
-					$processStartInfo.UserName = ("Window" + $i)
-					$processStartInfo.Domain = "."
-					$processStartInfo.Password = (ConvertTo-SecureString ("Window" + $i).ToLower() -AsPlainText -Force)
-					$processStartInfo.FileName = "cmd"
-					$processStartInfo.Arguments = "/C echo . && echo %username% && echo ."
-					$processStartInfo.LoadUserProfile = $true
-					$processStartInfo.UseShellExecute = $false
-					$processStartInfo.RedirectStandardOutput = $false
-					$process = [System.Diagnostics.Process]::Start($processStartInfo)
-					$Process.WaitForExit()   
-					#Add setup user to profiles created to allow registry to be created. 
-					If (Test-Path ($UsersProfileFolder + "\Window" + $i) ) {
-						$ProfileList.Add(("Window" + $i).ToLower()) | Out-Null
-						$HideAccounts += ("Window" + $i).ToLower()
-						#Grant Current user rights on new Profiles
-						Write-Host ("`tUpdating ACLs and adding to Profile List: " + ($UsersProfileFolder + "\Window" + $i))
-						$Folderpath=($UsersProfileFolder + "\Window" + $i)
-						$user_account=$env:username
-						$Acl = Get-Acl $Folderpath
-						$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule($user_account, "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
-						$Acl.Setaccessrule($Ar)
-						Set-Acl $Folderpath $Acl	
+					#Only create profile if no profile exists
+					If (-Not (Test-Path ((gwmi Win32_UserProfile |where { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |select Localpath).localpath + "\ntuser.dat"))) {
+						write-host ("Creating User: " +("Window" + $i))
+						New-LocalUser -Name ("Window" + $i).ToLower() -Description "Store Window User" -FullName ("Window" + $i) -Password (ConvertTo-SecureString ("Window" + $i).ToLower() -AsPlainText -Force) -AccountNeverExpires -UserMayNotChangePassword -PasswordNeverExpires | Out-Null
+						Add-LocalGroupMember -Name 'Administrators' -Member ("Window" + $i) | Out-Null
+						Write-Host "`tWorking on Creating user profile: " ("Window" + $i)
+						#launch process as user to create user profile
+						# https://msdn.microsoft.com/en-us/library/system.diagnostics.processstartinfo(v=vs.110).aspx
+						$processStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+						$processStartInfo.UserName = ("Window" + $i)
+						$processStartInfo.Domain = "."
+						$processStartInfo.Password = (ConvertTo-SecureString ("Window" + $i).ToLower() -AsPlainText -Force)
+						$processStartInfo.FileName = "cmd"
+						$processStartInfo.Arguments = "/C echo . && echo %username% && echo ."
+						$processStartInfo.LoadUserProfile = $true
+						$processStartInfo.UseShellExecute = $false
+						$processStartInfo.RedirectStandardOutput = $false
+						$process = [System.Diagnostics.Process]::Start($processStartInfo)
+						$Process.WaitForExit()   
+						#Add setup user to profiles created to allow registry to be created. 
+						If (Test-Path ($UsersProfileFolder + "\Window" + $i) ) {
+							$ProfileList.Add(("Window" + $i).ToLower()) | Out-Null
+							$HideAccounts += ("Window" + $i).ToLower()
+							#Grant Current user rights on new Profiles
+							Write-Host ("`tUpdating ACLs and adding to Profile List: " + ($UsersProfileFolder + "\Window" + $i))
+							$Folderpath=($UsersProfileFolder + "\Window" + $i)
+							$user_account=$env:username
+							$Acl = Get-Acl $Folderpath
+							$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule($user_account, "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+							$Acl.Setaccessrule($Ar)
+							Set-Acl $Folderpath $Acl
+							#Disable User.
+							Disable-LocalUser -Name ("Window" + $i).ToLower() -Confirm:$false
+						}
 					}
 				}
 			}
@@ -1330,7 +1351,11 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	}
 	#Setup Screen Saver
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveActive" "1" "STRING"
-	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaverIsSecure" "1" "STRING"
+	If ($Store){
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaverIsSecure" "0" "STRING"
+	}else{
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaverIsSecure" "1" "STRING"
+	}
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveTimeOut" "600" "STRING"
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "SCRNSAVE.EXE" "C:\Windows\system32\scrnsave.scr" "STRING"	
 	#endregion Wallpaper and Screen Saver		
@@ -1372,7 +1397,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	Set-Reg ($HKEYWE + "\HideDesktopIcons\ClassicStartMenu") "{645FF040-5081-101B-9F08-00AA002F954E}" 0 "DWORD"
 	#Show Web browser (default)
 	Set-Reg ($HKEYWE + "\HideDesktopIcons\NewStartPanel") "{871C5380-42A0-1069-A2EA-08002B30309D}" 0 "DWORD"
-	Set-Reg ($HKEYWE + "\HideDesktopIcons\ClassicStartMenu") "{871C5380-42A0-1069-A2EA-08002B30309D}" 0 "DWORD"
+	Set-Reg ($HKEYWE + "\HideDesktopIcons\ClassicStartMenu") "{871C5380-42A0-1069-A2EA-08002B30309D}" 0 "DWORD" 
 	#UI Tweaks
 	If ($IsVM) {
 		write-host ("`t" + $CurrentProfile + ": Setting UI Optimizations")
@@ -1425,6 +1450,8 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		Set-Reg ($HKEYWE + "\Advanced") "Start_AdminToolsRoot" 0 "DWORD"
 		Set-Reg ($HKEYWE + "\Advanced") "TaskbarSizeMove" 0 "DWORD"
 		Set-Reg ($HKEYWE + "\Advanced") "Start_ShowControlPanel" 1 "DWORD"
+		#Disables "Recently added" Apps List on the Start Menu
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "HideRecentlyAddedApps" 1 "DWORD"
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows NT\SharedFolders") "PublishSharedFolders" 0 "DWORD"
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows NT\SharedFolders") "PublishDfsRoots" 0 "DWORD"
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows NT\Terminal Services") "DisablePasswordSaving" 1 "DWORD"
@@ -1447,18 +1474,17 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		Set-Reg ($HKEYWE) "ShowRecent" 0 "DWORD"
 		# Change Explorer home screen back to "This PC"
 		Set-Reg ($HKEYWE + "\Advanced") "LaunchTo" 1 "DWORD"	
+		#endregion LockDown Start Menu
 		#region Adobe Reader
 		#Accept EULA
 		Set-Reg	($HKEY.replace("HKU\","HKU:\") + "\Software\Adobe\Acrobat Reader\DC\AdobeViewer") "EULA" 1 "DWORD"	
 		#endregion Adobe Reader
 		#Hide All Drives Tc
-		#endregion LockDown Start Menu
 		If (($Store) -and ($CurrentProfile.ToUpper() -ne "DEFAULT" )) {
 			#region LockDown Store Windows Explorer
 			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Windows Explorer")
 			#Prevent Changing Wallpaper
-			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop") "NoChangingWallPaper" 1 "DWORD"	
-			
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop") "NoChangingWallPaper" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "SettingsPageVisibility" $SettingsPageVisibility "String"
 			#Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoDrives" 67108863 "DWORD"		
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "ClearRecentDocsOnExit" 1 "DWORD"
@@ -1711,6 +1737,23 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 					$i++
 				}			
 			#endregion Google Chrome
+			#region Auto Start Custom EXE
+			If ($Custom_Software_Exec -and $Custom_Software_Path) {
+				If (-Not (Test-Path ($UsersProfileFolder + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk"))) {
+					If (Test-Path ($Custom_Software_Path + "\" + $Custom_Software_Exec)) {
+						$ShortCut = $WScriptShell.CreateShortcut($UsersProfileFolder + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk")
+						$ShortCut.TargetPath=($Custom_Software_Path + "\" + $Custom_Software_Exec)
+						$ShortCut.WorkingDirectory = ($Custom_Software_Path)
+						$ShortCut.IconLocation = ('"' + $Custom_Software_Path + ',0"')
+						$ShortCut.Save()
+						#Make ShortCut ran as admin https://stackoverflow.com/questions/28997799/how-to-create-a-run-as-administrator-shortcut-using-powershell
+						$bytes = [System.IO.File]::ReadAllBytes($UsersProfileFolder + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk")
+						$bytes[0x15] = $bytes[0x15] -bor 0x20 #set byte 21 (0x15) bit 6 (0x20) ON
+						[System.IO.File]::WriteAllBytes($UsersProfileFolder + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk", $bytes)
+					}
+				}
+			}
+			#endregion Auto Start Custom EXE
 			#region Assistance
 			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Assistance")
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Assistance\Client\1.0") "NoExplicitFeedback" 1 "DWORD"
@@ -1797,11 +1840,11 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Windows Error Reporting") "Disabled" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows Mail") "DisableCommunities" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows Mail") "ManualLaunchAllowed" 0 "DWORD"
-			
+			#Disable Windows 10 managed default printer
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows NT\CurrentVersion\Windows") "LegacyDefaultPrinterMode" 1 "DWORD"			
 			#endregion Other ??
 			#region OnDrive
 			Remove-Itemproperty -Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Run") -name 'OneDriveSetup' -erroraction 'silentlycontinue'| out-null
-
 			#endregion OnDrive
 			#Remove Network
 			# If(Test-Path ($HKEYWE + "\Desktop\NameSpace\{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}")) {
@@ -2274,6 +2317,7 @@ If (-Not $UserOnly) {
 			Write-Host ""
 			POWERCFG /SETACVALUEINDEX 381b4222-f694-41f0-9685-ff5bb260df2e 0012ee47-9041-4b5d-9b77-535fba8b1442 6738e2c4-e8a5-4a42-b16a-e040e769756e 0
 			POWERCFG /SETDCVALUEINDEX 381b4222-f694-41f0-9685-ff5bb260df2e 0012ee47-9041-4b5d-9b77-535fba8b1442 6738e2c4-e8a5-4a42-b16a-e040e769756e 0
+
 			# Disable Hibernate
 			Write-Host "Disabling Hibernate..." -ForegroundColor Green
 			Write-Host ""
@@ -2296,6 +2340,15 @@ If (-Not $UserOnly) {
 			New-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Network' -Name 'NewNetworkWindowOff' | Out-Null
 
 		}
+		# Setting "Power Button"
+		# 0 -- Do nothing.
+		# 1 -- Sleep.
+		# 2 -- Hibernate.
+		# 3 -- Shut down. <-- Current Setting
+		# 4 -- Turn off the display.
+		Write-Host 'Setting "Power Button"...' -ForegroundColor Green
+		powercfg /SETDCVALUEINDEX SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 7648efa3-dd9c-4e3e-b566-50f929386280 3
+		powercfg /SETDCVALUEINDEX SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 7648efa3-dd9c-4e3e-b566-50f929386280 3
 		
 	}
 }
@@ -2344,8 +2397,6 @@ If (-Not $UserOnly) {
 #============================================================================
 #endregion Main Local Machine Adobe
 #============================================================================
-#Power Settings
-# powercfg.exe /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
 #============================================================================
 #region Main Local Machine Services
 #============================================================================
@@ -2686,6 +2737,7 @@ If (-Not $UserOnly) {
 		Disable-NetFirewallRule -DisplayGroup "Your account" -erroraction 'silentlycontinue' | out-null
 		Disable-NetFirewallRule -DisplayGroup "iSCSI Service" -erroraction 'silentlycontinue' | out-null
 		Disable-NetFirewallRule -DisplayGroup "Xbox Game UI" -erroraction 'silentlycontinue' | out-null
+		Disable-NetFirewallRule -DisplayGroup "Network Discovery" -erroraction 'silentlycontinue' | out-null
 	}
 }
 #============================================================================
@@ -2875,11 +2927,17 @@ If (-Not $UserOnly) {
 #region Main Local Machine Set OEM Info
 #============================================================================
 If (-Not $UserOnly) {
-	if ($NoOEMInfo) {
+	If ($NoOEMInfo) {
 		$Bios_Info = Get-CimInstance -ClassName Win32_BIOS
 		Write-Host "Setup System OEM Info . . ."
-		Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Manufacturer" ((Get-CimInstance -ClassName Win32_ComputerSystem).Manufacturer) "String"
-		Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Model" ((Get-CimInstance -ClassName Win32_ComputerSystem).model + " (Serial Number: " + (Get-CimInstance -ClassName Win32_BIOS).SerialNumber + ")") "String"
+		If (-Not $IsVM) {
+			Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Manufacturer" ((Get-CimInstance -ClassName Win32_ComputerSystem).Manufacturer) "String"
+			If ($OEMInfoAddSerial) {
+				Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Model" ((Get-CimInstance -ClassName Win32_ComputerSystem).model + " (Serial Number: " + (Get-CimInstance -ClassName Win32_BIOS).SerialNumber + ")") "String"
+			}else{
+				Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Model" ((Get-CimInstance -ClassName Win32_ComputerSystem).model) "String"
+			}
+		}
 		If (-Not (Test-Path ($env:windir + "\system32\oobe\info\"))) {
 			New-Item -ItemType directory -Path ($env:windir + "\system32\oobe\info\") | out-null
 		}
@@ -2987,6 +3045,17 @@ If (-Not $UserOnly) {
 	$key = "HKLM:SYSTEM\CurrentControlSet\services\NetBT\Parameters\Interfaces"
 	Get-ChildItem $key |
 	foreach { Set-ItemProperty -Path "$key\$($_.pschildname)" -Name NetbiosOptions -Value 2 -Verbose}
+	If (-Not $IPv6) {
+		Write-Host ("Disabling IPv6...") -foregroundcolor darkgray
+		#https://directaccess.richardhicks.com/2013/08/27/disabling-unused-ipv6-transition-technologies-for-directaccess-clients/
+		Set-Net6to4Configuration -State disabled
+		Set-NetTeredoConfiguration -Type disabled
+		Set-NetIsatapConfiguration -State disabled
+																																														  
+															  
+		#Disabled IPv6 in all interfaces
+		Get-NetAdapterBinding -DisplayName "Internet Protocol Version 6 (TCP/IPv6)" | Set-NetAdapterBinding -Enabled:$false
+	}
 }
 #============================================================================
 #endregion Main Local Machine Disable Netbios
@@ -3094,6 +3163,8 @@ If (-Not $UserOnly) {
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Explorer" "NoDataExecutionPrevention" "0" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Explorer" "NoHeapTerminationOnCorruption" "0" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Explorer" "NoUseStoreOpenWith" "1" "DWord"
+	#Disables "Recently added" Apps List on the Start Menu for All Users
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Explorer" "HideRecentlyAddedApps" "1" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\GameDVR" "AllowGameDVR" "0" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}" "NoBackgroundPolicy" "0" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}" "NoGPOListChanges" "0" "DWord"
@@ -3140,7 +3211,15 @@ If (-Not $UserOnly) {
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "ManagePreviewBuildsPolicyValue" "0" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "PauseFeatureUpdatesStartTime" "8/1/2018" "String"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "PauseQualityUpdatesStartTime" "8/1/2018" "String"
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "AUOptions" "2" "DWord"
+	# Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "NoAutoUpdate" "0" "DWord"
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "ScheduledInstallDay" "1" "DWord"
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "ScheduledInstallEveryWeek" "1" "DWord"
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "ScheduledInstallTime" "1" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "AllowMUUpdateService" "1" "DWord"
+	# https://getadmx.com/?Category=Windows_10_2016&Policy=Microsoft.Policies.WorkplaceJoin::WJ_AutoJoin
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WorkplaceJoin" "autoWorkplaceJoin" "0" "DWord"
+	#Set Default to Microsoft Update instead of Windows Update
 	If (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Services\7971f918-a847-4430-9279-4a52d1efe18d") {
 		$regkeypath= "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Services"
 		$value = "DefaultService"
