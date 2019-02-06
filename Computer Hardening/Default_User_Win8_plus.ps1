@@ -82,7 +82,9 @@
 	* Version 2.1.06 - More Tweaks and test to see of we are running in VM.
 	* Version 2.1.07 - Added ablity to change registry permissions. Fix bug with BGInfo Shortcut. Added $ScriptDateValue to know when the script was ran. Create Shortcut on Desktop for FortiClient ID Remover
 	* Version 2.1.08 - Fix Windows Update options. Tweaks to speed up running -store for a second time. If filename has store in it enable store switch. Added switch for OEMInfoAddSerial. Disabled register domain join computers as devices for Azure. Disable Secure Screen saver for store users. Disables "Recently added" Apps List on the Start Menu for Locked down users. Disable all store user accounts after profile is created. Added IPv6 switch; all IPv6 will be disabled by default. Set "Power Button" to shutdown. Disable Windows 10 managed default printer. Disable Network Discovery network rules. Auto Start Custom exe for all "Window users"
-	* Version 2.1.09 - Fix Cache Issue. Fixed issue with $Custom_Software_Exec shortcut creation issue. Updated example code to convirt string ot array for powershell.exe launch
+	* Version 2.1.09 - Fix Cache Issue. Fixed issue with $Custom_Software_Exec shortcut creation issue. Updated example code to convirt string ot array for powershell.exe launch. 
+	* Version 2.1.10 - Add Ping firewall rule. Fix issue with VM only settings. Disabled lock screen for store users.
+	* Version 2.1.11 - Enable FontSmoothing. Disable SNMP by default. Configure SNMP Settings. Fixed Custom software auto launching link issue. 
 #>
 PARAM (
 	[array]$Profiles  	  		= @("Default"),	
@@ -113,8 +115,8 @@ Start-Process powershell -Verb runAs -ArgumentList $arguments
 Break
 }
 #Fix issue for services
-cd \
-$ScriptVersion = "2.1.09"
+Set-Location -Path "\"
+$ScriptVersion = "2.1.11"
 #############################################################################
 #############################################################################
 
@@ -144,6 +146,7 @@ $ChromeDelegateWhiteList = "https://*.git.com"
 $ScriptVersionKey = "Git Hub" 
 $ScriptVersionValue = "Security Hardening Version"
 $ScriptDateValue = "Security Hardening Date"
+$SNMPValue = "Public"										  
 #Versions of Adobe Reader to setup for.
 $ARV = ("11.0","2005","DC")
 $UserRange = 1..20
@@ -200,7 +203,7 @@ $StoreDenyFolderUser = @(
 $HideAccounts = @(
 	"Admin"
 	"Administrator"
-	"ASPNET"	   
+	"ASPNET"
 	"Guest"
 )
 #endregion Hide Accounts from Logon screen
@@ -329,6 +332,7 @@ $DisableServices = @(
 	"SensrSvc"									# Sensor Service
 	"SharedAccess"                           	# Internet Connection Sharing (ICS)
 	"smphost"									# Microsoft Storage Spaces SMP Service
+	"SNMP"										# SNMP Service
 	"SNMPTRAP"									# SNMP Trap
 	#"SSDPSRV"									# SSDP Discovery	#####Breaks SMB
 	"svsvc"										# Spot Verifier Service
@@ -369,6 +373,7 @@ $DisableServices = @(
 )
 $ManualServices = @(
 	"Nameiphlpsvc"								#IP Helper
+	"wuauserv"									# Windows Update 
 )
 $AutomaticServices = @(
 	"W32Time"									#Windows Time
@@ -377,6 +382,9 @@ $AutomaticServices = @(
 	"upnphost"									# UPnP Device Host    #####Breaks SMB
 	"WlanSvc"                               	# WLAN AutoConfig ##### Breaks Wi-Fi
 	"dmwappushservice"                       	# WAP Push Message Routing Service (see known issues) #### Breaks SysPrep
+	"bits"										# Background Intelligent Transfer Service ### For Windows Update
+	"cryptsvc"									# Cryptographic Services ### For Windows Update
+	"trustedinstaller"							# Windows Modules Installer ### For Windows Update				  
 )
 
 #endregion Services	
@@ -405,25 +413,17 @@ $AutomaticServices = @(
 	"Microsoft.MicrosoftEdge"
 	"Microsoft.MicrosoftEdgeDevToolsClient"
 	"Microsoft.MicrosoftStickyNotes" 
-	"Microsoft.NET.Native.Framework.1.3"
-	"Microsoft.NET.Native.Framework.1.6"
-	"Microsoft.NET.Native.Framework.1.7"
-	"Microsoft.NET.Native.Framework.2.1"
-	"Microsoft.NET.Native.Runtime.1.3"
-	"Microsoft.NET.Native.Runtime.1.4"
-	"Microsoft.NET.Native.Runtime.1.6"
-	"Microsoft.NET.Native.Runtime.1.7"
-	"Microsoft.NET.Native.Runtime.2.1"
+	"Microsoft.NET.Native.Framework"
+	"Microsoft.NET.Native.Runtime"
 	"Microsoft.Office.OneNote"
 	"Microsoft.PPIProjection"
 	#"Microsoft.People"
 	"Microsoft.Services.Store.Engagement"
 	#"Microsoft.SkypeApp"
 	"Microsoft.StorePurchaseApp"
-	"Microsoft.VCLibs.120.00"
-	"Microsoft.VCLibs.140.00"
-	"Microsoft.VCLibs.140.00.UWPDesktop"
-	"Microsoft.UI.Xaml.2.0"
+	"Microsoft.VCLibs"
+	"Microsoft.VCLibs.UWPDesktop"
+	"Microsoft.UI.Xaml"
 	"Microsoft.Wallet"
 	"Microsoft.Win32WebViewHost"
 	"Microsoft.windowscommunicationsapps" ##Breaks Microsoft Accounts from UWP
@@ -476,7 +476,7 @@ $HKEYWE = ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentV
 $HKEYIE = ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Internet Explorer")
 $HKEYIS = ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Internet Settings")
 $WindowsSearchPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search"
-$UACPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+#$UACPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
 $HKLWE = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer"
 $HKAR = "HKLM:\SOFTWARE\Policies\Adobe\Acrobat Reader"
 $HKSCH = "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL"
@@ -524,9 +524,9 @@ if ( $User -and $Password) {
 	$Credential = New-Object System.Management.Automation.PSCredential ($User, (ConvertTo-SecureString $Password -AsPlainText -Force))
 }
 #Powershell.exe launch cleanup
-If ($Profiles[0].Contains(",")){
+If ($Profiles[0].Contains(",")) {
 	#Setup ProfileList
-	ForEach ($Profile in $Profiles[0].split(",")) {
+	ForEach ($Profile in ($Profiles[0].split(","))) {
 		If ($Profile) {
 			$ProfileList.Add($Profile)
 			$HideAccounts += $Profile
@@ -578,7 +578,7 @@ function FormatElapsedTime($ts) {
     }
     return $elapsedTime
 }
-function Take-KeyPermissions {
+function Set-KeyOwnership {
     # Developed for PowerShell v4.0
     # Required Admin privileges
     # Links:
@@ -601,11 +601,11 @@ function Take-KeyPermissions {
     $import = '[DllImport("ntdll.dll")] public static extern int RtlAdjustPrivilege(ulong a, bool b, bool c, ref bool d);'
     $ntdll = Add-Type -Member $import -Name NtDll -PassThru
     $privileges = @{ SeTakeOwnership = 9; SeBackup =  17; SeRestore = 18 }
-    foreach ($i in $privileges.Values) {
+    ForEach ($i in $privileges.Values) {
         $null = $ntdll::RtlAdjustPrivilege($i, 1, 0, [ref]0)
     }
 
-    function Take-KeyPermissions {
+    function Set-KeyOwnership {
         param($rootKey, $key, $sid, $recurse, $recurseLevel = 0)
 
         ### Step 2 - get ownerships of key - it works only for current key
@@ -629,13 +629,13 @@ function Take-KeyPermissions {
 
         ### Step 5 - recursively repeat steps 2-5 for subkeys
         if ($recurse) {
-            foreach($subKey in $regKey.OpenSubKey('').GetSubKeyNames()) {
-                Take-KeyPermissions $rootKey ($key+'\'+$subKey) $sid $recurse ($recurseLevel+1)
+            ForEach($subKey in $regKey.OpenSubKey('').GetSubKeyNames()) {
+                Set-KeyOwnership $rootKey ($key+'\'+$subKey) $sid $recurse ($recurseLevel+1)
             }
         }
     }
 
-    Take-KeyPermissions $rootKey $key $sid $recurse
+    Set-KeyOwnership $rootKey $key $sid $recurse
 }
 function Get-CurrentUserSID {            
 	[CmdletBinding()]            
@@ -922,10 +922,10 @@ function Set-QuickAccess {
 	 
 	#Pin or Unpin 
 	$QuickAccess = New-Object -ComObject shell.application 
-	$TargetObject = $QuickAccess.Namespace("shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}").Items() | where {$_.Path -eq "$Path"} 
+	$TargetObject = $QuickAccess.Namespace("shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}").Items() | Where-Object {$_.Path -eq "$Path"} 
 	If ($Action -eq "Pin") 
 		{ 
-			If ($TargetObject -ne $null) 
+			If (-Not ([string]::IsNullOrEmpty($TargetObject))) 
 				{ 
 					Write-Warning "Path is already pinned to Quick Access." 
 					return 
@@ -937,7 +937,7 @@ function Set-QuickAccess {
 		} 
 	ElseIf ($Action -eq "Unpin") 
 		{ 
-			If ($TargetObject -eq $null) 
+			If (-Not ([string]::IsNullOrEmpty($TargetObject)))
 				{ 
 					Write-Warning "Path is not pinned to Quick Access." 
 					return 
@@ -994,10 +994,10 @@ Function Get-MachineType {
     } 
     Process 
     { 
-        foreach ($Computer in $ComputerName) { 
+        ForEach ($Computer in $ComputerName) { 
             Write-Verbose "Checking $Computer" 
             try { 
-                $hostdns = [System.Net.DNS]::GetHostEntry($Computer) 
+                #$hostdns = [System.Net.DNS]::GetHostEntry($Computer) 
                 $ComputerSystemInfo = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $Computer -ErrorAction Stop -Credential $Credential 
                  
                 switch ($ComputerSystemInfo.Model) { 
@@ -1132,7 +1132,7 @@ If (-Not $NoCacheUpdate) {
 If (-Not $UserOnly) {
 	write-host ("Hardening Permissions: " + ($env:systemdrive + "\"))
 	$acl = Get-Acl ($env:systemdrive + "\")
-	If ($acl.Access | where { $_.IdentityReference -eq "NT AUTHORITY\Authenticated Users" }) {
+	If ($acl.Access | Where-Object { $_.IdentityReference -eq "NT AUTHORITY\Authenticated Users" }) {
 		$usersid = New-Object System.Security.Principal.Ntaccount ("NT AUTHORITY\Authenticated Users")
 		$acl.PurgeAccessRules($usersid)
 		$acl | Set-Acl ($env:systemdrive + "\")
@@ -1140,7 +1140,7 @@ If (-Not $UserOnly) {
 	If (Test-Path $Custom_Software_Path) {
 		write-host ("Setting Permissions: " + $Custom_Software_Path)
 		$acl = Get-Acl $Custom_Software_Path
-		If (-Not ($acl.Access | where { $_.IdentityReference -eq "BUILTIN\Users" -and $_.FileSystemRights -eq "FullControl"})) {
+		If (-Not ($acl.Access | Where-Object { $_.IdentityReference -eq "BUILTIN\Users" -and $_.FileSystemRights -eq "FullControl"})) {
 			$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule('Users', "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
 			$Acl.Setaccessrule($Ar)
 			Set-Acl $Custom_Software_Path $Acl
@@ -1187,19 +1187,19 @@ If ($Store) {
 		#secedit /export /cfg c:\secpol.cfg
 		Write-Host 'Changing Password Policy to create "Window" users . . .'
 		$process = Start-Process -FilePath ("secedit") -ArgumentList @("/export","/cfg","c:\secpol.cfg") -PassThru -NoNewWindow -wait
-		(gc C:\secpol.cfg).replace("PasswordComplexity = 1", "PasswordComplexity = 0") | Out-File C:\secpol.cfg
-		(gc C:\secpol.cfg).replace("MinimumPasswordAge = 1", "MinimumPasswordAge = 0") | Out-File C:\secpol.cfg
-		(gc C:\secpol.cfg).replace("MinimumPasswordLength = 14", "MinimumPasswordLength = 0") | Out-File C:\secpol.cfg
+		(Get-Content C:\secpol.cfg).replace("PasswordComplexity = 1", "PasswordComplexity = 0") | Out-File C:\secpol.cfg
+		(Get-Content C:\secpol.cfg).replace("MinimumPasswordAge = 1", "MinimumPasswordAge = 0") | Out-File C:\secpol.cfg
+		(Get-Content C:\secpol.cfg).replace("MinimumPasswordLength = 14", "MinimumPasswordLength = 0") | Out-File C:\secpol.cfg
 		#secedit /configure /db c:\windows\security\local.sdb /cfg c:\secpol.cfg /areas SECURITYPOLICY
 		$process = Start-Process -FilePath ("secedit") -ArgumentList @("/configure","/db","c:\windows\security\local.sdb","/cfg","c:\secpol.cfg","/areas","SECURITYPOLICY") -PassThru -NoNewWindow -wait
-		rm -force c:\secpol.cfg -confirm:$false
+		Remove-Item -force c:\secpol.cfg -confirm:$false
 		# net accounts /minpwage:0 /minpwlen:0
 		ForEach ( $i in $UserRange) {	
 			If ($i) {
 				#Only create profile if user is a local user
 				If (-Not (Get-LocalUser -Name ("Window" + $i) -erroraction 'silentlycontinue')) {
 					#Only create profile if no profile exists
-					If (-Not (Test-Path ((gwmi Win32_UserProfile |where { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |select Localpath).localpath + "\ntuser.dat"))) {
+					If (-Not (Test-Path ((Get-WmiObject Win32_UserProfile |Where-Object { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |Select-Objec Localpath).localpath + "\ntuser.dat"))) {
 						write-host ("Creating User: " +("Window" + $i))
 						New-LocalUser -Name ("Window" + $i).ToLower() -Description "Store Window User" -FullName ("Window" + $i) -Password (ConvertTo-SecureString ("Window" + $i).ToLower() -AsPlainText -Force) -AccountNeverExpires -UserMayNotChangePassword -PasswordNeverExpires | Out-Null
 						Add-LocalGroupMember -Name 'Administrators' -Member ("Window" + $i) | Out-Null
@@ -1272,7 +1272,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				}
 			}
 		}else{
-			$UserProfile = (gwmi Win32_UserProfile |where { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |select Localpath).localpath	
+			$UserProfile = (Get-WmiObject Win32_UserProfile |Where-Object { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |Select-Object Localpath).localpath	
 			If (Test-Path ($UserProfile + "\ntuser.dat")) { 
 				#Load Default User Hive
 				#REG LOAD $HKEY ($UserProfile + "\ntuser.dat")
@@ -1298,7 +1298,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			}
 			If ($Store) {
 				#Add Deny ACL
-				foreach ( $file in $StoreDenyFolder) {
+				ForEach ( $file in $StoreDenyFolder) {
 					If (Test-Path $file) {
 						$Acl = Get-Acl ($file)
 						$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "Read", "Deny")
@@ -1307,13 +1307,13 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 					}
 				}
 				#Add Deny ACL User Profile
-				foreach ( $file in $StoreDenyFolderUser) {
+				ForEach ( $file in $StoreDenyFolderUser) {
 					If (Test-Path ($UserProfile + "\"+ $file)) {
 						$Acl = Get-Acl ($UserProfile + "\"+ $file)
 						$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "Read", "Deny")
 						$Acl.Setaccessrule($Ar)
 						Set-Acl ($UserProfile + "\"+ $file) $Acl	
-						Get-ChildItem -path ($UserProfile + "\"+ $file) -Recurse -Force | foreach {$_.attributes = "Hidden"}
+						Get-ChildItem -path ($UserProfile + "\"+ $file) -Recurse -Force | ForEach-Object {$_.attributes = "Hidden"}
 					}
 				}
 			}
@@ -1369,6 +1369,8 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	}
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveTimeOut" "600" "STRING"
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "SCRNSAVE.EXE" "C:\Windows\system32\scrnsave.scr" "STRING"	
+	#Set FontSmoothing
+	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "FontSmoothing" "2" "STRING"			
 	#endregion Wallpaper and Screen Saver		
 	#region Windows Explorer	
 	write-host ("`t" + $CurrentProfile + ": Setting up Policies Windows Explorer")
@@ -1412,17 +1414,18 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	#UI Tweaks
 	If ($IsVM) {
 		write-host ("`t" + $CurrentProfile + ": Setting UI Optimizations")
-		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects") "VisualFXSetting" 3 "DWORD"
-		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "ListviewAlphaSelect" 0 "DWORD"
-		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "ListviewShadow" 0 "DWORD"
-		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "MinAnimate" 0 "DWORD"
-		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "TaskbarAnimations" 0 "DWORD"
-		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Software\Microsoft\Windows\DWM") "EnableAeroPeek" 0 "DWORD"
-		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Software\Microsoft\Windows\DWM") "AlwaysHibernateThumbnails" 0 "DWORD"
-		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Control Panel\Desktop") "FontSmoothing" "0" "String"
-		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Control Panel\Desktop") "MenuShowDelay" "0" "String"
-		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Control Panel\Desktop") "CursorBlinkRate" "-1" "String"
-		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "Control Panel\Desktop") "UserPreferencesMask" "90,12,01,80" "Binary"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects") "VisualFXSetting" 3 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "ListviewAlphaSelect" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "ListviewShadow" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "MinAnimate" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "TaskbarAnimations" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\DWM") "EnableAeroPeek" 0 "DWORD"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\DWM") "AlwaysHibernateThumbnails" 0 "DWORD"
+		#Chrome needs FontSmoothing Enabled				 
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "FontSmoothing" "2" "String"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "MenuShowDelay" "0" "String"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "CursorBlinkRate" "-1" "String"
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "UserPreferencesMask" (90,12,01,80) "Binary"
 		# DisableTransparency:
 		Write-Host "Removing Transparency Effects..." -ForegroundColor Green
 		Write-Host ""
@@ -1751,11 +1754,13 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			#region Auto Start Custom EXE
 			If ($Custom_Software_Exec -and $Custom_Software_Path) {
 				If (-Not (Test-Path ($UsersProfileFolder + "\" + $CurrentProfile + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk"))) {
+					If (-Not (Test-Path ($UsersProfileFolder + "\" + $CurrentProfile + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"))) {
+						New-Item -Force -ItemType "directory" -Path ($UsersProfileFolder + "\" + $CurrentProfile + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup")
 					If (Test-Path ($Custom_Software_Path + "\" + $Custom_Software_Exec)) {
 						$ShortCut = $WScriptShell.CreateShortcut($UsersProfileFolder + "\" + $CurrentProfile + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk")
 						$ShortCut.TargetPath=($Custom_Software_Path + "\" + $Custom_Software_Exec)
 						$ShortCut.WorkingDirectory = ($Custom_Software_Path)
-						$ShortCut.IconLocation = ('"' + $Custom_Software_Path + ',0"')
+						$ShortCut.IconLocation = ( $Custom_Software_Path + "\" + $Custom_Software_Exec + ",0")
 						$ShortCut.Save()
 						#Make ShortCut ran as admin https://stackoverflow.com/questions/28997799/how-to-create-a-run-as-administrator-shortcut-using-powershell
 						$bytes = [System.IO.File]::ReadAllBytes($UsersProfileFolder + "\" + $CurrentProfile + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk")
@@ -1854,6 +1859,9 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			#Disable Windows 10 managed default printer
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows NT\CurrentVersion\Windows") "LegacyDefaultPrinterMode" 1 "DWORD"			
 			#endregion Other ??
+			#region Disable Lock Screen
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Personalization") "NoLockScreen " 1 "DWORD"
+			#endregion Disable Lock Screen
 			#region OnDrive
 			Remove-Itemproperty -Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Run") -name 'OneDriveSetup' -erroraction 'silentlycontinue'| out-null
 			#endregion OnDrive
@@ -1998,7 +2006,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	$process = (REG UNLOAD $HKEY)
 	If ($LASTEXITCODE -ne 0 ) {
 		[gc]::collect()
-		sleep 3
+		Start-Sleep 3
 		$process = (REG UNLOAD $HKEY)
 		If ($LASTEXITCODE -ne 0 ) {
 			write-error ("`t" + $CurrentProfile + ": Can not unload user registry!")
@@ -2015,7 +2023,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				}
 				
 		}else{
-			$UserProfile = (gwmi Win32_UserProfile |where { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |select Localpath).localpath	
+			$UserProfile = (Get-WmiObject Win32_UserProfile |Where-Object { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |Select-Object Localpath).localpath
 			If (Test-Path ($UserProfile + "\Favorites")) {
 				Remove-Item -path ($UserProfile + "\Favorites") -recurse -force
 				Copy-Item  ($LICache + "\Favorites") -Destination ($UserProfile + "\Favorites") -recurse -force
@@ -2045,9 +2053,9 @@ If (-Not $UserOnly) {
 				Write-Host ("`t" + $Feature) -ForegroundColor gray
 				Disable-WindowsOptionalFeature -Online -FeatureName $Feature -NoRestart | out-null
 			}
-			If ((Get-WindowsCapability -Online | where {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"}).state) {
+			If ((Get-WindowsCapability -Online | Where-Object {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"}).state) {
 				Write-Host ("`t" + $Feature) -ForegroundColor gray
-				Get-WindowsCapability -Online | where {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"} | Remove-WindowsCapability -online | out-null
+				Get-WindowsCapability -Online | Where-Object {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"} | Remove-WindowsCapability -online | out-null
 			}
 		}
 		#endregion Windows Feature setup
@@ -2160,9 +2168,9 @@ If (-Not $UserOnly) {
 	}
 	#Removes UsersLibraries from This PC
 	If (Test-Path "HKCR:\CLSID\{031E4825-7B94-4dc3-B131-E946B44C8DD5}") {
-		Take-KeyPermissions "HKCR" "CLSID\{031E4825-7B94-4dc3-B131-E946B44C8DD5}" 
+		Set-KeyOwnership "HKCR" "CLSID\{031E4825-7B94-4dc3-B131-E946B44C8DD5}" 
 		Set-Reg "HKCR:\CLSID\{031E4825-7B94-4dc3-B131-E946B44C8DD5}" "System.IsPinnedToNameSpaceTree"  0 "DWORD"
-		Take-KeyPermissions "HKCR" "WOW6432Node\CLSID\{031E4825-7B94-4dc3-B131-E946B44C8DD5}" 
+		Set-KeyOwnership "HKCR" "WOW6432Node\CLSID\{031E4825-7B94-4dc3-B131-E946B44C8DD5}" 
 		Set-Reg "HKCR:\WOW6432Node\CLSID\{031E4825-7B94-4dc3-B131-E946B44C8DD5}" "System.IsPinnedToNameSpaceTree"  0 "DWORD"
 	}
 	
@@ -2415,7 +2423,7 @@ If (-Not $UserOnly) {
 	Write-Host "Setting up Services. . . "
 	# Source: https://github.com/W4RH4WK/Debloat-Windows-10/blob/master/scripts/disable-services.ps1
 	#Services to Disable
-	foreach ($service in $DisableServices) {
+	ForEach ($service in $DisableServices) {
 		If ( Get-Service -Name $service -erroraction 'silentlycontinue') {
 			write-host ("`tDisabling: " + (Get-Service -Name $service).DisplayName ) -foregroundcolor green 
 			Get-Service -Name $service | Stop-Service 
@@ -2423,7 +2431,7 @@ If (-Not $UserOnly) {
 		}
 	}
 	#Services to set as Manual
-	foreach ($service in $ManualServices) {
+	ForEach ($service in $ManualServices) {
 		If ( Get-Service -Name $service -erroraction 'silentlycontinue') {
 			write-host ("`tManual Startup: " + (Get-Service -Name $service).DisplayName ) -foregroundcolor yellow 
 			Get-Service -Name $service | Stop-Service 
@@ -2431,7 +2439,7 @@ If (-Not $UserOnly) {
 		}
 	}
 	#Services to set as Automatic
-	foreach ($service in $AutomaticServices) {
+	ForEach ($service in $AutomaticServices) {
 		If ( Get-Service -Name $service -erroraction 'silentlycontinue') {
 			write-host ("`tAutomatic Startup: " + (Get-Service -Name $service).DisplayName ) -foregroundcolor red 
 			Get-Service -Name $service | Set-Service -StartupType Automatic
@@ -2728,7 +2736,7 @@ If (-Not $UserOnly) {
 		Remove-NetFirewallRule -Group (split-path $Custom_Software_Path -Leaf ) -erroraction 'silentlycontinue'
 		If (Test-Path $Custom_Software_Path) {
 			Write-Host ("Adding " + (split-path $Custom_Software_Path -Leaf ) + " to Firewall...") -foregroundcolor darkgray
-			Get-ChildItem -Path $Custom_Software_Path -Filter *.exe -Recurse| ForEach {
+			Get-ChildItem -Path $Custom_Software_Path -Filter *.exe -Recurse| ForEach-Object {
 				Write-Host ("`t Adding rule for: " + $_.Name) -foregroundcolor yellow
 				New-NetFirewallRule -DisplayName $_.Name -Direction Inbound -Program $_.VersionInfo.FileName -Group (split-path $Custom_Software_Path -Leaf ) -Action Allow | out-null
 			}
@@ -2750,6 +2758,8 @@ If (-Not $UserOnly) {
 		Disable-NetFirewallRule -DisplayGroup "Xbox Game UI" -erroraction 'silentlycontinue' | out-null
 		Disable-NetFirewallRule -DisplayGroup "Network Discovery" -erroraction 'silentlycontinue' | out-null
 	}
+	Write-Host ("`t Adding rule for: Ping")
+	New-NetFirewallRule -DisplayName "Allow inbound ICMPv4" -Direction Inbound -Protocol ICMPv4 -IcmpType 8  -Action Allow | out-null
 }
 #============================================================================
 #endregion Main Local Machine Firewall Setup
@@ -2815,8 +2825,8 @@ If (-Not $UserOnly) {
 If (-Not $UserOnly) {
 	If ([int]([environment]::OSVersion.Version.Major.tostring() + [environment]::OSVersion.Version.Minor.tostring()) -gt 61) {
 		#region Get list of currently installed and provisioned Appx packages
-		$AllInstalled = Get-AppxPackage -AllUsers | Foreach {$_.Name}
-		$AllProvisioned = Get-ProvisionedAppxPackage -Online | Foreach {$_.DisplayName}
+		$AllInstalled = Get-AppxPackage -AllUsers | ForEach-Object {$_.Name}
+		$AllProvisioned = Get-ProvisionedAppxPackage -Online | ForEach-Object {$_.DisplayName}
 		#endregion
 		 
 		#region Remove Appx Packages
@@ -2829,9 +2839,9 @@ If (-Not $UserOnly) {
 		Write-Host '#' -ForegroundColor Green
 		Write-Host '#####################################' -ForegroundColor Green
 		Write-Host "`n"
-		Foreach($Appx in $AllInstalled){
+		ForEach($Appx in $AllInstalled){
 			$error.Clear()
-			If(-Not $Keep.Contains($Appx)){
+			If(-Not $Keep.Contains([system.String]::Join(".", ($Appx.split(".") |  ForEach-Object {if (($_ -as [int] -eq $null )) {$_ }})))){
 				Try{
 					#Turn off the progress bar
 					$ProgressPreference = 'silentlyContinue'
@@ -2867,11 +2877,11 @@ If (-Not $UserOnly) {
 		Write-Host '#' -ForegroundColor Green
 		Write-Host '#####################################' -ForegroundColor Green
 		Write-Host "`n"
-		Foreach($Appx in $AllProvisioned){
+		ForEach($Appx in $AllProvisioned){
 			$error.Clear()
-			If(-Not $Keep.Contains($Appx)){
+			If(-Not $Keep.Contains([system.String]::Join(".", ($Appx.split(".") |  ForEach-Object {if (($_ -as [int] -eq $null )) {$_ }})))){
 				Try{
-					Get-ProvisionedAppxPackage -Online | where {$_.DisplayName -eq $Appx} | Remove-ProvisionedAppxPackage -Online | Out-Null
+					Get-ProvisionedAppxPackage -Online | Where-Object {$_.DisplayName -eq $Appx} | Remove-ProvisionedAppxPackage -Online | Out-Null
 				}
 				 
 				Catch{
@@ -2939,7 +2949,7 @@ If (-Not $UserOnly) {
 #============================================================================
 If (-Not $UserOnly) {
 	If ($NoOEMInfo) {
-		$Bios_Info = Get-CimInstance -ClassName Win32_BIOS
+		#$Bios_Info = Get-CimInstance -ClassName Win32_BIOS
 		Write-Host "Setup System OEM Info . . ."
 		If (-Not $IsVM) {
 			Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Manufacturer" ((Get-CimInstance -ClassName Win32_ComputerSystem).Manufacturer) "String"
@@ -3055,21 +3065,42 @@ If (-Not $UserOnly) {
 	Write-Host ("Disabling Netbios...") -foregroundcolor darkgray
 	$key = "HKLM:SYSTEM\CurrentControlSet\services\NetBT\Parameters\Interfaces"
 	Get-ChildItem $key |
-	foreach { Set-ItemProperty -Path "$key\$($_.pschildname)" -Name NetbiosOptions -Value 2 -Verbose}
+	ForEach-Object { Set-ItemProperty -Path "$key\$($_.pschildname)" -Name NetbiosOptions -Value 2 -Verbose}
 	If (-Not $IPv6) {
 		Write-Host ("Disabling IPv6...") -foregroundcolor darkgray
 		#https://directaccess.richardhicks.com/2013/08/27/disabling-unused-ipv6-transition-technologies-for-directaccess-clients/
 		Set-Net6to4Configuration -State disabled
 		Set-NetTeredoConfiguration -Type disabled
 		Set-NetIsatapConfiguration -State disabled
-																																														  
-															  
+
 		#Disabled IPv6 in all interfaces
 		Get-NetAdapterBinding -DisplayName "Internet Protocol Version 6 (TCP/IPv6)" | Set-NetAdapterBinding -Enabled:$false
 	}
 }
 #============================================================================
 #endregion Main Local Machine Disable Netbios
+#============================================================================
+#============================================================================
+#region SNMP Setup
+#============================================================================
+If ($Store) {
+	Write-Host ("Setting up SNMP...") -foregroundcolor darkgray
+	If (-Not (Get-Service -Name "SNMP" | Out-null)) {
+		Write-Host ("`tInstalling up SNMP...") -foregroundcolor darkgray
+		Enable-WindowsOptionalFeature -online -FeatureName "SNMP" -NoRestart
+		Get-Service -Name "SNMP" | Set-Service -StartupType Disabled 
+	}
+	(get-item "HKLM:SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities").property| ForEach-Object { Remove-ItemProperty -Name $_ -Path "HKLM:SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities"}
+	#Set Community
+	Set-Reg "HKLM:SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities" $SNMPValue 4 "DWORD"
+	#Sets All info
+	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\RFC1156Agent" "sysServices" 79 "DWORD"
+	#Allows All hosts
+	(get-item "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\PermittedManagers").property| ForEach-Object { Remove-ItemProperty -Name $_ -Path "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\PermittedManagers"}
+
+}
+#============================================================================
+#endregion SNMP Setup
 #============================================================================
 #============================================================================
 #region Set Registry Permissions
@@ -3089,7 +3120,7 @@ Write-Host ("Setting Registry Permissions ... ") -foregroundcolor darkgray
 		If(!(Test-Path $path)) {
 			New-Item -Path $path -Force | Out-Null
 		}
-		Take-KeyPermissions $item.Hive $item.Key
+		Set-KeyOwnership $item.Hive $item.Key
 		$Acl = Get-ACL $path
 		$AccessRule= New-Object System.Security.AccessControl.RegistryAccessRule($item.User,$item.Perm,$item.Action)
 		$Acl.SetAccessRule($AccessRule)
@@ -3266,31 +3297,31 @@ If (-Not $UserOnly) {
 	
 	$regkeypath= "HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services"
 	$value = "fAllowFullControl"
-	$test = (Get-ItemProperty $regkeypath).$value -eq $null 
+	$test = ([string]::IsNullOrEmpty((Get-ItemProperty $regkeypath).$value))
 	If ($test -eq $False) {
 		Remove-ItemProperty -path $regkeypath -name $value
 	} 
 	$regkeypath= "HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services"
 	$value = "fUseMailto"
-	$test = (Get-ItemProperty $regkeypath).$value -eq $null 
+	$test = ([string]::IsNullOrEmpty((Get-ItemProperty $regkeypath).$value))
 	If ($test -eq $False) {
 		Remove-ItemProperty -path $regkeypath -name $value
 	} 
 	$regkeypath= "HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services"
 	$value = "MaxTicketExpiry"
-	$test = (Get-ItemProperty $regkeypath).$value -eq $null 
+	$test = ([string]::IsNullOrEmpty((Get-ItemProperty $regkeypath).$value))
 	If ($test -eq $False) {
 		Remove-ItemProperty -path $regkeypath -name $value
 	} 
 	$regkeypath= "HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services"
 	$value = "MaxTicketExpiryUnits"
-	$test = (Get-ItemProperty $regkeypath).$value -eq $null 
+	$test = ([string]::IsNullOrEmpty((Get-ItemProperty $regkeypath).$value))
 	If ($test -eq $False) {
 		Remove-ItemProperty -path $regkeypath -name $value
 	}
 	$regkeypath= "HKLM:\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"
 	$value = "EnableScriptBlockInvocationLogging"
-	$test = (Get-ItemProperty $regkeypath).$value -eq $null 
+	$test = ([string]::IsNullOrEmpty((Get-ItemProperty $regkeypath).$value))
 	If ($test -eq $False) {
 		Remove-ItemProperty -path $regkeypath -name $value
 	}
