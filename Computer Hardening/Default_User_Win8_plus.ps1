@@ -384,7 +384,7 @@ $AutomaticServices = @(
 	"dmwappushservice"                       	# WAP Push Message Routing Service (see known issues) #### Breaks SysPrep
 	"bits"										# Background Intelligent Transfer Service ### For Windows Update
 	"cryptsvc"									# Cryptographic Services ### For Windows Update
-	"trustedinstaller"							# Windows Modules Installer ### For Windows Update				  
+	"trustedinstaller"							# Windows Modules Installer ### For Windows Update
 )
 
 #endregion Services	
@@ -1199,7 +1199,7 @@ If ($Store) {
 				#Only create profile if user is a local user
 				If (-Not (Get-LocalUser -Name ("Window" + $i) -erroraction 'silentlycontinue')) {
 					#Only create profile if no profile exists
-					If (-Not (Test-Path ((Get-WmiObject Win32_UserProfile |Where-Object { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |Select-Objec Localpath).localpath + "\ntuser.dat"))) {
+					If (-Not (Test-Path ((Get-WmiObject Win32_UserProfile |Where-Object { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |Select-Object Localpath).localpath + "\ntuser.dat"))) {
 						write-host ("Creating User: " +("Window" + $i))
 						New-LocalUser -Name ("Window" + $i).ToLower() -Description "Store Window User" -FullName ("Window" + $i) -Password (ConvertTo-SecureString ("Window" + $i).ToLower() -AsPlainText -Force) -AccountNeverExpires -UserMayNotChangePassword -PasswordNeverExpires | Out-Null
 						Add-LocalGroupMember -Name 'Administrators' -Member ("Window" + $i) | Out-Null
@@ -1370,7 +1370,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveTimeOut" "600" "STRING"
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "SCRNSAVE.EXE" "C:\Windows\system32\scrnsave.scr" "STRING"	
 	#Set FontSmoothing
-	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "FontSmoothing" "2" "STRING"			
+	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "FontSmoothing" "2" "STRING"
 	#endregion Wallpaper and Screen Saver		
 	#region Windows Explorer	
 	write-host ("`t" + $CurrentProfile + ": Setting up Policies Windows Explorer")
@@ -1421,7 +1421,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "TaskbarAnimations" 0 "DWORD"
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\DWM") "EnableAeroPeek" 0 "DWORD"
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\DWM") "AlwaysHibernateThumbnails" 0 "DWORD"
-		#Chrome needs FontSmoothing Enabled				 
+		#Chrome needs FontSmoothing Enabled
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "FontSmoothing" "2" "String"
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "MenuShowDelay" "0" "String"
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "CursorBlinkRate" "-1" "String"
