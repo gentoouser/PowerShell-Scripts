@@ -85,6 +85,7 @@
 	* Version 2.1.09 - Fix Cache Issue. Fixed issue with $Custom_Software_Exec shortcut creation issue. Updated example code to convirt string ot array for powershell.exe launch. 
 	* Version 2.1.10 - Add Ping firewall rule. Fix issue with VM only settings. Disabled lock screen for store users.
 	* Version 2.1.11 - Enable FontSmoothing. Disable SNMP by default. Configure SNMP Settings. Fixed Custom software auto launching link issue. 
+	* Version 2.1.12 - More Disabling of the Lockscreen for stores. Added Custiomized Win+X setting for stores. Fix of Control panel for stores. Copy Icons to all users desktop if there is a Desktop folder in the LICache. Added ScheduledJob on startup to clean temp files.															 
 #>
 PARAM (
 	[array]$Profiles  	  		= @("Default"),	
@@ -116,7 +117,7 @@ Break
 }
 #Fix issue for services
 Set-Location -Path "\"
-$ScriptVersion = "2.1.11"
+$ScriptVersion = "2.1.12"
 #############################################################################
 #############################################################################
 
@@ -131,6 +132,7 @@ $IE_Margin_Top = "0.500000"
 $IE_Margin_Bottom = "0.500000"
 $IE_Margin_Left = "0.166000"
 $IE_Margin_Right = "0.166000"
+$IE_Cache_Size = 1024
 $Custom_Software_Path = (${env:ProgramFiles(x86)} + "\Custom_app")
 $Custom_Software_Exec = "Custom.exe"
 $Custom_Wallpaper_SubFolder = "Wallpapers"
@@ -142,6 +144,8 @@ $BGInfo_StartupLink = "Bginfo Slient Start x64.lnk"
 $BGInfo_StartupLink_Store = "Bginfo Slient Start VDI.lnk"
 $SettingsPageVisibility = "showonly:printers;defaultapps;display;mousetouchpad;network-ethernet;notifications;usb"
 $ChromeBaseZip = "Google_Profile_Base.zip"
+#Easy way to make Custom Settings: https://www.howtogeek.com/113570/how-to-edit-the-winx-menu-in-windows-8-using-a-free-tool/
+$WinXZip = "WinX.zip"
 $ChromeDelegateWhiteList = "https://*.git.com"
 $ScriptVersionKey = "Git Hub" 
 $ScriptVersionValue = "Security Hardening Version"
@@ -372,8 +376,8 @@ $DisableServices = @(
 	# "BcastDVRUserService_62ab9"
 )
 $ManualServices = @(
-	"Nameiphlpsvc"								#IP Helper
-	"wuauserv"									# Windows Update 
+	"Nameiphlpsvc"								# IP Helper
+	"wuauserv"									# Windows Update
 )
 $AutomaticServices = @(
 	"W32Time"									#Windows Time
@@ -1070,8 +1074,8 @@ If (-Not $NoCacheUpdate) {
 		New-Item -ItemType directory -Path $LICache | Out-Null
 		$Acl = Get-Acl $LICache
 		$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule('Users', "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
-		$Acl.Setaccessrule($Ar)
-		Set-Acl $LICache $Acl
+		$Acl.Setaccessrule($Ar) | Out-Null
+		Set-Acl $LICache $Acl | Out-Null
 	}
 	#Map UNC path or local path as PSDrive
 	If (-Not (Test-Path $RemoteFiles -erroraction 'silentlycontinue')) {
@@ -1110,7 +1114,7 @@ If (-Not $NoCacheUpdate) {
 	}
 	#Sync files to local cache
 	If (Test-Path "PSRemote:\") {
-		write-host ("Copying to Local Install cache: " + $LICache)
+		write-host ("Copying to Local Install cache: " + $LICache + " Please Wait . . .")
 		$CurrentScriptUTC = $(Get-Item $MyInvocation.MyCommand.Definition).LastWriteTimeUtc		
 		#Copy-Item  "PSRemote:\*" -Destination $LICache -Recurse -Force
 		#Copy-Newer -Source "PSRemote:\" -Destination $LICache -Exclude @("logs") -Overwrite
@@ -1134,16 +1138,16 @@ If (-Not $UserOnly) {
 	$acl = Get-Acl ($env:systemdrive + "\")
 	If ($acl.Access | Where-Object { $_.IdentityReference -eq "NT AUTHORITY\Authenticated Users" }) {
 		$usersid = New-Object System.Security.Principal.Ntaccount ("NT AUTHORITY\Authenticated Users")
-		$acl.PurgeAccessRules($usersid)
-		$acl | Set-Acl ($env:systemdrive + "\")
+		$acl.PurgeAccessRules($usersid) | Out-Null
+		$acl | Set-Acl ($env:systemdrive + "\") | Out-Null
 	}
 	If (Test-Path $Custom_Software_Path) {
 		write-host ("Setting Permissions: " + $Custom_Software_Path)
 		$acl = Get-Acl $Custom_Software_Path
 		If (-Not ($acl.Access | Where-Object { $_.IdentityReference -eq "BUILTIN\Users" -and $_.FileSystemRights -eq "FullControl"})) {
 			$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule('Users', "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
-			$Acl.Setaccessrule($Ar)
-			Set-Acl $Custom_Software_Path $Acl
+			$Acl.Setaccessrule($Ar) | Out-Null
+			Set-Acl $Custom_Software_Path $Acl | Out-Null
 		}
 	}
 }
@@ -1155,7 +1159,7 @@ If (-Not $UserOnly) {
 	If ([environment]::OSVersion.Version.Major -ge 10) {
 		If (Test-Path ($LICache + "\" + $StartLayoutXML)) {
 			write-host ("Setting Taskbar and Start Menu: " + ($LICache + "\" + $StartLayoutXML))
-			Import-StartLayout -LayoutPath ($LICache + "\" + $StartLayoutXML) -MountPath ($env:systemdrive + "\")
+			Import-StartLayout -LayoutPath ($LICache + "\" + $StartLayoutXML) -MountPath ($env:systemdrive + "\") | Out-Null
 		}
 	}
 }
@@ -1442,15 +1446,15 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		#1075839525 = Auto arrange icons = ON and Align icons to grid = ON
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\Shell\Bags\1\Desktop") "FFlags" 1075839525 "DWORD"
 		#region Control Panel
-		If (Test-Path($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\RestrictCpl")) {
-			Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\RestrictCpl") -Recurse
+		If (Test-RegistryKeyValue -Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") -Name "DisallowCPL") {
+			Remove-ItemProperty -Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") -Name "DisallowCPL" -erroraction 'silentlycontinue' | Out-Null
 		}
-		$i = 1
-		ForEach ( $item in $ShowOnlyCPL) {
-				Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\RestrictCpl") $i $item "String"
-				$i++
-			}	
-		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "RestrictCpl" 1 "DWORD"
+		
+													  
+		If (Test-RegistryKeyValue -Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") -Name "DisallowRun") {
+	   
+	
+			Remove-ItemProperty -Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") -Name "DisallowRun" -erroraction 'silentlycontinue' | Out-Null
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "SCRNSAVE.EXE" "scrnsave.scr" "String"
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Performance Control Panel") "PerfCplEnabled" 0 "DWORD"
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Performance Control Panel") "SolutionsEnabled" 0 "DWORD"
@@ -1495,6 +1499,17 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		#endregion Adobe Reader
 		#Hide All Drives Tc
 		If (($Store) -and ($CurrentProfile.ToUpper() -ne "DEFAULT" )) {
+			#region Show only select Contol Panel Icons
+			If (Test-Path($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\RestrictCpl")) {
+				Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\RestrictCpl") -Recurse
+			}
+			$i = 1
+			ForEach ( $item in $ShowOnlyCPL) {
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\RestrictCpl") $i $item "String"
+					$i++
+				}	
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "RestrictCpl" 1 "DWORD"
+			#endregion Show only select Contol Panel Icons
 			#region LockDown Store Windows Explorer
 			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Windows Explorer")
 			#Prevent Changing Wallpaper
@@ -1505,8 +1520,6 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "ConfirmFileDelete" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "DisableThumbnails" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "DisableThumbnailsOnNetworkFolders" 1 "DWORD"
-			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "DisallowCPL" 1 "DWORD"
-			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "DisallowRun" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "ForceRunOnStartMenu" 0 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "ForceStartMenuLogOff" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "GreyMSIAds" 1 "DWORD"
@@ -1747,15 +1760,16 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			}
 			$i = 1
 			ForEach ( $item in $ChromeURLBlackList) {
-					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\URLBlacklist") $i $item "String"
-					$i++
-				}			
+				Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\URLBlacklist") $i $item "String"
+				$i++
+			}			
 			#endregion Google Chrome
 			#region Auto Start Custom EXE
 			If ($Custom_Software_Exec -and $Custom_Software_Path) {
 				If (-Not (Test-Path ($UsersProfileFolder + "\" + $CurrentProfile + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk"))) {
 					If (-Not (Test-Path ($UsersProfileFolder + "\" + $CurrentProfile + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"))) {
 						New-Item -Force -ItemType "directory" -Path ($UsersProfileFolder + "\" + $CurrentProfile + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup")
+					}
 					If (Test-Path ($Custom_Software_Path + "\" + $Custom_Software_Exec)) {
 						$ShortCut = $WScriptShell.CreateShortcut($UsersProfileFolder + "\" + $CurrentProfile + "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" + $Custom_Software_Exec.Substring(0,$Custom_Software_Exec.IndexOfAny(".")) + ".lnk")
 						$ShortCut.TargetPath=($Custom_Software_Path + "\" + $Custom_Software_Exec)
@@ -1874,7 +1888,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			# Set-Reg ($HKEYWE.replace("\Software\","\Software\Wow6432Node\") + "\CLSID\{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}\ShellFolder") "Attributes" 1048576 "DWORD"	
 			
 		}
-	}else {
+	} else {
 		#region Windows Explorer, Start Menu Continued
 		#Show This PC
 		Set-Reg ($HKEYWE + "\HideDesktopIcons\NewStartPanel") "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 0 "DWORD"
@@ -1930,6 +1944,10 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	Set-Reg ($HKEYIE.replace("\Software\","\Software\Wow6432Node\") + "\PageSetup") "margin_left" $IE_Margin_Left "String"
 	Set-Reg ($HKEYIE.replace("\Software\","\Software\Wow6432Node\") + "\PageSetup") "margin_right" $IE_Margin_Right "String"
 
+	#IE Cache Settings Size Stored in KB not MB to convert MB to KB
+	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\5.0\Cache\Content\CacheLimit") "CacheLimit" ($IE_Cache_Size * 1024) "DWORD"
+	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Cache\Content\CacheLimit") "CacheLimit" ($IE_Cache_Size * 1024) "DWORD"
+	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Cache") "Persistent" 0 "DWORD"
 	#Clean up old keys
 	If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Internet Settings\ZoneMap\Domains")) {
 		Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Internet Settings\ZoneMap\Domains") -Recurse -Confirm:$false | out-null
@@ -2000,6 +2018,16 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		}
 	}
 	#endregion Deploy Chrome Base Profile
+	#region Win+X Custom settings
+	If (Test-Path ($LICache + "\" + $WinXZip)) {
+		If (Test-Path ($UserProfile + "\AppData\Local\Microsoft\Windows\WinX")) {
+			Write-Host ("`t" + $CurrentProfile + ": Setting-up Win+X Custom Settings...")
+			#Remove standard entries before adding customized ones. 
+			Remove-Item -Recurse -Confirm:$false -Path ($UserProfile + "\AppData\Local\Microsoft\Windows\WinX") -erroraction 'silentlycontinue'
+			Expand-Archive -Path ($LICache + "\" + $WinXZip) -DestinationPath ($UserProfile + "\AppData\Local\Microsoft\Windows") -Force
+		}
+	}
+	#endregion Win+X Custom settings
 	# Unload the default profile hive
 	Write-Host ("`t" + $CurrentProfile + ": Unloading User Registry")
 	[gc]::collect()
@@ -2017,11 +2045,10 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	If (Test-Path ($LICache + "\Favorites")) {
 		write-host ("`t" + $CurrentProfile + ": Setting up Favorites")
 		If ($CurrentProfile -eq "Default") {
-				If (Test-Path ($UsersProfileFolder + "\Default\Favorites")) {
-					Remove-Item -path ($UsersProfileFolder + "\Default\Favorites") -recurse -force
-					Copy-Item  ($LICache + "\Favorites") -Destination ($UsersProfileFolder + "\Default\Favorites") -recurse -force
-				}
-				
+			If (Test-Path ($UsersProfileFolder + "\Default\Favorites")) {
+				Remove-Item -path ($UsersProfileFolder + "\Default\Favorites") -recurse -force
+				Copy-Item  ($LICache + "\Favorites") -Destination ($UsersProfileFolder + "\Default\Favorites") -recurse -force
+			}				
 		}else{
 			$UserProfile = (Get-WmiObject Win32_UserProfile |Where-Object { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |Select-Object Localpath).localpath
 			If (Test-Path ($UserProfile + "\Favorites")) {
@@ -2370,6 +2397,11 @@ If (-Not $UserOnly) {
 		powercfg /SETDCVALUEINDEX SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 7648efa3-dd9c-4e3e-b566-50f929386280 3
 		
 	}
+	#Diables lockscreen for stores
+	If ($Store) {
+		write-host ("`tDisabling Lockscreen") -foregroundcolor "gray"
+		Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization" "NoLockScreen" 1 "DWORD"
+		#Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\TestHooks" "Threshold" 0 "DWORD"
 }
 #============================================================================
 #endregion Main Local Machine
@@ -2788,6 +2820,9 @@ If (-Not $UserOnly) {
 			copy-item ($env:appdata + "\Microsoft\Windows\Start Menu\Programs\Accessories\Internet Explorer.lnk") ($env:Public + "\Desktop\Internet Explorer.lnk")
 		}
 	}
+	#Add other Icons to all users desktop.
+	If (Test-Path($LICache + "\Desktop")) {
+		Copy-Item -Force -Recurse -Path ($LICache + "\Desktop") -Destination ($env:Public)
 }
 #============================================================================
 #endregion Main Local Machine All Users Desktop
@@ -3329,6 +3364,35 @@ If (-Not $UserOnly) {
 
 #============================================================================
 #endregion Main Local Machine Load Local GPO
+#============================================================================
+#============================================================================
+#regionMain Local Machine Temp Cleanup
+#============================================================================
+If (get-ScheduledJob | Where-Object {$_.Name -eq "Clean-Temp-Folders"}) {
+	get-ScheduledJob | Where-Object {$_.Name -eq "Clean-Temp-Folders"} | Unregister-ScheduledJob
+}
+
+$SchTrigger = New-JobTrigger -AtStartup
+$SchJobOptions = New-ScheduledJobOption -RunElevated
+Register-ScheduledJob -Name "Clean-Temp-Folders" -Trigger $SchTrigger -ScheduledJobOption $SchJobOptions  -ScriptBlock {
+	If (Test-Path($env:systemdrive + "\temp")) {
+		Get-ChildItem -Path ($env:systemdrive + "\temp") | Remove-Item -Recurse -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+	}
+	If (Test-Path($env:systemroot+ "\temp")) {
+		Get-ChildItem -Path ($env:systemroot + "\temp") | Remove-Item -Recurse -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+	}
+	$UsersProfileFolders = @((Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' -Name "ProfilesDirectory").ProfilesDirectory,($env:systemdrive + "\Users"))
+	ForEach ($UserFolders in ($UsersProfileFolders | select -Unique)) {
+		ForEach ($Folder in (Get-ChildItem -Directory -Path $UserFolders).fullname) {
+			write-host ($Folder + "\AppData\Local\Temp")
+			If (Test-Path($Folder + "\AppData\Local\Temp")) {
+				Get-ChildItem -Path ($Folder + "\AppData\Local\Temp") | Remove-Item -Recurse -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+			}
+		}
+	}
+}
+#============================================================================
+#endregionMain Local Machine Temp Cleanup
 #============================================================================
 #============================================================================
 #regionMain Local Machine Cleanup
