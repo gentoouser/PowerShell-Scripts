@@ -85,8 +85,9 @@
 	* Version 2.1.09 - Fix Cache Issue. Fixed issue with $Custom_Software_Exec shortcut creation issue. Updated example code to convirt string ot array for powershell.exe launch. 
 	* Version 2.1.10 - Add Ping firewall rule. Fix issue with VM only settings. Disabled lock screen for store users.
 	* Version 2.1.11 - Enable FontSmoothing. Disable SNMP by default. Configure SNMP Settings. Fixed Custom software auto launching link issue. 
-	* Version 2.1.12 - More Disabling of the Lockscreen for stores. Added Custiomized Win+X setting for stores. Fix of Control panel for stores. Copy Icons to all users desktop if there is a Desktop folder in the LICache. Added ScheduledJob on startup to clean temp files.															 
-#>
+	* Version 2.1.12 - More Disabling of the Lockscreen for stores. Added Custiomized Win+X setting for stores. Fix of Control panel for stores. Copy Icons to all users desktop if there is a Desktop folder in the LICache. Added ScheduledJob on startup to clean temp files.
+	* Version 2.1.13 - Copy Custom Icons. Enable PS/2 Mouse. Enable SNMP Legacy mode for Printing. Fix Power button issue.
+	#>
 PARAM (
 	[array]$Profiles  	  		= @("Default"),	
 	[string]$LICache	  		= "C:\IT_Updates",
@@ -117,7 +118,7 @@ Break
 }
 #Fix issue for services
 Set-Location -Path "\"
-$ScriptVersion = "2.1.12"
+$ScriptVersion = "2.1.13"
 #############################################################################
 #############################################################################
 
@@ -138,6 +139,7 @@ $Custom_Software_Exec = "Custom.exe"
 $Custom_Wallpaper_SubFolder = "Wallpapers"
 $Custom_User_Account_Pictures_SubFolder = ($Custom_Wallpaper_SubFolder + "\User Account Pictures")
 $Custom_OEM_Logo = "LOGO_OEM.bmp"
+$Custom_Icon_Path = (${env:ProgramFiles(x86)} + "\github")
 $NTP_ManualPeerList = "time.nist.gov,0x08 north-america.pool.ntp.org,0x08"
 $NTP_ManualPeerList_Store = $NTP_ManualPeerList
 $BGInfo_StartupLink = "Bginfo Slient Start x64.lnk"
@@ -150,7 +152,7 @@ $ChromeDelegateWhiteList = "https://*.git.com"
 $ScriptVersionKey = "Git Hub" 
 $ScriptVersionValue = "Security Hardening Version"
 $ScriptDateValue = "Security Hardening Date"
-$SNMPValue = "Public"										  
+$SNMPValue = "Public"
 #Versions of Adobe Reader to setup for.
 $ARV = ("11.0","2005","DC")
 $UserRange = 1..20
@@ -308,7 +310,7 @@ $DisableServices = @(
 	#"dmwappushservice"                       	# WAP Push Message Routing Service (see known issues) ####Breaks SysPrep
 	"DPS"										# Diagnostic Policy Service
 	"FAX"										# Fax Service
-	"FDResPub"									# Function Discovery Resource Publication Service
+	#"FDResPub"									# Function Discovery Resource Publication Service ### Errors for HomeGroup
 	#"HomeGroupListener"                      	# HomeGroup Listener
 	#"HomeGroupProvider"                      	# HomeGroup Provider
 	"HvHost"									# HV Host Service
@@ -320,6 +322,7 @@ $DisableServices = @(
 	"MSiSCSI"									# Microsoft iSCSI Initiator Service
 	"MyWiFiDHCPDNS"								# Wireless PAN DHCP Server
 	"NetTcpPortSharing"                      	# Net.Tcp Port Sharing Service
+	#"netprofm"									# Network List Service	### Event log errors
 	"p2pimsvc"									# Peer Networking Identity Manager
 	"p2psvc"									# Peer Name Resolution Protocol
 	"PhoneSvc"									# Phone Service
@@ -521,8 +524,8 @@ If ($Store) {
 	$LockedDown = $True
 }
 #Add Registry Hives
-New-PSDrive -PSProvider Registry -Name HKU -Root HKEY_USERS
-New-PSDrive -PSProvider Registry -Name HKCR -Root HKEY_CLASSES_ROOT
+New-PSDrive -PSProvider Registry -Name HKU -Root HKEY_USERS 2> Out-Null 1> Out-Null
+New-PSDrive -PSProvider Registry -Name HKCR -Root HKEY_CLASSES_ROOT 2> Out-Null 1> Out-Null
 #Share Setup
 if ( $User -and $Password) {
 	$Credential = New-Object System.Management.Automation.PSCredential ($User, (ConvertTo-SecureString $Password -AsPlainText -Force))
@@ -1052,6 +1055,47 @@ Function Get-MachineType {
  
     } 
 }
+function Test-RegistryKeyValue {
+    <#
+    .SYNOPSIS
+    Tests if a registry value exists.
+
+    .DESCRIPTION
+    The usual ways for checking if a registry value exists don't handle when a value simply has an empty or null value.  This function actually checks if a key has a value with a given name.
+	Source: https://stackoverflow.com/questions/5648931/test-if-registry-value-exists
+    .EXAMPLE
+    Test-RegistryKeyValue -Path 'hklm:\Software\Carbon\Test' -Name 'Title'
+
+    Returns `True` if `hklm:\Software\Carbon\Test` contains a value named 'Title'.  `False` otherwise.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]
+        # The path to the registry key where the value should be set.  Will be created if it doesn't exist.
+        $Path,
+
+        [Parameter(Mandatory=$true)]
+        [string]
+        # The name of the value being set.
+        $Name
+    )
+
+    if( -not (Test-Path -Path $Path -PathType Container) ) {
+        return $false
+    }
+
+    $properties = Get-ItemProperty -Path $Path 
+    if( -not $properties ) {
+        return $false
+    }
+    $member = Get-Member -InputObject $properties -Name $Name
+    if( $member ) {
+        return $true
+    } else {
+        return $false
+    }
+}
 #############################################################################
 #endregion Functions
 #############################################################################
@@ -1449,11 +1493,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		If (Test-RegistryKeyValue -Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") -Name "DisallowCPL") {
 			Remove-ItemProperty -Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") -Name "DisallowCPL" -erroraction 'silentlycontinue' | Out-Null
 		}
-		
-													  
 		If (Test-RegistryKeyValue -Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") -Name "DisallowRun") {
-	   
-	
 			Remove-ItemProperty -Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") -Name "DisallowRun" -erroraction 'silentlycontinue' | Out-Null
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "SCRNSAVE.EXE" "scrnsave.scr" "String"
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Performance Control Panel") "PerfCplEnabled" 0 "DWORD"
@@ -2048,7 +2088,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			If (Test-Path ($UsersProfileFolder + "\Default\Favorites")) {
 				Remove-Item -path ($UsersProfileFolder + "\Default\Favorites") -recurse -force
 				Copy-Item  ($LICache + "\Favorites") -Destination ($UsersProfileFolder + "\Default\Favorites") -recurse -force
-			}				
+			}
 		}else{
 			$UserProfile = (Get-WmiObject Win32_UserProfile |Where-Object { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |Select-Object Localpath).localpath
 			If (Test-Path ($UserProfile + "\Favorites")) {
@@ -2395,6 +2435,7 @@ If (-Not $UserOnly) {
 		Write-Host 'Setting "Power Button"...' -ForegroundColor Green
 		powercfg /SETDCVALUEINDEX SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 7648efa3-dd9c-4e3e-b566-50f929386280 3
 		powercfg /SETDCVALUEINDEX SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 7648efa3-dd9c-4e3e-b566-50f929386280 3
+		powercfg -SetActive SCHEME_CURRENT
 		
 	}
 	#Diables lockscreen for stores
@@ -2823,6 +2864,11 @@ If (-Not $UserOnly) {
 	#Add other Icons to all users desktop.
 	If (Test-Path($LICache + "\Desktop")) {
 		Copy-Item -Force -Recurse -Path ($LICache + "\Desktop") -Destination ($env:Public)
+	}
+	#Copy Custom Icons.
+	If (Test-Path($LICache + "\icons")) {
+		Copy-Item -Force -Recurse -Path ($LICache + "\icons\*") -Destination ($Custom_Icon_Path)
+	}
 }
 #============================================================================
 #endregion Main Local Machine All Users Desktop
@@ -3212,8 +3258,13 @@ If (-Not $UserOnly) {
 	Set-Reg "HKLM:\Software\Policies\Microsoft\PCHealth\ErrorReporting" "DoReport" "0" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\PCHealth\HelpSvc" "Headlines" "0" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\PCHealth\HelpSvc" "MicrosoftKBSearch" "0" "DWord"
-	Set-Reg "HKLM:\Software\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51" "ACSettingIndex" "1" "DWord"
-	Set-Reg "HKLM:\Software\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51" "DCSettingIndex" "1" "DWord"
+	If ($store) {
+		Set-Reg "HKLM:\Software\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51" "ACSettingIndex" "0" "DWord"
+		Set-Reg "HKLM:\Software\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51" "DCSettingIndex" "0" "DWord"
+	}else{
+		Set-Reg "HKLM:\Software\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51" "ACSettingIndex" "1" "DWord"
+		Set-Reg "HKLM:\Software\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51" "DCSettingIndex" "1" "DWord"		
+	}
 	Set-Reg "HKLM:\Software\Policies\Microsoft\SearchCompanion" "DisableContentFileUpdates" "1" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\SQMClient\Windows" "CEIPEnable" "0" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows Defender Security Center\App and Browser protection" "DisallowExploitProtectionOverride" "1" "DWord"
@@ -3329,7 +3380,17 @@ If (-Not $UserOnly) {
 	Set-Reg "HKLM:\System\CurrentControlSet\Services\Tcpip6\Parameters" "DisableIPSourceRouting" "2" "DWord"
 	Set-Reg "HKLM:\System\CurrentControlSet\Services\Tcpip\Parameters" "DisableIPSourceRouting" "2" "DWord"
 	Set-Reg "HKLM:\System\CurrentControlSet\Services\Tcpip\Parameters" "EnableICMPRedirect" "0" "DWord"
-	
+	#Enable PS/2 Mouse 
+		#https://superuser.com/questions/996001/do-ps2-keyboards-work-on-windows-10
+		#https://www.dell.com/community/Laptops-General-Read-Only/Mouse-not-working-Device-Manager-shows-PS-2-Compatible-Mouse/td-p/5087851
+	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\i8042prt" "Start" 1 "DWord"
+	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e96f-e325-11ce-bfc1-08002be10318}" "UpperFilters" "mouclass" "MultiString"
+	#Disable Use SNMP Legacy mode: http://blog.rtwilson.com/how-to-fix-a-network-printer-suddenly-showing-as-offline-in-windows-vista/
+	Set-Reg "HKLM:\System\CurrentControlSet\Control\Print" "SNMPLegacy" 1 "DWord"
+	#EMV Force COM5
+	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\IngenicoVCOM\InstallConfig\R0" "COM" 5 "DWord"
+	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\IngenicoVCOM\InstallConfig\" "ForceComEnabled" 1 "DWord"
+
 	$regkeypath= "HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services"
 	$value = "fAllowFullControl"
 	$test = ([string]::IsNullOrEmpty((Get-ItemProperty $regkeypath).$value))
@@ -3382,7 +3443,7 @@ Register-ScheduledJob -Name "Clean-Temp-Folders" -Trigger $SchTrigger -Scheduled
 		Get-ChildItem -Path ($env:systemroot + "\temp") | Remove-Item -Recurse -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
 	}
 	$UsersProfileFolders = @((Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' -Name "ProfilesDirectory").ProfilesDirectory,($env:systemdrive + "\Users"))
-	ForEach ($UserFolders in ($UsersProfileFolders | select -Unique)) {
+	ForEach ($UserFolders in ($UsersProfileFolders | Select-Object -Unique)) {
 		ForEach ($Folder in (Get-ChildItem -Directory -Path $UserFolders).fullname) {
 			write-host ($Folder + "\AppData\Local\Temp")
 			If (Test-Path($Folder + "\AppData\Local\Temp")) {
