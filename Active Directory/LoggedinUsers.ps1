@@ -136,12 +136,9 @@ function Get-UserLogon {
 					}
 					If ($RU) {
 						$TempPSObject = New-Object -TypeName PSCustomObject -Property $array
-						[System.Threading.Monitor]::Enter($Results.syncroot)
-						[void]$Results.Add($TempPSObject)
-						[System.Threading.Monitor]::Exit($Results.syncroot)
 						If ($Logoff) {
-							foreach ($LO in $Logoff.Split(",")) {
-								If ($LO -match $CArray[0]) {
+							foreach ($LO in ($Logoff.Split(","))) {
+								If (($CArray[0]).ToLower() -match $LO.ToLower()) {
 									$Command = ("logoff " + $CArray[2])
 									$qinfo = New-Object System.Diagnostics.ProcessStartInfo
 									$qinfo.FileName = $PSExecPath
@@ -155,12 +152,12 @@ function Get-UserLogon {
 									$p.WaitForExit()
 									#Get Output
 									$TempPSObject.State = "Logged off"
-									[System.Threading.Monitor]::Enter($Results.syncroot)
-									[void]$Results.Add($TempPSObject)
-									[System.Threading.Monitor]::Exit($Results.syncroot)
 								}
 							}
-						}					
+						}
+						[System.Threading.Monitor]::Enter($Results.syncroot)
+						$Results.Add($TempPSObject) | Out-Null
+						[System.Threading.Monitor]::Exit($Results.syncroot)									
 					}
 				}	
 			}	 
@@ -218,7 +215,7 @@ function Get-UserLogon {
 }
 
 $CSVFile = ("login_" + (Get-Date -Format yyyyMMdd-hhmm) + ".csv" )
- Get-UserLogon -All" -Logoff "DA-"| Export-Csv $CSVFile -NoTypeInformation
-# Get-UserLogon -OU "OU=IT,DC=com" | Export-Csv $CSVFile -NoTypeInformation -Append
+ Get-UserLogon -All" -Logoff "admin"| Export-Csv $CSVFile -NoTypeInformation
+# Get-UserLogon -OU "DC=IT,DC=com" | Export-Csv $CSVFile -NoTypeInformation -Append
 
 #endregion AD log on users
