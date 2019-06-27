@@ -1,5 +1,62 @@
 #region AD log on users
 function Get-UserLogon {	 
+<# 
+	.SYNOPSIS 
+		Get who is logged on remote computer
+		
+	.DESCRIPTION 
+		Scans AD and finds who is logged on to what computer. 
+
+	.PARAMETER Computer 
+		Single remote computer to check logged on users.
+
+	.PARAMETER OU
+		Single OU string to check logged on users. 
+		"OU=Test,DC=Computers,DC=Example,DC=Com"
+
+	.PARAMETER All
+		Checks all computer objects in AD for logged on users.
+		
+	.PARAMETER PSExecPath
+		Path to the PSExecPath.exe program.
+		
+	.PARAMETER Command
+		Command to run on remote computers to check for logged on users. 
+		Default command is "quser".
+	
+	.PARAMETER Logoff 
+		Comma separated string of user accounts to automatically log off.
+		
+		NOTE: The script does a match so admin will match administrator.
+	
+	.PARAMETER Timeout  
+		Wait time to check if threads are completed.
+		Note: PSEXEC times out this many seconds.
+		      The thread for PSEXEC times out this many minutes.
+ 
+	.EXAMPLE 
+		Get-UserLogon -Computer server1
+	.EXAMPLE 
+		Get-UserLogon -OU "OU=Test,DC=Computers,DC=Example,DC=Com" -PSExecPath "C:\Program Files (x86)\Sysinternals Suite\PsExec.exe" -Logoff "admin"
+
+	.EXAMPLE 
+		Get-UserLogon -All -PSExecPath "C:\Program Files (x86)\Sysinternals Suite\PsExec.exe" -Logoff "admin"
+		
+	.EXAMPLE 	
+		Get-UserLogon -All -PSExecPath "C:\Program Files (x86)\Sysinternals Suite\PsExec.exe" | Export-Csv ("login_" + (Get-Date -Format yyyyMMdd-hhmm) + ".csv" ) -NoTypeInformation
+
+	.NOTES 
+		Author:Paul Fuller
+		Sources:	Check for logged on users from  
+						- https://sid-500.com/2018/02/28/powershell-get-all-logged-on-users-per-computer-ou-domain-get-userlogon/
+					Runspace outline from 			
+						- https://gist.github.com/proxb/6bc718831422df3392c4
+					Create a Runspace Pool with a minimum and maximum number of run spaces. 
+						- http://msdn.microsoft.com/en-us/library/windows/desktop/dd324626(v=vs.85).aspx
+		ChangeLog:
+		v1.0:
+		-First working version
+#>
 	[CmdletBinding()]	 
 	param	 
 	( 
@@ -11,9 +68,7 @@ function Get-UserLogon {
 	[Parameter ()]	[string]$Logoff,
 	[Parameter ()]	[string]$Timeout = 15
 	)	 
-	#https://sid-500.com/2018/02/28/powershell-get-all-logged-on-users-per-computer-ou-domain-get-userlogon/
 	$ErrorActionPreference="SilentlyContinue"	 
-	#Runspace outline from https://gist.github.com/proxb/6bc718831422df3392c4
 	# Create an empty array that we'll use later
 	$RunspaceCollection = @()
 	# This is the array we want to ultimately add our information to
@@ -21,7 +76,7 @@ function Get-UserLogon {
 	$RunspaceResults = @()
 	# Dynamicaly figure out how many threads to use. 
 	$MaxThreads = (((Get-CimInstance -ClassName 'Win32_Processor' | Select-Object -Property "NumberOfCores").NumberOfCores | Measure-Object -sum).Sum * 10)
-	# Create a Runspace Pool with a minimum and maximum number of run spaces. (http://msdn.microsoft.com/en-us/library/windows/desktop/dd324626(v=vs.85).aspx)
+	# Create a Runspace Pool with a minimum and maximum number of run spaces.
 	$RunspacePool = [RunspaceFactory]::CreateRunspacePool(1,$MaxThreads)
 	# Open the RunspacePool so we can use it
 	$RunspacePool.Open()
@@ -71,11 +126,11 @@ function Get-UserLogon {
 		}
 	}	 
 	If ($OU) {		 
-		$Computers=Get-ADComputer -Filter * -SearchBase "$OU" -Properties operatingsystem		 
+		$Computers=Get-ADComputer -Filter * -SearchBase "$OU" -Properties operatingsystem -ResultSetSize $Null
 		$count=$Computers.count
 	}
 	If ($All) {	 
-		$Computers=Get-ADComputer -Filter * -Properties operatingsystem		 
+		$Computers=Get-ADComputer -Filter * -Properties operatingsystem -ResultSetSize $Null 
 		$count=$Computers.count		 
 	}
 	If ($Computers) {
@@ -185,6 +240,7 @@ function Get-UserLogon {
 				"Runspace" = $PowerShell.BeginInvoke()
 				"PowerShell" = $PowerShell  
 				"Computer" = $Computer
+				"StartTime" = Get-Date
 			}
 			$CCCount++
 		}
@@ -206,11 +262,29 @@ function Get-UserLogon {
 					$RunspaceCollection.Remove($Runspace) | Out-Null	
 					$RSCount++		
 				} #/If
+				#Stop runspace if it runs to long
+				If ((((Get-Date)-$Runspace.StartTime).TotalMinutes) -ge $Timeout) {
+					$array= ([ordered]@{
+							'User' = ""
+							'Computer' = $Runspace.Computer
+							'Date' = ""
+							'Time' = ""
+							'SessionName' = "" #No Session name in Dissconnected sessions
+							'SessionID' = ""
+							'State' = "Timeout for getting sessions"
+							'Idle' = "" #No Idle time in Dissconnected sessions
+						})
+					$TempPSObject = New-Object -TypeName PSCustomObject -Property $array
+					$Results.Add($TempPSObject) | Out-Null
+					# Here's where we cleanup our Runspace
+					$Runspace.PowerShell.Dispose() | Out-Null
+					$RunspaceCollection.Remove($Runspace) | Out-Null	
+					$RSCount++
+				}
 			} #/ForEach
 		} #/While
 	}	
 	Write-Progress -ID 1 -Activity "Waiting for Computers Results"  -Completed
-	# $FinalReturn =  ($Results | Where-object {"" -ne $_.User})
 	return $Results
 }
 
