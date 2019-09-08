@@ -1104,7 +1104,9 @@ If (-Not $UserOnly) {
 Write-Host ("-"*[console]::BufferWidth)
 Write-Host ("Starting User Profile Setup")
 Write-Host ("-"*[console]::BufferWidth)
+$UserProgress = 1
 ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
+	Write-Progress -ID 0 -Activity 'Hardening User Profiles' -CurrentOperation $CurrentProfile -PercentComplete (($UserProgress / $ProfileList.count) * 100)
 	# write-host ("Working with user: " + $CurrentProfile) -foregroundcolor "Magenta"
 	Write-Color "Working with user: ",
 				$CurrentProfile -Color White,Magenta
@@ -1242,40 +1244,40 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				write-host ("`tUpdating Registry Settings:")
 				Foreach ($key in ($ConfigFile.Config.UserSettings.UserRegistry.Item | Where-Object {$_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
 					If ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false') {				
-						Write-Color -Text "LockedDown: ",
-											$key.Comment -Color DarkRed,DarkGray -StartTab 2
+						Write-Color -Text "LockedDown:  ",
+											$key.Comment -Color Blue,DarkGray -StartTab 2
 						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
 					} ElseIf ($Store -and $key.Store -eq 'true') {				
-						Write-Color -Text "Store: ",
-											$key.Comment -Color DarkRed,DarkGray -StartTab 2
+						Write-Color -Text "Store:       ",
+											$key.Comment -Color Red,DarkGray -StartTab 2
 						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
 					} ElseIf ($Manager -and $key.Manager -eq 'true') {				
-						Write-Color -Text "Manager: ",
-											$key.Comment -Color DarkRed,DarkGray -StartTab 2
+						Write-Color -Text "Manager:     ",
+											$key.Comment -Color Yellow,DarkGray -StartTab 2
 						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
 					} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false') {
-						Write-Color -Text "All: ",
-									$key.Comment -Color DarkRed,DarkGray -StartTab 2
+						Write-Color -Text "All:         ",
+									$key.Comment -Color DarkGreen,DarkGray -StartTab 2
 						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type	
 					}
 				}			
 				If ($IsVM) {
 					Foreach ($key in ($ConfigFile.Config.UserSettings.VM.UserRegistry.Item | Where-Object { $_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
 						If ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false') {			
-							Write-Color -Text "LockedDown: ",
-												$key.Comment -Color DarkRed,DarkGray -StartTab 2
+							Write-Color -Text "LockedDown:  ",
+												$key.Comment -Color Blue,DarkGray -StartTab 2
 							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
 						} ElseIf ($Store -and $key.Store -eq 'true') {			
-							Write-Color -Text "Store: ",
-												$key.Comment -Color DarkRed,DarkGray -StartTab 2
+							Write-Color -Text "Store:       ",
+												$key.Comment -Color Red,DarkGray -StartTab 2
 							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
 						} ElseIf ($Manager -and $key.Manager -eq 'true') {				
-							Write-Color -Text "Manager: ",
-												$key.Comment -Color DarkRed,DarkGray -StartTab 2
+							Write-Color -Text "Manager:     ",
+												$key.Comment -Color Yellow,DarkGray -StartTab 2
 							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
 						} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false') {
-							Write-Color -Text "All: ",
-										$key.Comment -Color DarkRed,DarkGray -StartTab 2
+							Write-Color -Text "All:         ",
+										$key.Comment -Color DarkGreen,DarkGray -StartTab 2
 							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type	
 						}
 					}
@@ -1283,32 +1285,32 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				#Remove Items
 				Foreach ($key in ($ConfigFile.Config.UserSettings.UserRegistry.Remove | Where-Object {$_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
 					If ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false') {				
-						Write-Color -Text "LockedDown: ",
-											$key.Comment -Color DarkRed,DarkGray -StartTab 2
+						Write-Color -Text "LockedDown:  ",
+											$key.Comment -Color Blue,DarkGray -StartTab 2
 						If ($key.Value) {
 							Remove-ItemProperty -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Name $key.Value -Confirm:$False  -erroraction 'silentlycontinue'
 						} else {
 							Remove-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key)  -Confirm:$False  -erroraction 'silentlycontinue'
 						}
 					} ElseIf ($Store -and $key.Store -eq 'true') {				
-						Write-Color -Text "Store: ",
-											$key.Comment -Color DarkRed,DarkGray -StartTab 2
+						Write-Color -Text "Store:       ",
+											$key.Comment -Color Red,DarkGray -StartTab 2
 						If ($key.Value) {
 							Remove-ItemProperty -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Name $key.Value -Confirm:$False  -erroraction 'silentlycontinue'
 						} else {
 							Remove-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key)  -Confirm:$False  -erroraction 'silentlycontinue'
 						}
 					} ElseIf ($Manager -and $key.Manager -eq 'true') {				
-						Write-Color -Text "Manager: ",
-											$key.Comment -Color DarkRed,DarkGray -StartTab 2
+						Write-Color -Text "Manager:     ",
+											$key.Comment -Color Yellow,DarkGray -StartTab 2
 						If ($key.Value) {
 							Remove-ItemProperty -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Name $key.Value -Confirm:$False  -erroraction 'silentlycontinue'
 						} else {
 							Remove-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key)  -Confirm:$False  -erroraction 'silentlycontinue'
 						}
 					} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false') {
-						Write-Color -Text "All: ",
-									$key.Comment -Color DarkRed,DarkGray -StartTab 2
+						Write-Color -Text "All:         ",
+									$key.Comment -Color DarkGreen,DarkGray -StartTab 2
 						If ($key.Value) {
 							Remove-ItemProperty -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Name $key.Value -Confirm:$False  -erroraction 'silentlycontinue'
 						} else {
@@ -1319,26 +1321,26 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				#Add Keys
 				Foreach ($key in ($ConfigFile.Config.UserSettings.UserRegistry.Add | Where-Object {$_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
 					If ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false') {				
-						Write-Color -Text "LockedDown: ",
-											$key.Comment -Color DarkRed,DarkGray -StartTab 2
+						Write-Color -Text "LockedDown:  ",
+											$key.Comment -Color Blue,DarkGray -StartTab 2
 						If ($key.key -and -Not (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key))) {
 							New-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Force | Out-Null
 						}
 					} ElseIf ($Store -and $key.Store -eq 'true') {				
-						Write-Color -Text "Store: ",
-											$key.Comment -Color DarkRed,DarkGray -StartTab 2
+						Write-Color -Text "Store:       ",
+											$key.Comment -Color Red,DarkGray -StartTab 2
 						If ($key.key -and -Not (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key))) {
 							New-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Force | Out-Null
 						}
 					} ElseIf ($Manager -and $key.Manager -eq 'true') {				
-						Write-Color -Text "Manager: ",
-											$key.Comment -Color DarkRed,DarkGray -StartTab 2
+						Write-Color -Text "Manager:     ",
+											$key.Comment -Color Yellow,DarkGray -StartTab 2
 						If ($key.key -and -Not (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key))) {
 							New-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Force | Out-Null
 						}
 					} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false') {
-						Write-Color -Text "All: ",
-									$key.Comment -Color DarkRed,DarkGray -StartTab 2
+						Write-Color -Text "All:         ",
+									$key.Comment -Color DarkGreen,DarkGray -StartTab 2
 						If ($key.key -and -Not (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key))) {
 							New-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Force | Out-Null
 						}
@@ -1541,7 +1543,9 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 						If (Test-Path ($LICache + "\" + $ConfigFile.Config.Chrome.BaseZip)) {
 							If (Test-Path ($UserProfile + "\AppData\Local")) {
 								Write-Host ("`tSetting-up Chrome Base Settings")
-								Expand-Archive -Path ($LICache + "\" + $ConfigFile.Config.Chrome.BaseZip) -DestinationPath ($UserProfile + "\AppData\Local") -Force
+								$ProgressPreference = 'SilentlyContinue'
+								Expand-Archive -Path ($LICache + "\" + $ConfigFile.Config.Chrome.BaseZip) -DestinationPath ($UserProfile + "\AppData\Local") -Force 
+								$ProgressPreference = "Continue"
 							}
 						}
 					}
@@ -1608,7 +1612,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 						ForEach ( $Exe in $ConfigFile.Config.WindowsSettings.BlackListPrograms.Block) {
 							# write-host ("`t`tBlackListing: " + $Exe)
 							Write-Color -Text "BlackListing: ",
-												$Exe -Color White,DarkRed -StartTab 2
+												$Exe -Color White,Red -StartTab 2
 							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun") $i $Exe "String"
 							$i++
 						}
@@ -1673,6 +1677,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	}
 	
 	[gc]::collect()
+	$UserProgress++
 }
 Write-Host ("-"*[console]::BufferWidth)
 Write-Host ("Ending User Profile Setup:")
@@ -1751,40 +1756,40 @@ If (-Not $UserOnly) {
 		write-host ("Updating Computer Registry Settings:")
 		Foreach ($key in ($ConfigFile.Config.WindowsSettings.ComputerRegistry.Item | Where-Object {$_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
 			If ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false') {					
-				Write-Color -Text "LockedDown: ",
-									$key.Comment -Color DarkRed,DarkGray -StartTab 1
+				Write-Color -Text "LockedDown:  ",
+									$key.Comment -Color Blue,DarkGray -StartTab 1
 				Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type
 			} ElseIf ($Store -and $key.Store -eq 'true') {				
-				Write-Color -Text "Store: ",
-									$key.Comment -Color DarkRed,DarkGray -StartTab 1
+				Write-Color -Text "Store:       ",
+									$key.Comment -Color Red,DarkGray -StartTab 1
 				Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type
 			} ElseIf ($Manager -and $key.Manager -eq 'true') {				
-				Write-Color -Text "Manager: ",
-									$key.Comment -Color DarkRed,DarkGray -StartTab 1
+				Write-Color -Text "Manager:     ",
+									$key.Comment -Color Yellow,DarkGray -StartTab 1
 				Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type
 			} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false') {
-				Write-Color -Text "All: ",
-							$key.Comment -Color DarkRed,DarkGray -StartTab 1
+				Write-Color -Text "All:         ",
+							$key.Comment -Color DarkGreen,DarkGray -StartTab 1
 				Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type	
 			}
 		}			
 		If ($IsVM) {
 			Foreach ($key in ($ConfigFile.Config.WindowsSettings.VM.ComputerRegistry.Item| Where-Object { $_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
 				If ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false') {				
-					Write-Color -Text "LockedDown: ",
-										$key.Comment -Color DarkRed,DarkGray -StartTab 1
+					Write-Color -Text "LockedDown:  ",
+										$key.Comment -Color Blue,DarkGray -StartTab 1
 					Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type
 				} ElseIf ($Store -and $key.Store -eq 'true') {				
-					Write-Color -Text "Store: ",
-										$key.Comment -Color DarkRed,DarkGray -StartTab 1
+					Write-Color -Text "Store:       ",
+										$key.Comment -Color Red,DarkGray -StartTab 1
 					Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type
 				} ElseIf ($Manager -and $key.Manager -eq 'true') {				
-					Write-Color -Text "Manager: ",
-										$key.Comment -Color DarkRed,DarkGray -StartTab 1
+					Write-Color -Text "Manager:     ",
+										$key.Comment -Color Yellow,DarkGray -StartTab 1
 					Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type
 				} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false') {
-					Write-Color -Text "All: ",
-								$key.Comment -Color DarkRed,DarkGray -StartTab 1
+					Write-Color -Text "All:         ",
+								$key.Comment -Color DarkGreen,DarkGray -StartTab 1
 					Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type	
 				}
 			}
@@ -1792,32 +1797,32 @@ If (-Not $UserOnly) {
 		#Remove Items
 		Foreach ($key in ($ConfigFile.Config.WindowsSettings.ComputerRegistry.Remove | Where-Object {$_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
 			If ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false') {				
-				Write-Color -Text "LockedDown: ",
-									$key.Comment -Color DarkRed,DarkGray -StartTab 1
+				Write-Color -Text "LockedDown:  ",
+									$key.Comment -Color Blue,DarkGray -StartTab 1
 				If ($key.Value) {
 					Remove-ItemProperty -Path ("HKLM:\" + $key.Key) -Name $key.Value -Confirm:$False  -erroraction 'silentlycontinue'
 				} else {
 					Remove-Item -Path ("HKLM:\" + $key.Key)  -Confirm:$False  -erroraction 'silentlycontinue'
 				}
 			} ElseIf ($Store -and $key.Store -eq 'true') {				
-				Write-Color -Text "Store: ",
-									$key.Comment -Color DarkRed,DarkGray -StartTab 1
+				Write-Color -Text "Store:       ",
+									$key.Comment -Color Red,DarkGray -StartTab 1
 				If ($key.Value) {
 					Remove-ItemProperty -Path ("HKLM:\" + $key.Key) -Name $key.Value -Confirm:$False  -erroraction 'silentlycontinue'
 				} else {
 					Remove-Item -Path ("HKLM:\" + $key.Key)  -Confirm:$False  -erroraction 'silentlycontinue'
 				}
 			} ElseIf ($Manager -and $key.Manager -eq 'true') {				
-				Write-Color -Text "Manager: ",
-									$key.Comment -Color DarkRed,DarkGray -StartTab 1
+				Write-Color -Text "Manager:     ",
+									$key.Comment -Color Yellow,DarkGray -StartTab 1
 				If ($key.Value) {
 					Remove-ItemProperty -Path ("HKLM:\" + $key.Key) -Name $key.Value -Confirm:$False  -erroraction 'silentlycontinue'
 				} else {
 					Remove-Item -Path ("HKLM:\" + $key.Key)  -Confirm:$False  -erroraction 'silentlycontinue'
 				}
 			} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false') {
-				Write-Color -Text "All: ",
-							$key.Comment -Color DarkRed,DarkGray -StartTab 1
+				Write-Color -Text "All:         ",
+							$key.Comment -Color DarkGreen,DarkGray -StartTab 1
 				If ($key.Value) {
 					Remove-ItemProperty -Path ("HKLM:\" + $key.Key) -Name $key.Value -Confirm:$False  -erroraction 'silentlycontinue'
 				} else {
@@ -1828,26 +1833,26 @@ If (-Not $UserOnly) {
 		#Add
 		Foreach ($key in ($ConfigFile.Config.UserSettings.UserRegistry.Add | Where-Object {$_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
 			If ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false') {				
-				Write-Color -Text "LockedDown: ",
-									$key.Comment -Color DarkRed,DarkGray -StartTab 1
+				Write-Color -Text "LockedDown:  ",
+									$key.Comment -Color Blue,DarkGray -StartTab 1
 				If ($key.key -and -Not (Test-Path ("HKLM:\" + $key.Key))) {
 					New-Item -Path ("HKLM:\" + $key.Key)  -Force | Out-Null
 				}
 			} ElseIf ($Store -and $key.Store -eq 'true') {				
-				Write-Color -Text "Store: ",
-									$key.Comment -Color DarkRed,DarkGray -StartTab 1
+				Write-Color -Text "Store:       ",
+									$key.Comment -Color Red,DarkGray -StartTab 1
 				If ($key.key -and -Not (Test-Path ("HKLM:\" + $key.Key) )) {
 					New-Item -Path ("HKLM:\" + $key.Key)  -Force | Out-Null
 				}
 			} ElseIf ($Manager -and $key.Manager -eq 'true') {				
-				Write-Color -Text "Manager: ",
-									$key.Comment -Color DarkRed,DarkGray -StartTab 1
+				Write-Color -Text "Manager:     ",
+									$key.Comment -Color Yellow,DarkGray -StartTab 1
 				If ($key.key -and -Not (Test-Path ("HKLM:\" + $key.Key) )) {
 					New-Item -Path ("HKLM:\" + $key.Key)  -Force | Out-Null
 				}
 			} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false') {
-				Write-Color -Text "All: ",
-							$key.Comment -Color DarkRed,DarkGray -StartTab 1
+				Write-Color -Text "All:         ",
+							$key.Comment -Color DarkGreen,DarkGray -StartTab 1
 				If ($key.key -and -Not (Test-Path ("HKLM:\" + $key.Key) )) {
 					New-Item -Path ("HKLM:\" + $key.Key)  -Force | Out-Null
 				}
@@ -1977,7 +1982,7 @@ If (-Not $UserOnly) {
 		If ( $ServiceObject) {
 			# write-host ("`tManual Startup: " + $ServiceObject.DisplayName ) -foregroundcolor yellow 
 			Write-Color -Text "Manual Startup: ",
-							  $ServiceObject.DisplayName -Color White,DarkYellow -StartTab 1
+							  $ServiceObject.DisplayName -Color White,DarkCyan -StartTab 1
 			$ServiceObject | Stop-Service -ErrorAction SilentlyContinue | Out-Null
 			$ServiceObject | Set-Service -StartupType Manual -ErrorAction SilentlyContinue | Out-Null
 		}
@@ -1988,7 +1993,7 @@ If (-Not $UserOnly) {
 		If ( $ServiceObject) {
 			# write-host ("`tAutomatic Startup: " + $ServiceObject.DisplayName ) -foregroundcolor red 
 			Write-Color -Text "Automatic Startup: ",
-							  $ServiceObject.DisplayName -Color White,DarkRed -StartTab 1
+							  $ServiceObject.DisplayName -Color White,Red -StartTab 1
 			$ServiceObject | Set-Service -StartupType Automatic -ErrorAction SilentlyContinue | Out-Null
 			$ServiceObject | Start-Service -ErrorAction SilentlyContinue | Out-Null
 		}
@@ -2089,7 +2094,7 @@ If (-Not $UserOnly) {
 			Write-Color -Text "Enabling ",
 								"Server ",
 								"Protocol: ",
-								$Protocol.'#text' -Color White,DarkBlue,White,DarkYellow -StartTab 1
+								$Protocol.'#text' -Color White,DarkCyan,White,DarkYellow -StartTab 1
 			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "Enabled" 4294967295 "DWORD"
 			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "DisabledByDefault" 0 "DWORD"
 		} else {
@@ -2097,7 +2102,7 @@ If (-Not $UserOnly) {
 			Write-Color -Text "Disabling ",
 								"Server ",
 								"Protocol: ",
-								$Protocol.'#text' -Color White,DarkBlue,White,DarkGreen -StartTab 1
+								$Protocol.'#text' -Color White,DarkCyan,White,DarkGreen -StartTab 1
 			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Server" ) "Enabled" 0 "DWORD"
 			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "DisabledByDefault" 1 "DWORD"
 		}
@@ -2313,7 +2318,9 @@ If (-Not $UserOnly) {
 	Write-Host "Setting up Firewall: "
 	#region Custom Software Firewall
 	If ([int]([environment]::OSVersion.Version.Major.tostring() + [environment]::OSVersion.Version.Minor.tostring()) -gt 61) {
+		$ProgressPreference = "SilentlyContinue"
 		Remove-NetFirewallRule -Group (split-path $ConfigFile.Config.Company.SoftwarePath -Leaf ) -erroraction 'silentlycontinue'
+		$ProgressPreference = "Continue"
 		If (Test-Path $ConfigFile.Config.Company.SoftwarePath) {
 			# Write-Host ("`tAdding " + (split-path $ConfigFile.Config.Company.SoftwarePath -Leaf ) + " to Firewall...") -foregroundcolor darkgray
 			Write-Color -Text "Adding: ",
@@ -2322,7 +2329,7 @@ If (-Not $UserOnly) {
 			Get-ChildItem -Path $ConfigFile.Config.Company.SoftwarePath -Filter *.exe -Recurse| ForEach-Object {
 				# Write-Host ("`t`t Adding rule for: " + $_.Name) -foregroundcolor yellow
 				Write-Color -Text "Adding Rule for: ",
-									$_.Name -Color White,DarkYellow -StartTab 2
+									$_.Name -Color White,Yellow -StartTab 2
 				New-NetFirewallRule -DisplayName $_.Name -Direction Inbound -Program $_.VersionInfo.FileName -Group (split-path $ConfigFile.Config.Company.SoftwarePath -Leaf ) -Action Allow | out-null
 			}
 		}
@@ -2335,8 +2342,10 @@ If (-Not $UserOnly) {
 			Foreach ($DisplayGroup in ($ConfigFile.Config.WindowsSettings.Firewall.DisplayGroup | Where-object {$_.action -eq "disable"}).'#text') {
 				# Write-host ("`t`tDisabling DisplayGroup: " + $DisplayGroup)
 				Write-Color -Text "Disabling DisplayGroup: ",
-									$DisplayGroup -Color White,DarkYellow -StartTab 2
+									$DisplayGroup -Color White,DarkGreen -StartTab 2
+				$ProgressPreference = "SilentlyContinue"
 				Disable-NetFirewallRule -DisplayGroup $DisplayGroup -erroraction 'silentlycontinue' | out-null
+				$ProgressPreference = "Continue"
 			}
 		}
 	}
@@ -2466,7 +2475,7 @@ If (-Not $UserOnly) {
 				Else{
 					# Write-Host "Appx Package is whitelisted: $Appx" -ForegroundColor DarkBlue
 					Write-Color -Text "Whitelisted App: ",
-									$Appx -Color White,DarkBlue -StartTab 1
+									$Appx -Color White,DarkCyan -StartTab 1
 				}
 			}
 		}
@@ -2499,7 +2508,7 @@ If (-Not $UserOnly) {
 			Else{
 				#Write-Host "Appx Package is whitelisted: $Appx" -ForegroundColor DarkBlue
 				Write-Color -Text "Whitelisted App: ",
-									$Appx -Color White,DarkBlue -StartTab 1
+									$Appx -Color White,DarkCyan -StartTab 1
 			}
 		}
 		#endregion
@@ -2673,16 +2682,16 @@ If (-Not $UserOnly) {
 #============================================================================
 If ($Store) {
 	Write-Host ("Setting up SNMP") -foregroundcolor darkgray
-	If (-Not (Get-Service -Name "SNMP" -ErrorAction SilentlyContinue| Out-null)) {
-		If (Get-WindowsOptionalFeature -Online -FeatureName "SNMP") {
+	If (-Not (Get-Service -Name "SNMP" -ErrorAction SilentlyContinue)) {
+		If (Get-WindowsOptionalFeature -Online -FeatureName "SNMP" -ErrorAction SilentlyContinue) {
 			Write-Host ("`tInstalling up SNMP") -foregroundcolor darkgray
 			Enable-WindowsOptionalFeature -online -FeatureName "SNMP" -NoRestart | Out-Null
-			Get-Service -Name "SNMP" | Set-Service -StartupType Disabled 
+			Get-Service -Name "SNMP" -ErrorAction SilentlyContinue | Set-Service -StartupType Disabled 
 		}
-		If ((Get-WindowsCapability -Online -Name "SNMP.Client*").name ) {
+		If ((Get-WindowsCapability -Online -Name "SNMP.Client*" -ErrorAction SilentlyContinue).name ) {
 			Write-Host ("`tInstalling up SNMP") -foregroundcolor darkgray
 			Add-WindowsCapability -Online -Name "SNMP.Client*" | Out-Null
-			Get-Service -Name "SNMP" | Set-Service -StartupType Disabled 
+			Get-Service -Name "SNMP" -ErrorAction SilentlyContinue | Set-Service -StartupType Disabled 
 		}
 	}
 	(get-item "HKLM:SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities").property| ForEach-Object { Remove-ItemProperty -Name $_ -Path "HKLM:SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities"}
@@ -2691,8 +2700,9 @@ If ($Store) {
 	#Sets All info
 	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\RFC1156Agent" "sysServices" 79 "DWORD"
 	#Allows All hosts
-	(get-item "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\PermittedManagers").property| ForEach-Object { Remove-ItemProperty -Name $_ -Path "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\PermittedManagers"}
-
+	If (Test-Path -Path "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\PermittedManagers") {
+		(get-item "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\PermittedManagers").property| ForEach-Object { Remove-ItemProperty -Name $_ -Path "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\PermittedManagers"}
+	}
 }
 #============================================================================
 #endregion SNMP Setup
@@ -2712,7 +2722,7 @@ Write-Host ("Setting Registry Permissions ... ") -foregroundcolor darkgray
 								" to ",
 								$item.Action,
 								" with ",
-								$item.Perm -Color White,DarkRed,White,DarkMagenta,White,DarkCyan,White,DarkBlue
+								$item.Perm -Color White,Red,White,DarkMagenta,White,DarkCyan,White,DarkBlue
 
 			switch -regex ($item.Hive) {
 			'HKCU|HKEY_CURRENT_USER'    { $rootKey = 'HKCU' }
