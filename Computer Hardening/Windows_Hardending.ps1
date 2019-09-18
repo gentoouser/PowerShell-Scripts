@@ -50,6 +50,7 @@
  Author: Paul Fuller
  Changes:
     * Version 3.00.00 - Switch to XML Config
+    * Version 3.00.01 - Fixed Cipher issue where powershell could not handle "/"
 	#>
 #############################################################################
 #region Parameter Config
@@ -88,7 +89,7 @@ If (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 #############################################################################
 #region User Variables
 #############################################################################
-$ScriptVersion = "3.0.0"
+$ScriptVersion = "3.0.1"
 $LogFile = ("\Logs\" + `
 		   $MyInvocation.MyCommand.Name + "_" + `
 		   $env:computername + "_" + `
@@ -99,6 +100,7 @@ $HKEY = "HKU\DEFAULTUSER"
 $UsersProfileFolder = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' -Name "ProfilesDirectory").ProfilesDirectory
 $ProfileList =  New-Object System.Collections.ArrayList
 $WScriptShell = New-Object -ComObject ("WScript.Shell")
+$RegAddSCHANNEL = 'HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL'
 #############################################################################
 #endregion User Variables
 #############################################################################
@@ -1681,6 +1683,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 }
 Write-Host ("-"*[console]::BufferWidth)
 Write-Host ("Ending User Profile Setup:")
+Write-Progress -ID 0 -Completed
 Write-Host ("-"*[console]::BufferWidth)
 #============================================================================
 #endregion Main Set User Defaults 
@@ -2037,18 +2040,22 @@ If (-Not $UserOnly) {
 #============================================================================
 If (-Not $UserOnly) {
 	Write-Host "Setting up SSL : "
+	#http://www.vistax64.com/powershell/21794-creating-registry-keys-createsubkey-method.html
 	#Set Ciphers
+	#Need to go old school to set registry as powershell cannot handle keys with "/" in them. 
 	Foreach ($Cipher in $ConfigFile.Config.WindowsSettings.Schannel.Cipher) {
 		If ($Cipher.Status -eq "Enable" -or $Cipher.Status -eq "Enabled" -or $Cipher.Status -eq "on") {
 			# Write-Host ("`t Enabling Cipher: " + $Cipher.'#text') -foregroundcolor Yellow
 			Write-Color -Text "Enabling Cipher: ",
 								$Cipher.'#text' -Color White,DarkYellow -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\" + $Cipher.'#text' ) "Enabled" 4294967295 "DWORD"
+			reg add $('"' + $RegAddSCHANNEL + '\Ciphers\' + ($Cipher.'#text') + '"') /v Enabled /d 4294967295 /t REG_DWORD /f
+			#Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\" + $Cipher.'#text' ) "Enabled" 4294967295 "DWORD"
 		} else {
 			# Write-Host ("`t Disabling Cipher: " + $Cipher.'#text') -foregroundcolor Green
 			Write-Color -Text "Disabling Cipher: ",
 								$Cipher.'#text' -Color White,DarkGreen -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\" + $Cipher.'#text' ) "Enabled" 0 "DWORD"
+			reg add $('"' + $RegAddSCHANNEL + '\Ciphers\' + ($Cipher.'#text') + '"') /v Enabled /d 0 /t REG_DWORD /f
+			#Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\" + $Cipher.'#text' ) "Enabled" 0 "DWORD"
 		}
 	}
 	#Set Hashes
