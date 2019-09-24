@@ -1683,7 +1683,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 }
 Write-Host ("-"*[console]::BufferWidth)
 Write-Host ("Ending User Profile Setup:")
-Write-Progress -ID 0 -Completed
+Write-Progress -ID 0 -Completed -Activity "Hardening User Profiles Complete."
 Write-Host ("-"*[console]::BufferWidth)
 #============================================================================
 #endregion Main Set User Defaults 
