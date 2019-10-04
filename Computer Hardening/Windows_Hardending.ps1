@@ -50,7 +50,9 @@
  Author: Paul Fuller
  Changes:
     * Version 3.00.00 - Switch to XML Config
-    * Version 3.00.01 - Fixed Cipher issue where powershell could not handle "/"
+	* Version 3.00.01 - Fixed Cipher issue where powershell could not handle "/"
+	* Version 3.00.02 - Fixed VM Detection
+	* Version 3.00.03 - Fixed Setting A Binary Registry key.
 	#>
 #############################################################################
 #region Parameter Config
@@ -89,7 +91,7 @@ If (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 #############################################################################
 #region User Variables
 #############################################################################
-$ScriptVersion = "3.0.1"
+$ScriptVersion = "3.0.3"
 $LogFile = ("\Logs\" + `
 		   $MyInvocation.MyCommand.Name + "_" + `
 		   $env:computername + "_" + `
@@ -328,6 +330,10 @@ function Set-Reg {
         New-Item -Path $regPath -Force | Out-Null
 	}
 	
+	If($type -eq "Binary" -and $value.GetType().Name -eq "String" -and $value -match ",") {
+		$value = [byte[]]($value -split ",")
+	}
+
     New-ItemProperty -Path $regPath -Name $name -Value $value -PropertyType $type -Force | Out-Null
 }
 Function Set-Owner {
@@ -662,20 +668,20 @@ Function Get-MachineType {
                 #$hostdns = [System.Net.DNS]::GetHostEntry($Computer) 
                 $ComputerSystemInfo = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $Computer -ErrorAction Stop -Credential $Credential 
                  
-                switch ($ComputerSystemInfo.Model) { 
+                switch -wildcard ($ComputerSystemInfo.Model) { 
                      
                     # Check for Hyper-V Machine Type 
-                    "Virtual Machine" { 
+                    "*Virtual Machine*" { 
                         $MachineType="VM" 
                         } 
  
                     # Check for VMware Machine Type 
-                    "VMware Virtual Platform" { 
+                    "*VMware*" { 
                         $MachineType="VM" 
                         } 
- 
+						
                     # Check for Oracle VM Machine Type 
-                    "VirtualBox" { 
+                    "*VirtualBox*" { 
                         $MachineType="VM" 
                         } 
  
@@ -893,7 +899,7 @@ function Write-Color {
 #============================================================================
 #region VM Test
 #Get Where we are running
-If ((Get-MachineType).type -ne "Physical") {
+If ((Get-MachineType).type -eq "VM") {
 	$IsVM = $True
 	Write-Host ("Running in on Virtual Hardware")
 }else{
