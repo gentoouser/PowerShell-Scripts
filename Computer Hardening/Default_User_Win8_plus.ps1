@@ -88,7 +88,13 @@
 	* Version 2.1.12 - More Disabling of the Lockscreen for stores. Added Custiomized Win+X setting for stores. Fix of Control panel for stores. Copy Icons to all users desktop if there is a Desktop folder in the LICache. Added ScheduledJob on startup to clean temp files.
 	* Version 2.1.13 - Copy Custom Icons. Enable PS/2 Mouse. Enable SNMP Legacy mode for Printing. Fix Power button issue.
 	* Version 2.1.14 - Fix for screen output. Added check for "bowser" service; disabling this servcie stops SMB. Lockdown VMWare Horizon; Fixed SSLCipherList issue. Commented alot of code for trobleshooting. 
+	* Version 2.1.15 - Fixed access admin UNC for local users. Fixed issue where deny files were still showing up for users.
+	* Version 2.1.16 - Fixed Issues for Windows Store and Settings Apps not launching.
+	* Version 2.1.17 - Chrome GPO updates; Fixed OWA File Upload bug
+	* Version 2.1.18 - Random complex 120 chr. password for Store users. Reset Local Administrator password to random password and disables the account. Disable Windows Feature Upgrade
+	* Version 2.1.19 - Updated Comments on what each registry entry does. Added reg. to stop download of printer metadata. Added code to deal with reseting profiles. Updated User Theme and Accent color settings. Set account lockout. Fixed Password generation bug. Fixed bug where account was not enabled when trying to recoreate user profile. 
 	#>
+#Requires -Version 5.1 -PSEdition Desktop
 PARAM (
 	[array]$Profiles  	  		= @("Default"),	
 	[string]$LICache	  		= "C:\IT_Updates",
@@ -119,7 +125,7 @@ Break
 }
 #Fix issue for services
 Set-Location -Path "\"
-$ScriptVersion = "2.1.14"
+$ScriptVersion = "2.1.19"
 #############################################################################
 #############################################################################
 
@@ -175,6 +181,8 @@ $ZoneMap = @(
     New-Object PSObject -Property @{Site = "microsoft.com"; Protocol = "http"; Zone = 2}
     New-Object PSObject -Property @{Site = "microsoft.com\download"; Protocol = "http"; Zone = 2}
     New-Object PSObject -Property @{Site = "microsoft.com\download"; Protocol = "https"; Zone = 2}
+    New-Object PSObject -Property @{Site = "update.microsoft.com"; Protocol = "http"; Zone = 2}
+    New-Object PSObject -Property @{Site = "update.microsoft.com"; Protocol = "https"; Zone = 2}
 )
 #endregion IE Domain Settings
 #region Registry Permissions
@@ -305,6 +313,7 @@ $ChromeURLBlackList = @(
 #region Services	
 $DisableServices = @(
 	"AdobeARMservice"							# Adobe Acrobat Update Service
+	"AMD External Events Utility"				# AMD External Events Utility
 	"AJRouter"									# AllJoyn Router Service
 	"ALG"										# Application Layer Gateway Service
 	"Browser"									# Computer Browser
@@ -322,6 +331,8 @@ $DisableServices = @(
 	"irmon"										# Infrared monitor service
 	"lfsvc"                                  	# Geolocation Service
 	"icssvc"									# Windows Mobile Hotspot Service
+	"IpxlatCfgSvc"								# IP Translation Configuration Service
+	"NaturalAuthentication"						# Natural Authentication ## Face login
 	#"lmhosts"									# TCP/IP NetBIOS Helper	#####Breaks SMB 
 	"MapsBroker"                             	# Downloaded Maps Manager
 	"MSiSCSI"									# Microsoft iSCSI Initiator Service
@@ -330,6 +341,7 @@ $DisableServices = @(
 	#"netprofm"									# Network List Service	### Event log errors
 	"p2pimsvc"									# Peer Networking Identity Manager
 	"p2psvc"									# Peer Name Resolution Protocol
+	"PeerDistSvc"								# BranchCache ## Used by Windows Update for download sharing.
 	"PhoneSvc"									# Phone Service
 	"PNRPAutoReg"								# PNRP Machine Name Publication Service
 	"PNRPsvc"									# Peer Name Resolution Protocol
@@ -338,6 +350,7 @@ $DisableServices = @(
 	"RemoteRegistry"                         	# Remote Registry
 	"RetailDemo"								# Retail Demo Service
 	#"RmSvc"									# Radio Management Service ##### Breaks Wi-Fi
+	"RpcLocator"								# Remote Procedure Call (RPC) Locator
 	#"RSoPProv"									# Resultant Set of Policy Provider
 	"SEMgrSvc"									# Payments and NFC/SE Manager
 	"SensorDataService"							# Sensor Data Service
@@ -346,11 +359,11 @@ $DisableServices = @(
 	"smphost"									# Microsoft Storage Spaces SMP Service
 	"SNMP"										# SNMP Service
 	"SNMPTRAP"									# SNMP Trap
-	#"SSDPSRV"									# SSDP Discovery	#####Breaks SMB
+	"SSDPSRV"									# SSDP Discovery	#####Breaks SMB
 	"svsvc"										# Spot Verifier Service
 	"Themes"									# Themes
 	"TrkWks"                                 	# Distributed Link Tracking Client
-	#"upnphost"									# UPnP Device Host    #####Breaks SMB
+	"upnphost"									# UPnP Device Host    #####Breaks SMB
 	"vmicguestinterface"						# Hyper-V Guest Service Interface
 	"vmicheartbeat"								# Hyper-V Heartbeat Service
 	"vmickvpexchange"							# Hyper-V Data Exchange Service
@@ -365,7 +378,9 @@ $DisableServices = @(
 	"wcncsvc"									# Windows Connect Now - Config Registrar Service
 	"WerSvc"									# Windows Error Reporting Service
 	"WFDSConMgrSvc"								# Wi-Fi Direct Services Connection Manager Service
+	"wisvc"										# Windows insider program
 	#"WlanSvc"                               	# WLAN AutoConfig ##### Breaks Wi-Fi
+	"wlidsvc"									# Microsoft Account Sign-in Assistant
 	"WMPNetworkSvc"                          	# Windows Media Player Network Sharing Service
 	#"wscsvc"                                	# Windows Security Center Service
 	#"WSearch"                               	# Windows Search
@@ -384,8 +399,10 @@ $DisableServices = @(
 	# "BcastDVRUserService_62ab9"
 )
 $ManualServices = @(
+	"AppXSVC"									# AppX Deployment Service (AppXSVC) ## Windows Store Requirement
 	"Nameiphlpsvc"								# IP Helper
 	"wuauserv"									# Windows Update
+	"LicenseManager"							# Windows License Manager Service ## Windows Store Requirement
 )
 $AutomaticServices = @(
 	"W32Time"									#Windows Time
@@ -397,6 +414,7 @@ $AutomaticServices = @(
 	"bits"										# Background Intelligent Transfer Service ### For Windows Update
 	"cryptsvc"									# Cryptographic Services ### For Windows Update
 	"trustedinstaller"							# Windows Modules Installer ### For Windows Update
+	"StorSvc"									# Storage Service ## Windows Store Requirement
 )
 
 #endregion Services	
@@ -554,7 +572,8 @@ If ($Profiles[0].Contains(",")) {
 		}
 	}
 }
-
+#Load Password DLL
+Add-Type -AssemblyName System.web
 #############################################################################
 #endregion Setup Sessions
 #############################################################################
@@ -658,21 +677,33 @@ function Get-CurrentUserSID {
 	Add-Type -AssemblyName System.DirectoryServices.AccountManagement            
 	return ([System.DirectoryServices.AccountManagement.UserPrincipal]::Current).SID.Value            
 }
-function Set-Reg ($regPath, $name, $value, $type) {
-	#Source: https://github.com/nichite/chill-out-windows-10/blob/master/chill-out-windows-10.ps1
-	# String: Specifies a null-terminated string. Equivalent to REG_SZ.
-	# ExpandString: Specifies a null-terminated string that contains unexpanded references to environment variables that are expanded when the value is retrieved. Equivalent to REG_EXPAND_SZ.
-	# Binary: Specifies binary data in any form. Equivalent to REG_BINARY.
-	# DWord: Specifies a 32-bit binary number. Equivalent to REG_DWORD.
-	# MultiString: Specifies an array of null-terminated strings terminated by two null characters. Equivalent to REG_MULTI_SZ.
-	# Qword: Specifies a 64-bit binary number. Equivalent to REG_QWORD.
-	# Unknown: Indicates an unsupported registry data type, such as REG_RESOURCE_LIST.
-	
-	If(!(Test-Path $regPath)) {
-        New-Item -Path $regPath -Force | Out-Null
-    }
-    New-ItemProperty -Path $regPath -Name $name -Value $value -PropertyType `
-        $type -Force | Out-Null
+function Set-Reg {
+	[CmdletBinding()] 
+Param 
+( 
+	[Parameter(Mandatory=$true,Position=1,HelpMessage="Path to Registry Key")][string]$regPath, 
+	[Parameter(Mandatory=$true,Position=2,HelpMessage="Name of Value")][string]$name,
+	[Parameter(Mandatory=$true,Position=3,HelpMessage="Data for Value")]$value,
+	[Parameter(Mandatory=$true,Position=4,HelpMessage="Type of Value")][ValidateSet("String", "ExpandString","Binary","DWord","MultiString","Qword","Unknown",IgnoreCase =$true)][string]$type 
+) 
+#Source: https://github.com/nichite/chill-out-windows-10/blob/master/chill-out-windows-10.ps1
+# String: Specifies a null-terminated string. Equivalent to REG_SZ.
+# ExpandString: Specifies a null-terminated string that contains unexpanded references to environment variables that are expanded when the value is retrieved. Equivalent to REG_EXPAND_SZ.
+# Binary: Specifies binary data in any form. Equivalent to REG_BINARY.
+# DWord: Specifies a 32-bit binary number. Equivalent to REG_DWORD.
+# MultiString: Specifies an array of null-terminated strings terminated by two null characters. Equivalent to REG_MULTI_SZ.
+# Qword: Specifies a 64-bit binary number. Equivalent to REG_QWORD.
+# Unknown: Indicates an unsupported registry data type, such as REG_RESOURCE_LIST.
+
+If(!(Test-Path $regPath)) {
+	New-Item -Path $regPath -Force | Out-Null
+}
+
+If($type -eq "Binary" -and $value.GetType().Name -eq "String" -and $value -match ",") {
+	$value = [byte[]]($value -split ",")
+}
+
+New-ItemProperty -Path $regPath -Name $name -Value $value -PropertyType $type -Force | Out-Null							   
 }
 Function Set-Owner {
     <#
@@ -979,13 +1010,7 @@ Function Get-MachineType {
 		* Find the Model information for other hypervisor VM's like Xen and KVM. 
 	.EXAMPLE 
 	   Get-MachineType 
-	   Query if the local machine is a physical or virtual machine. 
-	.EXAMPLE 
-	   Get-MachineType -ComputerName SERVER01  
-	   Query if SERVER01 is a physical or virtual machine. 
-	.EXAMPLE 
-	   Get-MachineType -ComputerName (Get-Content c:\temp\computerlist.txt) 
-	   Query if a list of computers are physical or virtual machines. 
+	   Query if the local machine is a physical or virtual machine. 													   
 	.LINK 
 	   https://gallery.technet.microsoft.com/scriptcenter/Get-MachineType-VM-or-ff43f3a9 
 	#> 
@@ -993,71 +1018,55 @@ Function Get-MachineType {
     [OutputType([int])] 
     Param 
     ( 
-        # ComputerName 
-        [Parameter(Mandatory=$false, 
-                   ValueFromPipeline=$true, 
-                   ValueFromPipelineByPropertyName=$true, 
-                   Position=0)] 
-        [string[]]$ComputerName=$env:COMPUTERNAME, 
-        $Credential = [System.Management.Automation.PSCredential]::Empty 
+													 
     ) 
- 
-    Begin 
-    { 
-    } 
-    Process 
-    { 
-        ForEach ($Computer in $ComputerName) { 
-            Write-Verbose "Checking $Computer" 
-            try { 
-                #$hostdns = [System.Net.DNS]::GetHostEntry($Computer) 
-                $ComputerSystemInfo = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $Computer -ErrorAction Stop -Credential $Credential 
-                 
-                switch ($ComputerSystemInfo.Model) { 
-                     
-                    # Check for Hyper-V Machine Type 
-                    "Virtual Machine" { 
-                        $MachineType="VM" 
-                        } 
- 
-                    # Check for VMware Machine Type 
-                    "VMware Virtual Platform" { 
-                        $MachineType="VM" 
-                        } 
- 
-                    # Check for Oracle VM Machine Type 
-                    "VirtualBox" { 
-                        $MachineType="VM" 
-                        } 
- 
-                    # Check for Xen 
-                    # I need the values for the Model for which to check. 
- 
-                    # Check for KVM 
-                    # I need the values for the Model for which to check. 
- 
-                    # Otherwise it is a physical Box 
-                    default { 
-                        $MachineType="Physical" 
-                        } 
-                    } 
-                 
-                # Building MachineTypeInfo Object 
-                $MachineTypeInfo = New-Object -TypeName PSObject -Property ([ordered]@{ 
-                    ComputerName=$ComputerSystemInfo.PSComputername 
-                    Type=$MachineType 
-                    Manufacturer=$ComputerSystemInfo.Manufacturer 
-                    Model=$ComputerSystemInfo.Model 
-                    }) 
-                $MachineTypeInfo 
-                } 
-            catch [Exception] { 
-                Write-Output "$Computer`: $($_.Exception.Message)" 
-                } 
-            } 
-    } 
-    End 
-    { 
+    Begin { 
+    } Process { 
+		try { 
+			#$hostdns = [System.Net.DNS]::GetHostEntry($Computer) 
+			If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
+				$ComputerSystemInfo = Get-CimInstance -Class Win32_ComputerSystem  -ErrorAction Stop 
+			} Else {
+				$ComputerSystemInfo = Get-WmiObject -Class Win32_ComputerSystem  -ErrorAction Stop 
+			} 
+							
+			switch -wildcard ($ComputerSystemInfo.Model) { 	
+				# Check for Hyper-V Machine Type 
+				"*Virtual Machine*" { 
+					$MachineType="VM" 
+					} 
+				# Check for VMware Machine Type 
+				"*VMware*" { 
+					$MachineType="VM" 
+					} 
+				# Check for Oracle VM Machine Type 
+				"*VirtualBox*" { 
+					$MachineType="VM" 
+					} 
+				# Check for Xen 
+				# I need the values for the Model for which to check. 
+
+				# Check for KVM 
+				# I need the values for the Model for which to check. 
+
+				# Otherwise it is a physical Box 
+				default { 
+					$MachineType="Physical" 
+					} 
+				} 
+				
+			# Building MachineTypeInfo Object 
+			$MachineTypeInfo = New-Object -TypeName PSObject -Property ([ordered]@{ 
+				ComputerName=$ComputerSystemInfo.Name
+				Type=$MachineType 
+				Manufacturer=$ComputerSystemInfo.Manufacturer 
+				Model=$ComputerSystemInfo.Model 
+				}) 
+			$MachineTypeInfo 
+		} catch [Exception] { 								
+			Write-Output "Error`: $($_.Exception.Message)" 				  
+		} 
+	} End { 
  
     } 
 }
@@ -1200,6 +1209,14 @@ If (-Not $UserOnly) {
 			Set-Acl $Custom_Software_Path $Acl | Out-Null
 		}
 	}
+	If (Test-Path (Split-path -path $Custom_Software_Path -Parent) {
+		write-host ("Setting Permissions: " + (Split-path -path $Custom_Software_Path -Parent))
+		$acl = Get-Acl (Split-path -path $Custom_Software_Path -Parent)
+		If (-Not ($acl.Access | Where-Object { $_.IdentityReference -eq "BUILTIN\Users" -and $_.FileSystemRights -eq "FullControl"})) {
+			$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule('Users', "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+			$Acl.Setaccessrule($Ar) | Out-Null
+			Set-Acl (Split-path -path $Custom_Software_Path -Parent) $Acl | Out-Null
+		}
 }
 #============================================================================
 #region Main Local Start Menu and Taskbar Settings
@@ -1239,14 +1256,14 @@ If ($Store) {
 	#Disable Password Requirements for creating new accounts
 	If ($CreateUsers) {
 		#secedit /export /cfg c:\secpol.cfg
-		Write-Host 'Changing Password Policy to create "Window" users . . .'
-		$process = Start-Process -FilePath ("secedit") -ArgumentList @("/export","/cfg","c:\secpol.cfg") -PassThru -NoNewWindow -wait
-		(Get-Content C:\secpol.cfg).replace("PasswordComplexity = 1", "PasswordComplexity = 0") | Out-File C:\secpol.cfg
-		(Get-Content C:\secpol.cfg).replace("MinimumPasswordAge = 1", "MinimumPasswordAge = 0") | Out-File C:\secpol.cfg
-		(Get-Content C:\secpol.cfg).replace("MinimumPasswordLength = 14", "MinimumPasswordLength = 0") | Out-File C:\secpol.cfg
+		# Write-Host 'Changing Password Policy to create "Window" users . . .'
+		# $process = Start-Process -FilePath ("secedit") -ArgumentList @("/export","/cfg","c:\secpol.cfg") -PassThru -NoNewWindow -wait
+		# (Get-Content C:\secpol.cfg).replace("PasswordComplexity = 1", "PasswordComplexity = 0") | Out-File C:\secpol.cfg
+		# (Get-Content C:\secpol.cfg).replace("MinimumPasswordAge = 1", "MinimumPasswordAge = 0") | Out-File C:\secpol.cfg
+		# (Get-Content C:\secpol.cfg).replace("MinimumPasswordLength = 14", "MinimumPasswordLength = 0") | Out-File C:\secpol.cfg
 		#secedit /configure /db c:\windows\security\local.sdb /cfg c:\secpol.cfg /areas SECURITYPOLICY
-		$process = Start-Process -FilePath ("secedit") -ArgumentList @("/configure","/db","c:\windows\security\local.sdb","/cfg","c:\secpol.cfg","/areas","SECURITYPOLICY") -PassThru -NoNewWindow -wait
-		Remove-Item -force c:\secpol.cfg -confirm:$false
+		# $process = Start-Process -FilePath ("secedit") -ArgumentList @("/configure","/db","c:\windows\security\local.sdb","/cfg","c:\secpol.cfg","/areas","SECURITYPOLICY") -PassThru -NoNewWindow -wait
+		# Remove-Item -force c:\secpol.cfg -confirm:$false
 		# net accounts /minpwage:0 /minpwlen:0
 		ForEach ( $i in $UserRange) {	
 			If ($i) {
@@ -1255,7 +1272,11 @@ If ($Store) {
 					#Only create profile if no profile exists
 					If (-Not (Test-Path ((Get-WmiObject Win32_UserProfile |Where-Object { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |Select-Object Localpath).localpath + "\ntuser.dat"))) {
 						write-host ("Creating User: " +("Window" + $i))
-						New-LocalUser -Name ("Window" + $i).ToLower() -Description "Store Window User" -FullName ("Window" + $i) -Password (ConvertTo-SecureString ("Window" + $i).ToLower() -AsPlainText -Force) -AccountNeverExpires -UserMayNotChangePassword -PasswordNeverExpires | Out-Null
+						#Password same as username
+						#New-LocalUser -Name ("Window" + $i).ToLower() -Description "Store Window User" -FullName ("Window" + $i) -Password (ConvertTo-SecureString ("Window" + $i).ToLower() -AsPlainText -Force) -AccountNeverExpires -UserMayNotChangePassword -PasswordNeverExpires | Out-Null
+						#Random 120 chr. password
+						$TempPass= (ConvertTo-SecureString ([system.web.security.membership]::GeneratePassword(120,32)).tostring() -AsPlainText -Force)
+						New-LocalUser -Name ("Window" + $i).ToLower() -Description "Store Window User" -FullName ("Window" + $i) -Password $TempPass -AccountNeverExpires -UserMayNotChangePassword -PasswordNeverExpires | Out-Null
 						Add-LocalGroupMember -Name 'Administrators' -Member ("Window" + $i) | Out-Null
 						Write-Host "`tWorking on Creating user profile: " ("Window" + $i)
 						#launch process as user to create user profile
@@ -1263,7 +1284,7 @@ If ($Store) {
 						$processStartInfo = New-Object System.Diagnostics.ProcessStartInfo
 						$processStartInfo.UserName = ("Window" + $i)
 						$processStartInfo.Domain = "."
-						$processStartInfo.Password = (ConvertTo-SecureString ("Window" + $i).ToLower() -AsPlainText -Force)
+						$processStartInfo.Password = $TempPass
 						$processStartInfo.FileName = "cmd"
 						$processStartInfo.Arguments = "/C echo . && echo %username% && echo ."
 						$processStartInfo.LoadUserProfile = $true
@@ -1287,9 +1308,63 @@ If ($Store) {
 							Disable-LocalUser -Name ("Window" + $i).ToLower() -Confirm:$false
 						}
 					}
+				} else {
+				#Only create profile if no profile exists
+				$CurrentUserSID = (Get-LocalUser -Name ("Window" + $i)).SID
+				If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
+					$UserProfile = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $CurrentUserSID}).localpath
+				} Else {
+					$UserProfile = (Get-WmiObject Win32_UserProfile | Where-Object { $_.SID -eq $CurrentUserSID}).localpath
+				} 
+				If (-Not (Test-Path ($UserProfile + "\ntuser.dat"))) {
+					If ((Get-LocalUser -Name ("Window" + $i)).Enabled -eq $false) {
+						Enable-LocalUser -Name ("Window" + $i).ToLower()
+					}
+					Write-Host ("`tResetting password for profile: " + "Window" + $i)
+					$TempPass= (ConvertTo-SecureString ([system.web.security.membership]::GeneratePassword(120,32)).tostring() -AsPlainText -Force)
+					Set-LocalUser -Name ("Window" + $i).ToLower() -Password $TempPass
+					Write-Host ("`tWorking on Creating user profile: " + "Window" + $i)
+					#launch process as user to create user profile
+					# https://msdn.microsoft.com/en-us/library/system.diagnostics.processstartinfo(v=vs.110).aspx
+					$processStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+					$processStartInfo.UserName = ("Window" + $i)
+					$processStartInfo.Domain = "."
+					$processStartInfo.Password = $TempPass
+					$processStartInfo.FileName = ($env:windir + "\system32\cmd.exe")
+					$processStartInfo.WorkingDirectory = $LICache
+					$processStartInfo.Arguments = "/C echo . && echo %username% && echo ."
+					$processStartInfo.LoadUserProfile = $true
+					$processStartInfo.UseShellExecute = $false
+					#$processStartInfo.WindowStyle  = "minimized"
+					$processStartInfo.RedirectStandardOutput = $false
+					$process = [System.Diagnostics.Process]::Start($processStartInfo)
+					$Process.WaitForExit()   
+					#Add setup user to profiles created to allow registry to be created. 
+					If (Test-Path ($UsersProfileFolder + "\Window" + $i)) {
+						$ProfileList.Add(("Window" + $i).ToLower()) | Out-Null
+						$HideAccounts += ("Window" + $i).ToLower()
+						#Grant Current user rights on new Profiles
+						Write-Host ("`tUpdating ACLs and adding to Profile List: " + ($UsersProfileFolder + "\Window" + $i))
+						$user_account=$env:username
+						$Acl = Get-Acl ($UsersProfileFolder + "\Window" + $i)
+						$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule($user_account, "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+						$Acl.Setaccessrule($Ar)
+						Set-Acl ($UsersProfileFolder + "\Window" + $i) $Acl
+						#Disable User.
+						Disable-LocalUser -Name ("Window" + $i).ToLower() -Confirm:$false
+					}
 				}
 			}
+			}
 		}
+	}
+}
+#If not logged in as administrator and administrators groups has more than one user set administrator account with random password.
+If ($env:username -ne "Administrator") {
+	If ((Get-LocalGroupMember -Name 'Administrators').count -gt 1) {
+		#Sets Random 265 character password
+		set-localuser -Name 'Administrator' -Password (ConvertTo-SecureString ([system.web.security.membership]::GeneratePassword(128,32) + [system.web.security.membership]::GeneratePassword(128,32)).tostring() -AsPlainText -Force )
+		Disable-LocalUser -Name 'Administrator' -Confirm:$false
 	}
 }
 #============================================================================
@@ -1354,8 +1429,9 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				#Add Deny ACL
 				ForEach ( $file in $StoreDenyFolder) {
 					If (Test-Path $file) {
+						Write-Host ("`t`tDenying: " + $file)
 						$Acl = Get-Acl ($file)
-						$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "Read", "Deny")
+						$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "ReadAndExecute", "Deny")
 						$Acl.Setaccessrule($Ar)
 						Set-Acl ($file) $Acl	
 					}
@@ -1363,8 +1439,9 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				#Add Deny ACL User Profile
 				ForEach ( $file in $StoreDenyFolderUser) {
 					If (Test-Path ($UserProfile + "\"+ $file)) {
+						Write-Host ("`t`tDenying: " + $file)
 						$Acl = Get-Acl ($UserProfile + "\"+ $file)
-						$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "Read", "Deny")
+						$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "ReadAndExecute", "Deny")
 						$Acl.Setaccessrule($Ar)
 						Set-Acl ($UserProfile + "\"+ $file) $Acl	
 						Get-ChildItem -path ($UserProfile + "\"+ $file) -Recurse -Force | ForEach-Object {$_.attributes = "Hidden"}
@@ -1414,6 +1491,13 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	}else{
 		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "WallpaperStyle" "6" "STRING"	
 	}
+	#Setup Theme settings
+	#Use Dark theme
+	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize") "AppsUseLightTheme" "0" "DWORD"
+	#Disable Taskbar Transparency
+	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize") "EnableTransparency" "0" "DWORD"
+	#Set AccentColor
+	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\DWM") "AccentColor" "4292311040" "DWORD"
 	#Setup Screen Saver
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveActive" "1" "STRING"
 	If ($Store){
@@ -1454,7 +1538,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	#Don't create thumb.db (thumbnail) files for local files
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "DisableThumbnailCache" "1" "DWORD"
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Explorer") "DisableThumbsDBOnNetworkFolders" "1" "DWORD"
-	#Don't ask to search the internet for the correct program when opening a file with an unknown extension
+	#Don't ask to search the Internet for the correct program when opening a file with an unknown extension
 	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoInternetOpenWith" "1" "DWORD"
 	#endregion Windows Explorer
 	#region Start Menu	
@@ -1483,7 +1567,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		# DisableTransparency:
 		Write-Host "Removing Transparency Effects..." -ForegroundColor Green
 		Write-Host ""
-		Set-ItemProperty -Path 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name 'EnableTransparency' -Value '0'
+		Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize") "EnableTransparency" 0 "DWORD"
 	}
 	#endregion Start Menu
 	If ($LockedDown) {
@@ -1599,7 +1683,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoChangeStartMenu" 1 "DWORD"
 			#Allow User to Shutdown 
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoClose" 0 "DWORD"
-			#To stop users from listing machines in their local workgroups or domains via Windows Explorer or My Network Places (Network Neighborhood)
+			#To stop users from listing machines in their local work-groups or domains via Windows Explorer or My Network Places (Network Neighborhood)
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoComputersNearMe" 1 "DWORD"
 			#Removes the Dfs tab from Windows Explorer and from other programs that use the Windows Explorer browser, such as My Computer.
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "NoDFSTab" 1 "DWORD"
@@ -1884,8 +1968,6 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Restrictions") "NoBrowserSaveAs" 1 "DWORD"
 			#Turns off the Source command on the View menu. 
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Restrictions") "NoViewSource" 1 "DWORD"
-			#Disables the right-click shortcut menu on a Web page.
-			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Restrictions") "NoBrowserContextMenu" 1 "DWORD"
 			#Turns off Save on the File Download dialog box.
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Restrictions") "NoSelectDownloadDir" 1 "DWORD"
 			#Disable or Turn Off InPrivate Browsing in Internet Explorer
@@ -1905,6 +1987,8 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings") "EnableAutoProxyResultCache" 0 "DWORD"
 			#Enable Internet Explorer warning about certificate address mismatch
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings") "WarnOnBadCertRecving" 1 "DWORD"
+			#Disable Saving of Passwords
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings") "DisablePasswordCaching" 1 "DWORD"
 			#endregion Internet Explorer
 			#region Microsoft Edge
 			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Edge")
@@ -1924,9 +2008,11 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "AllowDinosaurEasterEgg" 0 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "AuthNegotiateDelegateWhitelist" $ChromeDelegateWhiteList "String"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "AutofillCreditCardEnabled" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "AlwaysOpenPdfExternally" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "BookmarkBarEnabled" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "BrowserAddPersonEnabled" 0 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "BrowserGuestModeEnabled" 0 "DWORD"
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "BrowserSignin" 0 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "BuiltInDnsClientEnabled" 0 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "CloudPrintProxyEnabled" 0 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "CloudPrintSubmitEnabled" 0 "DWORD"
@@ -2061,6 +2147,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			write-host ("`t" + $CurrentProfile + ": Setting up Store settings Other Settings")
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\MobilityCenter") "NoMobilityCenter" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Network") "NoEntireNetwork" 1 "DWORD"
+			#Hides "This PC" in Windows Explorer
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\NonEnum") "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\NonEnum") "{450D8FBA-AD25-11D0-98A8-0800361B1103}" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\PresentationSettings") "NoPresentationSettings" 1 "DWORD"
@@ -2081,7 +2168,9 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows Mail") "DisableCommunities" 1 "DWORD"
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows Mail") "ManualLaunchAllowed" 0 "DWORD"
 			#Disable Windows 10 managed default printer
-			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows NT\CurrentVersion\Windows") "LegacyDefaultPrinterMode" 1 "DWORD"			
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows NT\CurrentVersion\Windows") "LegacyDefaultPrinterMode" 1 "DWORD"
+			#Disable PEOPLE Icon From Taskbar
+			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\Explorer\Advanced") "PEOPLEBAND" 0 "DWORD"		
 			#endregion Other ??
 			#region Disable Lock Screen
 			Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Personalization") "NoLockScreen " 1 "DWORD"
@@ -2204,7 +2293,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	Set-Reg $ContentDeliveryPath "SoftLandingEnabled" 0 "DWORD"
 	# Disable Bing search. No one wants these suggestions.
 	Write-Host ("`t" + $CurrentProfile + ": Disabling Bing search...")
-	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\CurrentVersion\Search") "BingSearchEnabled" 0x0
+	Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\SOFTWARE\Microsoft\Windows\CurrentVersion\Search") "BingSearchEnabled" 0 "DWORD"
 	#Search 
 	write-host ("`t" + $CurrentProfile + ": Search from This PC ...")
 	#0 = Hidden
@@ -2340,8 +2429,6 @@ If (-Not $UserOnly) {
 
 		Write-Host "Disabling P2P Windows Update download and hosting..."
 		Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config" "DownloadMode" 0 "DWORD"
-		
-
 		# WiFi Sense: HotSpot Sharing: Disable
 		If (-Not (Test-Path "HKLM:\Software\Microsoft\PolicyManager\default\WiFi\AllowWiFiHotSpotReporting")) {
 			Write-Host "WiFi Sense: HotSpot Sharing: Disable"
@@ -2441,6 +2528,7 @@ If (-Not $UserOnly) {
 		Set-Reg ($HKLWE + "\HideDesktopIcons\NewStartPanel") "{645FF040-5081-101B-9F08-00AA002F954E}" 1 "DWORD"
 		#Hide Settings
 		# Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" "SettingsPageVisibility" "showonly:printers;defaultapps;display;mousetouchpad;network-ethernet;notifications;usb;windowsupdate" "String"
+		#Hide Shutdown on Logon Screen
 		Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" "shutdownwithoutlogon" 0 "DWORD"
 	}else{
 		#This PC
@@ -2725,6 +2813,8 @@ If (-Not $UserOnly) {
 	Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" "fForceClientLptDef" 1 "DWORD"
 	#Hide Users on login screen
 	Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" "dontdisplaylastusername" 1 "DWORD"
+	#Allow local user to logon to Admin Shares
+	Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" "LocalAccountTokenFilterPolicy" 1 "DWORD"
 }
 #============================================================================
 #endregion Main Local Machine Tweaks
@@ -3255,57 +3345,11 @@ If (-Not $UserOnly) {
 #============================================================================
 If (-Not $UserOnly) {
 	If (Test-Path ($LICache + "\RemoveFCTID.exe")) {
-		#[IntPtr]::Size – Gets the size of this instance.  The value of this property is 4 in a 32-bit process, and 8 in a 64-bit process
-		If ([IntPtr]::Size -eq 4) {
-			If (-Not (Test-Path (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient\RemoveFCTID.exe"))) {
-				If (Test-Path (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient")) {
-					Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient") -Force
-				}else{
-					New-Item -ItemType directory -Path (${env:ProgramFiles(x86)} + "\Fortinet") | out-null
-					New-Item -ItemType directory -Path (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient") | out-null
-					Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient") -Force
-				}
-				If ((Test-Path ($env:USERPROFILE + "\Desktop")) -and -Not (Test-Path($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk"))) {				
-					$ShortCut = $WScriptShell.CreateShortcut($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk")
-					$ShortCut.TargetPath=(${env:ProgramFiles(x86)} + "\Fortinet\FortiClient\RemoveFCTID.exe")
-					$ShortCut.WorkingDirectory = (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient")
-					$ShortCut.Hotkey = "CTRL+SHIFT+F"
-					$ShortCut.IconLocation = "%SystemRoot%\System32\imageres.dll, 100"
-					$ShortCut.Description = "Run Before Imaging"
-					$ShortCut.Save()
-					#Make ShortCut ran as admin https://stackoverflow.com/questions/28997799/how-to-create-a-run-as-administrator-shortcut-using-powershell
-					$bytes = [System.IO.File]::ReadAllBytes($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk")
-					$bytes[0x15] = $bytes[0x15] -bor 0x20 #set byte 21 (0x15) bit 6 (0x20) ON
-					[System.IO.File]::WriteAllBytes($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk", $bytes)
-				}
-				If ((Test-Path ($UsersProfileFolder + "\administrator\Desktop")) -and -Not (Test-Path($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk"))) {				
-					$ShortCut = $WScriptShell.CreateShortcut($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk")
-					$ShortCut.TargetPath=(${env:ProgramFiles(x86)} + "\Fortinet\FortiClient\RemoveFCTID.exe")
-					$ShortCut.WorkingDirectory = (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient")
-					$ShortCut.Hotkey = "CTRL+SHIFT+F"
-					$ShortCut.IconLocation = "%SystemRoot%\System32\imageres.dll, 100"
-					$ShortCut.Description = "Run Before Imaging"
-					$ShortCut.Save()
-					#Make ShortCut ran as admin https://stackoverflow.com/questions/28997799/how-to-create-a-run-as-administrator-shortcut-using-powershell
-					$bytes = [System.IO.File]::ReadAllBytes($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk")
-					$bytes[0x15] = $bytes[0x15] -bor 0x20 #set byte 21 (0x15) bit 6 (0x20) ON
-					[System.IO.File]::WriteAllBytes($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk", $bytes)
-				}
-			}
-			Write-Host "Running FortiClient ID Cleanup . . ."
-			$process = Start-Process -FilePath ('"' + ${env:ProgramFiles(x86)} + '\Fortinet\FortiClient\RemoveFCTID.exe"') -PassThru -NoNewWindow -Wait
-		}
-		If (-Not (Test-Path ($env:ProgramFiles + "\Fortinet\FortiClient\RemoveFCTID.exe"))) {
-			If (Test-Path ($env:ProgramFiles + "\Fortinet\FortiClient")) {			
-				Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination ($env:ProgramFiles + "\Fortinet\FortiClient") -Force
-			}else{
-				New-Item -ItemType directory -Path ($env:ProgramFiles + "\Fortinet") | out-null
-				New-Item -ItemType directory -Path ($env:ProgramFiles + "\Fortinet\FortiClient") | out-null
-				Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination ($env:ProgramFiles + "\Fortinet\FortiClient") -Force
-			}
-			If ((Test-Path ($env:USERPROFILE + "\Desktop")) -and -Not (Test-Path($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk"))){				
+		Write-Host ("Setting up RemoveFCTID Shortcut")
+		If ((Test-Path ($env:USERPROFILE + "\Desktop")) -and -Not (Test-Path($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk"))){
+			If (Test-Path ($LICache + "\RemoveFCTID.exe")) {				
 				$ShortCut = $WScriptShell.CreateShortcut($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk")
-				$ShortCut.TargetPath=($env:ProgramFiles + "\Fortinet\FortiClient\RemoveFCTID.exe")
+				$ShortCut.TargetPath=($LICache + "\RemoveFCTID.exe")
 				$ShortCut.WorkingDirectory = ($env:ProgramFiles + "\Fortinet\FortiClient")
 				$ShortCut.Hotkey = "CTRL+SHIFT+F"
 				$ShortCut.IconLocation = "%SystemRoot%\System32\imageres.dll, 100"
@@ -3315,11 +3359,14 @@ If (-Not $UserOnly) {
 				$bytes = [System.IO.File]::ReadAllBytes($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk")
 				$bytes[0x15] = $bytes[0x15] -bor 0x20 #set byte 21 (0x15) bit 6 (0x20) ON
 				[System.IO.File]::WriteAllBytes($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk", $bytes)
+			} else {
+				Write-Warning "Copy failed please manually copy and create shortcut."
 			}
-			If ((Test-Path ($UsersProfileFolder + "\administrator\Desktop")) -and -Not (Test-Path($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk"))) {				
+		}
+		If ((Test-Path ($UsersProfileFolder + "\administrator\Desktop")) -and -Not (Test-Path($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk"))) {			If (Test-Path ($env:ProgramFiles + "\Fortinet\FortiClient\RemoveFCTID.exe")) {
 				$ShortCut = $WScriptShell.CreateShortcut($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk")
-				$ShortCut.TargetPath=(${env:ProgramFiles(x86)} + "\Fortinet\FortiClient\RemoveFCTID.exe")
-				$ShortCut.WorkingDirectory = (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient")
+				$ShortCut.TargetPath=($LICache + "\RemoveFCTID.exe")
+				$ShortCut.WorkingDirectory = ($env:ProgramFiles + "\Fortinet\FortiClient")
 				$ShortCut.Hotkey = "CTRL+SHIFT+F"
 				$ShortCut.IconLocation = "%SystemRoot%\System32\imageres.dll, 100"
 				$ShortCut.Description = "Run Before Imaging"
@@ -3328,11 +3375,14 @@ If (-Not $UserOnly) {
 				$bytes = [System.IO.File]::ReadAllBytes($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk")
 				$bytes[0x15] = $bytes[0x15] -bor 0x20 #set byte 21 (0x15) bit 6 (0x20) ON
 				[System.IO.File]::WriteAllBytes($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk", $bytes)
+			} else {
+				Write-Warning "Copy failed please manually copy and create shortcut."
 			}
 		}
-		Write-Host "Running FortiClient ID Cleanup . . ."
-		$process = Start-Process -FilePath ('"' +$env:ProgramFiles + '\Fortinet\FortiClient\RemoveFCTID.exe"') -PassThru -NoNewWindow -Wait
-
+		If (Test-Path ($LICache + "\RemoveFCTID.exe")) {
+			Write-Host "Running FortiClient ID Cleanup"
+			$process = Start-Process -FilePath ('"' + $LICache + "\RemoveFCTID.exe" + '"') -PassThru -NoNewWindow -Wait
+		}
 	}
 }
 #============================================================================
@@ -3415,136 +3465,264 @@ Write-Host ("Setting Registry Permissions ... ") -foregroundcolor darkgray
 #============================================================================
 If (-Not $UserOnly) {
 	Write-Host "Setting Machine Policy . . ."
+	#Set User Account Lockout
+	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters\AccountLockout" "MaxDenials" "6" "DWord"
+	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters\AccountLockout" "ResetTime (mins)" "15" "DWord"
+	#Wi-Fi Sense must be disabled.
 	Set-Reg "HKLM:\Software\Microsoft\wcmsvc\wifinetworkmanager\config" "AutoConnectAllowedOEM" "0" "DWord"
+	#Configure the default autorun behavior to prevent autorun commands.
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\CredUI" "EnumerateAdministrators" "0" "DWord"
+	#Configure the default autorun behavior to prevent autorun commands.
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" "NoAutorun" "1" "DWord"
+	#Autoplay must be disabled for all drives.
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" "NoDriveTypeAutoRun" "255" "DWord"
+	#Disable Internet File Association Service.
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" "NoInternetOpenWith" "1" "DWord"
+	#The Order Prints Online wizard must be turned off.
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" "NoOnlinePrintsWizard" "1" "DWord"
+	#Turn off the "Publish to Web" task for files and folders
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" "NoPublishingWizard" "1" "DWord"
+	#Turn off Internet download for Web publishing and online ordering wizards
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" "NoWebServices" "1" "DWord"
+	#File Explorer shell protocol must run in protected mode.
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" "PreXPSP2ShellProtocolBehavior" "0" "DWord"
+	#Force script to run one at a time
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" "AsyncRunOnce" "0" "DWord"
+	#Add-on performance notifications must be disallowed.
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Ext" "DisableAddonLoadTimePerformanceNotifications" "1" "DWord"
+	#disable add-on allowing prompting
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Ext" "IgnoreFrameApprovalCheck" "1" "DWord"
+	#ActiveX opt-in prompt must be disallowed.
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Ext" "NoFirsttimeprompt" "1" "DWord"
+	#Automatically signing in the last interactive user after a system-initiated restart must be disabled
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" "DisableAutomaticRestartSignOn" "1" "DWord"
+	#Turn off Windows Startup Sound
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" "DisableStartupSound" "1" "DWord"
+	#Disable First Time Sign-in Animation
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" "EnableFirstLogonAnimation" "0" "DWord"
+	#Local administrator accounts must have their privileged token filtered to prevent elevated privileges from being used over the network on domain systems.
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" "LocalAccountTokenFilterPolicy" "0" "DWord"
+	#The setting to allow Microsoft accounts to be optional for modern style apps must be enabled
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" "MSAOptional" "1" "DWord"
+	#The Welcome screen may be displayed for 30 seconds, and the logon script interacts with me when I try to log on
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" "DelayedDesktopSwitchTimeout" "0" "DWord"
+	#Command line data must be included in process creation events.
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit" "ProcessCreationIncludeCmdLine_Enabled" "1" "DWord"
+	#Encryption Oracle Remediation - Force Updated Clients 
+	#https://getadmx.com/?Category=Windows_10_2016&Policy=Microsoft.Policies.CredentialsSSP::AllowEncryptionOracle
 	Set-Reg "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters" "AllowEncryptionOracle" "0" "DWord"
+	#Enhanced anti-spoofing for facial recognition must be enabled 
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Biometrics\FacialFeatures" "EnhancedAntiSpoofing" "1" "DWord"
+	#Event Viewer Events.asp links must be turned off
 	Set-Reg "HKLM:\Software\Policies\Microsoft\EventViewer" "MicrosoftEventVwrDisableLinks" "1" "DWord"
+	#Microsoft services to provide enhanced suggestions as the user types in the Address bar must be disallowed 
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Internet Explorer" "AllowServicePoweredQSA" "0" "DWord"
+	#Basic authentication for RSS feeds over HTTP must be turned off
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Internet Explorer\Feeds" "AllowBasicAuthInClear" "0" "DWord"
+	#Prevent RSS attachment downloads
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Internet Explorer\Feeds" "DisableEnclosureDownload" "1" "DWord"
+	#Force showing Link Bar in IE
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Internet Explorer\LinksBar" "Enabled" "1" "DWord"
+	#Disable Internet Explorer First Run Welcome Screen
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Internet Explorer\Main" "DisableFirstRunCustomize" "1" "DWord"
+	#Hide the status bar
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Internet Explorer\Main" "StatusBarWeb" "1" "DWord"
+	#Turn off suggestions for all user-installed providers
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Internet Explorer\SearchScopes" "ShowSearchSuggestionsGlobal" "0" "DWord"
+	#Disable security warning "Your current security settings put your computer at risk"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Internet Explorer\Security" "DisableFixSecuritySettings" "1" "DWord"
+	#Disable Suggested Sites
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Internet Explorer\Suggested Sites" "Enabled" "0" "DWord"
+	#Turn off the Windows Messenger Customer Experience Improvement Program
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Messenger\Client" "CEIP" "2" "DWord"
+	#Disable InPrivate browsing
 	Set-Reg "HKLM:\Software\Policies\Microsoft\MicrosoftEdge\Main" "AllowInPrivate" "0" "DWord"
+	#The password manager function in the Edge browser must be disabled.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\MicrosoftEdge\Main" "FormSuggest Passwords" "no" "String"
+	#The SmartScreen filter for Microsoft Edge must be enabled.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\MicrosoftEdge\PhishingFilter" "EnabledV9" "1" "DWord"
+	#Users must not be allowed to ignore SmartScreen filter warnings for malicious websites in Microsoft Edge
 	Set-Reg "HKLM:\Software\Policies\Microsoft\MicrosoftEdge\PhishingFilter" "PreventOverride" "1" "DWord"
+	#Users must not be allowed to ignore Windows Defender SmartScreen filter warnings for unverified files in Microsoft Edge.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\MicrosoftEdge\PhishingFilter" "PreventOverrideAppRepUnknown" "1" "DWord"
+	#Windows 10 must be configured to prevent Microsoft Edge browser data from being cleared on exit.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\MicrosoftEdge\Privacy" "ClearBrowsingHistoryOnExit" "0" "DWord"
+	#Windows 10 must be configured to require a minimum pin length of six characters or greater
 	Set-Reg "HKLM:\Software\Policies\Microsoft\PassportForWork\PINComplexity" "MinimumPINLength" "6" "DWord"
+	#The system must be configured to prevent automatic forwarding of error information.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\PCHealth\ErrorReporting" "DoReport" "0" "DWord"
+	#Turn off Help and Support Center "Did you know?" content
 	Set-Reg "HKLM:\Software\Policies\Microsoft\PCHealth\HelpSvc" "Headlines" "0" "DWord"
+	#Turn off Help and Support Center Microsoft Knowledge Base search
 	Set-Reg "HKLM:\Software\Policies\Microsoft\PCHealth\HelpSvc" "MicrosoftKBSearch" "0" "DWord"
 	If ($store) {
+		#Do not prompt for password after sleep
 		Set-Reg "HKLM:\Software\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51" "ACSettingIndex" "0" "DWord"
 		Set-Reg "HKLM:\Software\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51" "DCSettingIndex" "0" "DWord"
 	}else{
+		#Prompt for password after sleep
 		Set-Reg "HKLM:\Software\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51" "ACSettingIndex" "1" "DWord"
 		Set-Reg "HKLM:\Software\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51" "DCSettingIndex" "1" "DWord"		
 	}
+	#Search Companion prevented from automatically downloading content updates.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\SearchCompanion" "DisableContentFileUpdates" "1" "DWord"
+	#Disable Windows Customer Experience Improvement Program
 	Set-Reg "HKLM:\Software\Policies\Microsoft\SQMClient\Windows" "CEIPEnable" "0" "DWord"
+	#Users must be prevented from making changes to Exploit Protection settings in the Windows Defender Security Center on Windows 10.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows Defender Security Center\App and Browser protection" "DisallowExploitProtectionOverride" "1" "DWord"
+	#Printing over HTTP must be prevented.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows NT\Printers" "DisableHTTPPrinting" "1" "DWord"
+	#Downloading print driver packages over HTTP must be prevented.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows NT\Printers" "DisableWebPnPDownload" "1" "DWord"
-	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows NT\Rpc" "RestrictRemoteClients" "1" "DWord"		
+	#Unauthenticated RPC clients must be restricted from connecting to the RPC server.
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows NT\Rpc" "RestrictRemoteClients" "1" "DWord"
+	#Passwords must not be saved in the Remote Desktop Client.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services" "DisablePasswordSaving" "1" "DWord"
+	#Solicited Remote Assistance must not be allowed.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services" "fAllowToGetHelp" "0" "DWord"
+	#Local drives prevented from sharing with Terminal Servers (Terminal Server Role).
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services" "fDisableCdm" "1" "DWord"
+	#The Remote Desktop Session Host must require secure RPC communications.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services" "fEncryptRPCTraffic" "1" "DWord"
+	#Remote Desktop Services must be configured with the client connection encryption set to the required level.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services" "MinEncryptionLevel" "3" "DWord"
+	#Specifies that the Transport Layer Security (TLS) protocol is used by the server and the client for authentication before a remote desktop connection is established.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services" "SecurityLayer" "2" "DWord"
+	#Prevent the Application Compatibility Program Inventory from collecting data and sending the information to Microsoft.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\AppCompat" "DisableInventory" "1" "DWord"
+	#Microsoft consumer experiences must be turned off.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\CloudContent" "DisableWindowsConsumerFeatures" "1" "DWord"
+	#Do not show Windows Tips
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\CloudContent" "DisableSoftLanding" "1" "DWord"
+	#Windows 10 must be configured to enable Remote host allows delegation of non-exportable credentials
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\CredentialsDelegation" "AllowProtectedCreds" "1" "DWord"
+	#Set Telemetry to Security [Enterprise Only]
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\DataCollection" "AllowTelemetry" "0" "DWord"
+	#Windows Update must not obtain updates from other PCs on the Internet.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\DeliveryOptimization" "DODownloadMode" "0" "DWord"
+	#The Application event log size must be configured to 32,768 KB or greater.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\EventLog\Application" "MaxSize" "32768" "DWord"
+	#The Security event log must be configured to a minimum size requirement.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\EventLog\Security" "MaxSize" "1024000" "DWord"
+	#Windows event log sizes must meet minimum requirements.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\EventLog\Setup" "MaxSize" "32768" "DWord"
+	#Windows event log sizes must meet minimum requirements.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\EventLog\System" "MaxSize" "32768" "DWord"
+	#Turn off autoplay for non-volume devices.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Explorer" "NoAutoplayfornonVolume" "1" "DWord"
+	#Explorer Data Execution Prevention must be enabled.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Explorer" "NoDataExecutionPrevention" "0" "DWord"
+	#Disable heap termination on corruption in Windows Explorer.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Explorer" "NoHeapTerminationOnCorruption" "0" "DWord"
+	#Access to the Windows Store must be turned off.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Explorer" "NoUseStoreOpenWith" "1" "DWord"
 	#Disables "Recently added" Apps List on the Start Menu for All Users
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Explorer" "HideRecentlyAddedApps" "1" "DWord"
+	#Windows 10 must be configured to disable Windows Game Recording and Broadcasting.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\GameDVR" "AllowGameDVR" "0" "DWord"
+	#Disable background processing of Registry Policy in Windows
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}" "NoBackgroundPolicy" "0" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}" "NoGPOListChanges" "0" "DWord"
+	#Handwriting recognition error reports (Tablet PCs) are not sent to Microsoft.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\HandwritingErrorReports" "PreventHandwritingErrorReports" "1" "DWord"
+	#The Windows Installer Always install with elevated privileges option must be disabled.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Installer" "AlwaysInstallElevated" "0" "DWord"
+	#Prevent users from changing Windows installer options.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Installer" "EnableUserControl" "0" "DWord"
+	#IE security prompt is enabled for web-based installations.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Installer" "SafeForScripting" "0" "DWord"
+	#The Internet Connection Wizard cannot download a list of ISPs from Microosft.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Internet Connection Wizard" "ExitOnMSICW" "1" "DWord"
+	#Insecure logons to an SMB server must be disabled.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\LanmanWorkstation" "AllowInsecureGuestAuth" "0" "DWord"
+	#Prohibit Internet Connection Sharing
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Network Connections" "NC_ShowSharedAccessUI" "0" "DWord"
+	#Hardened UNC Paths must be defined to require mutual authentication and integrity for at least the \\*\SYSVOL and \\*\NETLOGON shares.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths" "\\*\NETLOGON" "RequireMutualAuthentication=1 RequireIntegrity=1" "String"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths" "\\*\SYSVOL" "RequireMutualAuthentication=1 RequireIntegrity=1" "String"
+	#The use of OneDrive for storage must be disabled.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\OneDrive" "DisableFileSyncNGSC" "1" "DWord"
-	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Personalization" "LockScreenImage" "C:\Windows\System32\oobe\info\backgrounds\backgroundDefault.jpg" "String"
+	#Force a specific default lock screen and logon image
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Personalization" "LockScreenImage" "C:\Windows\System32\oobe\info\backgrounds\background1920×1200.jpg" "String"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Personalization" "LockScreenOverlaysDisabled" "1" "DWord"
+	#Disable Changing Lock Screen Background
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Personalization" "NoChangingLockScreen" "1" "DWord"
+	#Camera access from the lock screen must be disabled. 
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Personalization" "NoLockScreenCamera" "1" "DWord"
+	#The display of slide shows on the lock screen must be disabled. 
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Personalization" "NoLockScreenSlideshow" "1" "DWord"	
+	#PowerShell script block logging must be enabled.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" "EnableScriptBlockLogging" "1" "DWord"
+	#Windows Registration Wizard must be turned off.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Registration Wizard Control" "NoRegistration" "1" "DWord"
+	#Disable Allow users to select when a password is required when resuming from connected standby
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\System" "AllowDomainDelayLock" "0" "DWord"
+	#Signing in using a PIN must be turned off.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\System" "AllowDomainPINLogon" "0" "DWord"
+	#Disable Domain Users Sign-in using Picture Password 
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\System" "BlockDomainPicturePassword" "1" "DWord"
+	#App notifications on the lock screen must be turned off.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\System" "DisableLockScreenAppNotifications" "1" "DWord"
+	#The network selection user interface (UI) must not be displayed on the logon screen.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\System" "DontDisplayNetworkSelectionUI" "1" "DWord"
+	#The Windows Defender SmartScreen for Explorer must be enabled.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\System" "EnableSmartScreen" "1" "DWord"
+	#Local users on domain-joined computers must not be enumerated.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\System" "EnumerateLocalUsers" "0" "DWord"
+	#The Windows Defender SmartScreen for Explorer must be enabled.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\System" "ShellSmartScreenLevel" "Block" "String"
+	#Prevent handwriting personalization data sharing with Microsoft.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\TabletPC" "PreventHandwritingDataSharing" "1" "DWord"
+	#Change Prohibit connection to roaming Mobile Broadband networks 
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WcmSvc\GroupPolicy" "fBlockRoaming" "1" "DWord"
+	#Simultaneous connections to the Internet or a Windows domain must be limited.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WcmSvc\GroupPolicy" "fMinimizeConnections" "1" "DWord"
+	#Turn off Windows Error Reporting to Microsoft.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Windows Error Reporting" "Disabled" "1" "DWord"
+	#Disable Cortana
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Windows Search" "AllowCortana" "0" "DWord"
+	#Disable Cortana on Lock Screen in Windows 10
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Windows Search" "AllowCortanaAboveLock" "0" "DWord"
-	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Windows Search" "AllowCortanaInAAD" "1" "DWord"
+	#Disable Cortana Page in OOBE on an AAD account
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Windows Search" "AllowCortanaInAAD" "0" "DWord"
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Windows Search" "AllowCortanaInAADPathOOBE" "0" "DWord"
+	#Indexing of encrypted files must be turned off.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\Windows Search" "AllowIndexingEncryptedStoresOrItems" "0" "DWord"
+	#Disable OS Upgrade for  Windows 10
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "DisableOSUpgrade" "1" "DWord"
+	Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\OSUpgrade" "AllowOSUpgrade" "0" "DWord"
+	#Systems take Feature Updates from Semi-annual Channel 
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "BranchReadinessLevel" "32" "DWord"
+	#Defer feature updates
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "DeferFeatureUpdates" "1" "DWord"
+	# Wait a year after new feature comes out before installing it. 
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "DeferFeatureUpdatesPeriodInDays" "365" "DWord"
+	# Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "DeferFeatureUpdatesPeriodInDays" "0" "DWord"
+	#Defer Quality Updates
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "DeferQualityUpdates" "1" "DWord"
-	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "DeferQualityUpdatesPeriodInDays" "30" "DWord"
+	# Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "DeferQualityUpdatesPeriodInDays" "30" "DWord"
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "DeferQualityUpdatesPeriodInDays" "0" "DWord"
+	#Manage Preview Builds
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "ManagePreviewBuilds" "1" "DWord"
+	#Disable Preview Updates
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "ManagePreviewBuildsPolicyValue" "0" "DWord"
-	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "PauseFeatureUpdatesStartTime" "8/1/2018" "String"
-	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate" "PauseQualityUpdatesStartTime" "8/1/2018" "String"
+	#Enable Microsoft Updates 
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "AllowMUUpdateService" "1" "DWord"	
+	#Notify before download
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "AUOptions" "2" "DWord"
-	# Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "NoAutoUpdate" "0" "DWord"
-	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "ScheduledInstallDay" "1" "DWord"
-	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "ScheduledInstallEveryWeek" "1" "DWord"
+	#Enable Automatic Updates
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "NoAutoUpdate" "0" "DWord"
+	#Install Patches on Tuesday
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "ScheduledInstallDay" "3" "DWord"
+	#Install on the 2nd Tuesday
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "ScheduledInstallSecondWeek" "1" "DWord"
+	#Install on the 3rd Tuesday
+	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "ScheduledInstallThirdWeek" "1" "DWord"
+	#Install at 1am
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "ScheduledInstallTime" "1" "DWord"
-	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "AllowMUUpdateService" "1" "DWord"
+	#Prevents the upgrade to Windows 10
+	Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate" "OSUpgrade" "0" "DWord"
+	#Disable domain joined computers automatically and silently get registered as devices with Azure Active Directory
 	# https://getadmx.com/?Category=Windows_10_2016&Policy=Microsoft.Policies.WorkplaceJoin::WJ_AutoJoin
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WorkplaceJoin" "autoWorkplaceJoin" "0" "DWord"
 	#Set Default to Microsoft Update instead of Windows Update
@@ -3556,29 +3734,43 @@ If (-Not $UserOnly) {
 			Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Services" "DefaultService" "7971f918-a847-4430-9279-4a52d1efe18d" "String"
 		}
 	}
-	#Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "AUOptions" "5" "DWord"
-	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "NoAutoUpdate" "1" "DWord"
-	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "ScheduledInstallDay" "1" "DWord"
-	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" "ScheduledInstallTime" "2" "DWord"
+	#The Windows Remote Management (WinRM) client must not use Basic authentication.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Client" "AllowBasic" "0" "DWord"
+	#The Windows Remote Management (WinRM) client must not use Digest authentication.
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Client" "AllowDigest" "0" "DWord"
+	#The Windows Remote Management (WinRM) client must not allow unencrypted traffic
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Client" "AllowUnencryptedTraffic" "0" "DWord"
+	#The Windows Remote Management (WinRM) Service must not use Basic authentication
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service" "AllowBasic" "0" "DWord"
+	#The Windows Remote Management (WinRM) Service must not allow unencrypted traffic	
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service" "AllowUnencryptedTraffic" "0" "DWord"
+	#The Windows Remote Management (WinRM) service must not store RunAs credentials
 	Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service" "DisableRunAs" "1" "DWord"
+	#Disable Crash Dumps
 	Set-Reg "HKLM:\System\CurrentControlSet\Control\CrashControl" "CrashDumpEnabled" 0 "DWord"	
+	#Disable Log about Dumps
 	Set-Reg "HKLM:\System\CurrentControlSet\Control\CrashControl" "LogEvent" 0 "DWord"	
+	#Disable Sending Alerts about Dumps
 	Set-Reg "HKLM:\System\CurrentControlSet\Control\CrashControl" "SendAlert" 0 "DWord"	
-	Set-Reg "HKLM:\System\CurrentControlSet\Control\CrashControl" "AutoReboot" 1 "DWord"	
+	#Enable Automatic Crash Reboot
+	Set-Reg "HKLM:\System\CurrentControlSet\Control\CrashControl" "AutoReboot" 1 "DWord"
+	#NTFS Disable Last Access Update File Time Stamp 	
 	Set-Reg "HKLM:\System\CurrentControlSet\Control\FileSystem" "NtfsDisableLastAccessUpdate" 1 "DWord"	
+	#WDigest Authentication must be disabled
 	Set-Reg "HKLM:\System\CurrentControlSet\Control\SecurityProviders\WDigest" "UseLogonCredential" "0" "DWord"
+	#Structured Exception Handling Overwrite Protection (SEHOP) must be turned on
 	Set-Reg "HKLM:\System\CurrentControlSet\Control\Session Manager\kernel" "DisableExceptionChainValidation" "0" "DWord"
+	#Write Error to Log but do not display System Hard Error Message Dialog Boxes
 	Set-Reg "HKLM:\System\CurrentControlSet\Control\Windows" "ErrorMode" 2 "DWord"
+	#Disable Server SMB1 Protocol
 	Set-Reg "HKLM:\System\CurrentControlSet\Services\LanmanServer\Parameters" "SMB1" "0" "DWord"
 	Set-Reg "HKLM:\System\CurrentControlSet\Services\MrxSmb10" "Start" "4" "DWord"
+	#The system will be configured to ignore NetBIOS name release requests except from WINS servers
 	Set-Reg "HKLM:\System\CurrentControlSet\Services\Netbt\Parameters" "NoNameReleaseOnDemand" "1" "DWord"
+	#The system must be configured to prevent IP source routing.
 	Set-Reg "HKLM:\System\CurrentControlSet\Services\Tcpip6\Parameters" "DisableIPSourceRouting" "2" "DWord"
 	Set-Reg "HKLM:\System\CurrentControlSet\Services\Tcpip\Parameters" "DisableIPSourceRouting" "2" "DWord"
+	#The system will be configured to prevent ICMP redirects from overriding OSPF generated routes.
 	Set-Reg "HKLM:\System\CurrentControlSet\Services\Tcpip\Parameters" "EnableICMPRedirect" "0" "DWord"
 	#Enable PS/2 Mouse 
 		#https://superuser.com/questions/996001/do-ps2-keyboards-work-on-windows-10
@@ -3589,7 +3781,23 @@ If (-Not $UserOnly) {
 	Set-Reg "HKLM:\System\CurrentControlSet\Control\Print" "SNMPLegacy" 1 "DWord"
 	#EMV Force COM5
 	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\IngenicoVCOM\InstallConfig\R0" "COM" 5 "DWord"
-	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\IngenicoVCOM\InstallConfig\" "ForceComEnabled" 1 "DWord"
+	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\IngenicoVCOM\InstallConfig" "ForceComEnabled" 1 "DWord"
+	#Prevent Downloading Printer Info and Icon
+	#https://www.reddit.com/r/Windows10/comments/d3q45d/printer_and_amplifier_suddenly_showing_as/
+	Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Metadata" "PreventDeviceMetadataFromNetwork " 1 "DWord"
+	#Block from Switching to MS Account
+	Set-Reg 'HKLM:\SOFTWARE\Microsoft\PolicyManager\default\Settings\AllowYourAccount' 'value' 0 "DWORD"
+	#Block Microsoft Account
+	Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'NoConnectedUser' 1 "DWORD"
+	#Hide not-critical notifications
+	Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows Defender Security Center\Notifications' 'DisableEnhancedNotifications' 1 "DWORD"
+	Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender Security Center\Notifications' 'DisableEnhancedNotifications' 1 "DWORD"
+	#Hide all notifications
+	Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows Defender Security Center\Notifications' 'DisableNotifications' 1 "DWORD"
+	Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender Security Center\Notifications' 'DisableNotifications' 1 "DWORD"
+	#Disable Use SNMP Legacy mode
+	Set-Reg 'HKLM:\System\CurrentControlSet\Control\Print' 'SNMPLegacy' 1 "DWORD"
+
 
 	$regkeypath= "HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services"
 	$value = "fAllowFullControl"
