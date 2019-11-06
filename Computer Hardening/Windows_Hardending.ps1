@@ -22,8 +22,10 @@
 	Username for network configureation share.
 .PARAMETER Password
 	Password that goes with useranme for network configureation share.
+.PARAMETER ActiveUser
+	User that will Actively logon to the computer every day. 
 .PARAMETER Manager
-	Username of the Manager user.
+	Enable relaxation of policies for Managers.
 .PARAMETER Store
 	Enables more locked down of users and creates store Local Windows accounts.
 .PARAMETER LockedDown
@@ -33,19 +35,21 @@
 .PARAMETER NoCacheUpdate
 	Skip updating local cache.
 .PARAMETER AllowClientTLS1
-	Enables Computer to go to TLS 1.0 and TLS 1.1 sites.
+	Enables Computer to go to TLS 1.0 sites.
 .PARAMETER NoOEMInfo
 	Keeps from reseting the OEM Info.	
 .PARAMETER OEMInfoAddSerial
 	Added Serial number to the System Preferences.
 .PARAMETER NoBgInfo
-	Does not setup BGInfo to launch at startup.
+	Does not setup BGInfo to launch on logon.
+.PARAMETER Wifi
+	Enables services needed for WiFi
 .PARAMETER IPv6
 	Keeps IPv6 enabled; otherwise IPv6 will be disabled. 
 .EXAMPLE
-   & Default_User_Win8.1_+.ps1 -AllowClientTLS1
+   & .\Windows_Hardending.ps1 -AllowClientTLS1
 .EXAMPLE
-	powershell -executionpolicy unrestricted -file .\Default_User_Win8.1_+.ps1 -Config .\Windows_Hardending.ps1.config -Store -AllowClientTLS1 -Profile Default,User 
+	powershell -executionpolicy unrestricted -file .\Windows_Hardending.ps1 -Config .\Windows_Hardending.ps1.config -Store -AllowClientTLS1 -Profile Default,User 
 .NOTES
  Author: Paul Fuller
  Changes:
@@ -53,7 +57,25 @@
 	* Version 3.00.01 - Fixed Cipher issue where powershell could not handle "/"
 	* Version 3.00.02 - Fixed VM Detection
 	* Version 3.00.03 - Fixed Setting A Binary Registry key.
+	* Version 3.00.04 - Use "Get-CimInstance" when avalible if not default to "Get-WmiObject". 
+						Also use Regex to detect Manager and Store PC's. 
+						Added AddressFilter to the Firewall to better control remote connections. 
+						Moved contol of ScheduledJob to xml; also if ScheduledJob is not avalible use ScheduledTask.
+						Fixed Issue with locking down Default user.
+						Using SID to find local profile.
+						Disable WiFi by default; use -Wifi to enable Wifi.
+						Updated RemoveFCTID Shortcut.
+	* Version 3.00.05 -	Fixed Bug with AllowClientTLS1 switch. Updated Get-MachineType.  	
+						Added more debugging to Deny files.
+						Added Get-envValueFromString Function to handle powershell $env: varibles from XML.
+	* Version 3.00.06 -	Cleaned up messages when Deny file does not exist.
+						Cleaned up usage of -UserOnly
+						Create new if user exists and the profiles does not.
+						Apply certain keys only to Default User.
+						Fixed Password generation bug.
+						Fixed bug where account was not enabled when trying to recoreate user profile.
 	#>
+#Requires -Version 5.1 -PSEdition Desktop
 #############################################################################
 #region Parameter Config
 #############################################################################
@@ -64,14 +86,16 @@ PARAM (
 	[string]$RemoteFiles  		= (Split-Path -Parent -Path $MyInvocation.MyCommand.Definition),
 	[String]$User		    	= $null,
 	[String]$Password	    	= $null,
-	[String]$Manager	    	= $null,
+	[String]$ActiveUser	    	= $null,
 	[string]$StartLayoutXML		= $null,
 	[String]$BackgroundFolder 	= $null,
+	[switch]$Manager	    	= $false,
 	[switch]$Store	  	  		= $false,
 	[switch]$LockedDown	  		= $false,
 	[switch]$UserOnly			= $false,
 	[switch]$NoCacheUpdate		= $false,
 	[switch]$AllowClientTLS1	= $false,
+	[switch]$Wifi				= $false,
 	[switch]$NoOEMInfo			= $false,
 	[switch]$OEMInfoAddSerial	= $false,
 	[switch]$NoBgInfo			= $false,
@@ -91,7 +115,7 @@ If (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 #############################################################################
 #region User Variables
 #############################################################################
-$ScriptVersion = "3.0.3"
+$ScriptVersion = "3.0.6"
 $LogFile = ("\Logs\" + `
 		   $MyInvocation.MyCommand.Name + "_" + `
 		   $env:computername + "_" + `
@@ -204,7 +228,30 @@ If ($Profiles[0].Contains(",")) {
 		}
 	}
 }
+# Find Active User Using IP
+If (-Not $ActiveUser) {
+	If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
+		$ActiveIP = (Get-CimInstance -Class Win32_NetworkAdapterConfiguration | Where-Object {$_.DefaultIPGateway -ne $null}).IPAddress | select-object -first 1
+	} Else {
+		$ActiveIP = (Get-WmiObject -Class Win32_NetworkAdapterConfiguration | Where-Object {$_.DefaultIPGateway -ne $null}).IPAddress | select-object -first 1
+	} 
+	$ActiveAN = ([int]$ActiveIP.substring($ActiveIP.Length -2) - 10)
+	If ( $ActiveAN -notin ([int]$ConfigFile.Config.Company.UserRangeStart)..([int]$ConfigFile.Config.Company.UserRangeEnd) ) {
+		$ActiveAN = ([int]$ConfigFile.Config.Company.UserRangeStart)
+	}
+	$ActiveUser = ($ConfigFile.Config.Company.UserBaseName + $ActiveAN)
+	Write-Host ('Active User: ' + $ActiveUser)
+}
+#Find if Managers Computer
+If ($Manager -eq $false -and $env:computername -match ($configfile.Config.Company.ManagerComputernameRegEx)) {
+	$Manager = $true
+}
+#Find if Store Computer
+If ($Store -eq $false -and $env:computername -match ($configfile.Config.Company.StoreComputernameRegEx)) {
+	$Store = $true
+}
 #endregion ProfileList Setup
+
 #############################################################################
 #endregion Setup Sessions
 #############################################################################
@@ -215,27 +262,18 @@ If ($Profiles[0].Contains(",")) {
 function FormatElapsedTime($ts) {
     #https://stackoverflow.com/questions/3513650/timing-a-commands-execution-in-powershell
 	$elapsedTime = ""
-
-    if ( $ts.Hours -gt 0 )
-    {
+    if ( $ts.Hours -gt 0 ) {
         $elapsedTime = [string]::Format( "{0:00} hours {1:00} min. {2:00}.{3:00} sec.", $ts.Hours, $ts.Minutes, $ts.Seconds, $ts.Milliseconds / 10 );
-    }else {
-        if ( $ts.Minutes -gt 0 )
-        {
+    } else {
+        if ( $ts.Minutes -gt 0 ) {
             $elapsedTime = [string]::Format( "{0:00} min. {1:00}.{2:00} sec.", $ts.Minutes, $ts.Seconds, $ts.Milliseconds / 10 );
-        }
-        else
-        {
+        } else {
             $elapsedTime = [string]::Format( "{0:00}.{1:00} sec.", $ts.Seconds, $ts.Milliseconds / 10 );
         }
-
-        if ($ts.Hours -eq 0 -and $ts.Minutes -eq 0 -and $ts.Seconds -eq 0)
-        {
+        if ($ts.Hours -eq 0 -and $ts.Minutes -eq 0 -and $ts.Seconds -eq 0) {
             $elapsedTime = [string]::Format("{0:00} ms.", $ts.Milliseconds);
         }
-
-        if ($ts.Milliseconds -eq 0)
-        {
+        if ($ts.Milliseconds -eq 0) {
             $elapsedTime = [string]::Format("{0} ms", $ts.TotalMilliseconds);
         }
     }
@@ -341,28 +379,21 @@ Function Set-Owner {
         .Source: https://gallery.technet.microsoft.com/scriptcenter/Set-Owner-ff4db177
 		.SYNOPSIS
             Changes owner of a file or folder to another user or group.
-
         .DESCRIPTION
             Changes owner of a file or folder to another user or group.
-
         .PARAMETER Path
             The folder or file that will have the owner changed.
-
         .PARAMETER Account
             Optional parameter to change owner of a file or folder to specified account.
-
             Default value is 'Builtin\Administrators'
-
         .PARAMETER Recurse
             Recursively set ownership on subfolders and files beneath given folder.
-
         .NOTES
             Name: Set-Owner
             Author: Boe Prox
             Version History:
                  1.0 - Boe Prox
                     - Initial Version
-
         .EXAMPLE
             Set-Owner -Path C:\temp\test.txt
 
@@ -635,12 +666,6 @@ Function Get-MachineType {
 	.EXAMPLE 
 	   Get-MachineType 
 	   Query if the local machine is a physical or virtual machine. 
-	.EXAMPLE 
-	   Get-MachineType -ComputerName SERVER01  
-	   Query if SERVER01 is a physical or virtual machine. 
-	.EXAMPLE 
-	   Get-MachineType -ComputerName (Get-Content c:\temp\computerlist.txt) 
-	   Query if a list of computers are physical or virtual machines. 
 	.LINK 
 	   https://gallery.technet.microsoft.com/scriptcenter/Get-MachineType-VM-or-ff43f3a9 
 	#> 
@@ -648,71 +673,55 @@ Function Get-MachineType {
     [OutputType([int])] 
     Param 
     ( 
-        # ComputerName 
-        [Parameter(Mandatory=$false, 
-                   ValueFromPipeline=$true, 
-                   ValueFromPipelineByPropertyName=$true, 
-                   Position=0)] 
-        [string[]]$ComputerName=$env:COMPUTERNAME, 
-        $Credential = [System.Management.Automation.PSCredential]::Empty 
     ) 
  
-    Begin 
-    { 
-    } 
-    Process 
-    { 
-        ForEach ($Computer in $ComputerName) { 
-            Write-Verbose "Checking $Computer" 
-            try { 
-                #$hostdns = [System.Net.DNS]::GetHostEntry($Computer) 
-                $ComputerSystemInfo = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $Computer -ErrorAction Stop -Credential $Credential 
-                 
-                switch -wildcard ($ComputerSystemInfo.Model) { 
-                     
-                    # Check for Hyper-V Machine Type 
-                    "*Virtual Machine*" { 
-                        $MachineType="VM" 
-                        } 
- 
-                    # Check for VMware Machine Type 
-                    "*VMware*" { 
-                        $MachineType="VM" 
-                        } 
-						
-                    # Check for Oracle VM Machine Type 
-                    "*VirtualBox*" { 
-                        $MachineType="VM" 
-                        } 
- 
-                    # Check for Xen 
-                    # I need the values for the Model for which to check. 
- 
-                    # Check for KVM 
-                    # I need the values for the Model for which to check. 
- 
-                    # Otherwise it is a physical Box 
-                    default { 
-                        $MachineType="Physical" 
-                        } 
-                    } 
-                 
-                # Building MachineTypeInfo Object 
-                $MachineTypeInfo = New-Object -TypeName PSObject -Property ([ordered]@{ 
-                    ComputerName=$ComputerSystemInfo.PSComputername 
-                    Type=$MachineType 
-                    Manufacturer=$ComputerSystemInfo.Manufacturer 
-                    Model=$ComputerSystemInfo.Model 
-                    }) 
-                $MachineTypeInfo 
-                } 
-            catch [Exception] { 
-                Write-Output "$Computer`: $($_.Exception.Message)" 
-                } 
-            } 
-    } 
-    End 
-    { 
+    Begin { 
+    } Process { 
+		try { 
+			#$hostdns = [System.Net.DNS]::GetHostEntry($Computer) 
+			If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
+				$ComputerSystemInfo = Get-CimInstance -Class Win32_ComputerSystem  -ErrorAction Stop 
+			} Else {
+				$ComputerSystemInfo = Get-WmiObject -Class Win32_ComputerSystem  -ErrorAction Stop 
+			} 
+							
+			switch -wildcard ($ComputerSystemInfo.Model) { 	
+				# Check for Hyper-V Machine Type 
+				"*Virtual Machine*" { 
+					$MachineType="VM" 
+					} 
+				# Check for VMware Machine Type 
+				"*VMware*" { 
+					$MachineType="VM" 
+					} 
+				# Check for Oracle VM Machine Type 
+				"*VirtualBox*" { 
+					$MachineType="VM" 
+					} 
+				# Check for Xen 
+				# I need the values for the Model for which to check. 
+
+				# Check for KVM 
+				# I need the values for the Model for which to check. 
+
+				# Otherwise it is a physical Box 
+				default { 
+					$MachineType="Physical" 
+					} 
+				} 
+				
+			# Building MachineTypeInfo Object 
+			$MachineTypeInfo = New-Object -TypeName PSObject -Property ([ordered]@{ 
+				ComputerName=$ComputerSystemInfo.Name
+				Type=$MachineType 
+				Manufacturer=$ComputerSystemInfo.Manufacturer 
+				Model=$ComputerSystemInfo.Model 
+				}) 
+			$MachineTypeInfo 
+		} catch [Exception] { 
+			Write-Output "Error`: $($_.Exception.Message)" 
+		} 
+	} End { 
  
     } 
 }
@@ -755,6 +764,41 @@ function Test-RegistryKeyValue {
     } else {
         return $false
     }
+}
+function Get-envValueFromString {
+    <#
+    .SYNOPSIS
+    Enumerates string with $ENV: into  Enviromental variable value. 
+    .DESCRIPTION
+    Enumerates string with $ENV: into  Enviromental variable value. 
+    .EXAMPLE
+    $teststr="`$env:programdata\Microsoft\Windows\Start Menu\Programs\Administrative Tools"
+    Get-ENVFromString -Path $teststr
+
+    C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Administrative Tools
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true,ValueFromPipeline=$true,Position=0,HelpMessage ="String input required.")]
+        [string]
+        # String to Enumerate
+        $Path
+	)
+	[Array]$PathArray = $null
+	If ($Path -match '\$env:') {
+		#Loop though and test for var
+		Foreach ($Folder in ($Path.Split("\"))) {
+			If ($Folder -match '\$env:') {
+                #Get value of matchin envoriment varible
+				$PathArray += (Get-ChildItem Env: | Where-Object{ $_.Name -eq ($Folder.Replace("`$env:",""))}).value
+			} else {
+				$PathArray += $Folder
+            }
+        }
+        return ( $PathArray -join "\")
+	} else {
+		return $Path
+	}
 }
 function Write-Color {
     <#
@@ -1026,12 +1070,18 @@ If ($Store) {
 		ForEach ( $i in $UserRange) {	
 			If ($i) {
 				#Only create profile if user is a local user
-				If (-Not (Get-LocalUser -Name ($ConfigFile.Config.Company.UserBaseName + $i) -erroraction 'silentlycontinue')) {
+				If (-Not (Get-LocalUser -Name ($ConfigFile.Config.Company.UserBaseName + $i) -erroraction SilentlyContinue)) {
 					#Only create profile if no profile exists
-					If (-Not (Test-Path ((Get-WmiObject Win32_UserProfile |Where-Object { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |Select-Object Localpath).localpath + "\ntuser.dat"))) {
-						write-host ("Creating User: " +($ConfigFile.Config.Company.UserBaseName + $i))
+					$CurrentUserSID = (Get-LocalUser -Name ($ConfigFile.Config.Company.UserBaseName + $i) -erroraction SilentlyContinue).SID
+					If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
+						$UserProfile = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $CurrentUserSID}).localpath
+					} Else {
+						$UserProfile = (Get-WmiObject Win32_UserProfile | Where-Object { $_.SID -eq $CurrentUserSID}).localpath
+					} 
+					If (-Not (Test-Path ($UserProfile + "\ntuser.dat"))) {
+						write-host ("Creating User: " + ($ConfigFile.Config.Company.UserBaseName + $i))
 						#Random 120 chr. password
-						$TempPass= (ConvertTo-SecureString ([system.web.security.membership]::GeneratePassword(120,32)) -AsPlainText -Force)
+						$TempPass= (ConvertTo-SecureString ([system.web.security.membership]::GeneratePassword(120,32)).tostring() -AsPlainText -Force)
 						New-LocalUser -Name ($ConfigFile.Config.Company.UserBaseName + $i).ToLower() -Description "Store Window User" -FullName ($ConfigFile.Config.Company.UserBaseName + $i) -Password $TempPass -AccountNeverExpires -UserMayNotChangePassword -PasswordNeverExpires | Out-Null
 						Add-LocalGroupMember -Name 'Administrators' -Member ($ConfigFile.Config.Company.UserBaseName + $i) | Out-Null
 						Write-Host "`tWorking on Creating user profile: " ($ConfigFile.Config.Company.UserBaseName + $i)
@@ -1046,6 +1096,53 @@ If ($Store) {
 						$processStartInfo.Arguments = "/C echo . && echo %username% && echo ."
 						$processStartInfo.LoadUserProfile = $true
 						$processStartInfo.UseShellExecute = $false
+						$processStartInfo.WindowStyle  = "minimized"
+						$processStartInfo.RedirectStandardOutput = $false
+						$process = [System.Diagnostics.Process]::Start($processStartInfo)
+						$Process.WaitForExit()   
+						#Add setup user to profiles created to allow registry to be created. 
+						If (Test-Path ($UsersProfileFolder + "\Window" + $i) ) {
+							$ProfileList.Add(($ConfigFile.Config.Company.UserBaseName + $i).ToLower()) | Out-Null
+							$HideAccounts += ($ConfigFile.Config.Company.UserBaseName + $i).ToLower()
+							#Grant Current user rights on new Profiles
+							Write-Host ("`tUpdating ACLs and adding to Profile List: " + ($UsersProfileFolder + "\Window" + $i))
+							$user_account=$env:username
+							$Acl = Get-Acl ($UsersProfileFolder + "\Window" + $i)
+							$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule($user_account, "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+							$Acl.Setaccessrule($Ar)
+							Set-Acl ($UsersProfileFolder + "\Window" + $i) $Acl
+							#Disable User.
+							Disable-LocalUser -Name ($ConfigFile.Config.Company.UserBaseName + $i).ToLower() -Confirm:$false
+						}
+					}
+				} else {
+					#Only create profile if no profile exists
+					$CurrentUserSID = (Get-LocalUser -Name ($ConfigFile.Config.Company.UserBaseName + $i)).SID
+					If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
+						$UserProfile = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $CurrentUserSID}).localpath
+					} Else {
+						$UserProfile = (Get-WmiObject Win32_UserProfile | Where-Object { $_.SID -eq $CurrentUserSID}).localpath
+					} 
+					If (-Not (Test-Path ($UserProfile + "\ntuser.dat"))) {
+						If ((Get-LocalUser -Name ($ConfigFile.Config.Company.UserBaseName + $i)).Enabled -eq $false) {
+							Enable-LocalUser -Name ($ConfigFile.Config.Company.UserBaseName + $i).ToLower()
+						}
+						Write-Host "`tResetting password for profile: " ($ConfigFile.Config.Company.UserBaseName + $i)
+						$TempPass= (ConvertTo-SecureString ([system.web.security.membership]::GeneratePassword(120,32)).tostring() -AsPlainText -Force)
+						Set-LocalUser -Name ($ConfigFile.Config.Company.UserBaseName + $i).ToLower() -Password $TempPass
+						Write-Host "`tWorking on Creating user profile: " ($ConfigFile.Config.Company.UserBaseName + $i)
+						#launch process as user to create user profile
+						# https://msdn.microsoft.com/en-us/library/system.diagnostics.processstartinfo(v=vs.110).aspx
+						$processStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+						$processStartInfo.UserName = ($ConfigFile.Config.Company.UserBaseName + $i)
+						$processStartInfo.Domain = "."
+						$processStartInfo.Password = $TempPass
+						$processStartInfo.FileName = "cmd"
+						$processStartInfo.WorkingDirectory = $LICache
+						$processStartInfo.Arguments = "/C echo . && echo %username% && echo ."
+						$processStartInfo.LoadUserProfile = $true
+						$processStartInfo.UseShellExecute = $false
+						$processStartInfo.WindowStyle  = "minimized"
 						$processStartInfo.RedirectStandardOutput = $false
 						$process = [System.Diagnostics.Process]::Start($processStartInfo)
 						$Process.WaitForExit()   
@@ -1065,6 +1162,7 @@ If ($Store) {
 						}
 					}
 				}
+				
 			}
 		}
 	}
@@ -1075,7 +1173,7 @@ If ($Store) {
 If ($env:username -ne "Administrator") {
 	If ((Get-LocalGroupMember -Name 'Administrators').count -gt 1) {
 		#Sets Random 265 character password
-		set-localuser -Name 'Administrator' -Password (ConvertTo-SecureString ([system.web.security.membership]::GeneratePassword(128,32) + [system.web.security.membership]::GeneratePassword(128,32)) -AsPlainText -Force )
+		set-localuser -Name 'Administrator' -Password (ConvertTo-SecureString ([system.web.security.membership]::GeneratePassword(128,32) + [system.web.security.membership]::GeneratePassword(128,32)).tostring() -AsPlainText -Force )
 		Disable-LocalUser -Name 'Administrator' -Confirm:$false
 	}
 }
@@ -1088,7 +1186,7 @@ If ($env:username -ne "Administrator") {
 #============================================================================
 #Import Start Menu Layout
 If (-Not $UserOnly) {
-	If ([environment]::OSVersion.Version.Major -ge 10) {
+	If ([environment]::OSVersion.Version.Major -ge 10 -and (Get-Command Import-StartLayout -ErrorAction SilentlyContinue)) {
 		#If no Command override use XML
 		If (-Not $StartLayoutXML) {
 			If ($Store) {
@@ -1123,6 +1221,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		#region Load User Regsitry
 		# Default user need to be handled differently
 		If ($CurrentProfile.ToUpper() -eq "DEFAULT") {
+			$CurrentUserSID = $null
 			#See if profile is in the default location
 			If (Test-Path ($UsersProfileFolder + "\Default\ntuser.dat")) {
 				[gc]::collect()
@@ -1143,59 +1242,71 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				}
 			}
 		}else{
-			$UserProfile = (Get-WmiObject Win32_UserProfile |Where-Object { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |Select-Object Localpath).localpath	
-			#See if profile location is in the regsitry
-			If (Test-Path ($UserProfile + "\ntuser.dat")) { 
-				#Load User Hive
-				#REG LOAD $HKEY ($UserProfile + "\ntuser.dat")
-				[gc]::collect()
-				$process = (REG LOAD  $HKEY ($UserProfile + "\ntuser.dat"))
-				If ($LASTEXITCODE -ne 0 ) {
-					write-error ( "Cannot load profile for: " + ($UsersProfileFolder + "\" + $CurrentProfile + "\ntuser.dat") )
-					continue
-				}
-			}else{
-				#See if the profile location is on the system drive
-				Try {
-					If (Test-Path $UserProfile.Replace($UserProfile.Substring(0,1),($env:systemdrive).Substring(0,1))) {
-						# REG LOAD $HKEY ($UserProfile + "\ntuser.dat")
-						[gc]::collect()
-						$process = (REG LOAD  $HKEY ($UserProfile + "\ntuser.dat"))
-						If ($LASTEXITCODE -ne 0 ) {
-							write-error ( "Cannot load profile for: " + ($UsersProfileFolder + "\" + $CurrentProfile + "\ntuser.dat") )
-							continue
-						}		
-					}else{
+			$CurrentUserSID = (Get-LocalUser -Name $CurrentProfile).SID
+			If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
+				$UserProfile = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $CurrentUserSID}).localpath
+			} Else {
+				$UserProfile = (Get-WmiObject Win32_UserProfile | Where-Object { $_.SID -eq $CurrentUserSID}).localpath
+			} 
+			#If profile is loaded modify loaded profile	
+			If (Test-Path ("HKU:\" + $CurrentUserSID)) {
+				$HKEY = ("HKU\" + $CurrentUserSID)
+			} Else {
+				#See if profile location is in the regsitry
+				If (Test-Path ($UserProfile + "\ntuser.dat")) { 
+					#Load User Hive
+					#REG LOAD $HKEY ($UserProfile + "\ntuser.dat")
+					[gc]::collect()
+					$process = (REG LOAD  $HKEY ($UserProfile + "\ntuser.dat"))
+					If ($LASTEXITCODE -ne 0 ) {
 						write-error ( "Cannot load profile for: " + ($UsersProfileFolder + "\" + $CurrentProfile + "\ntuser.dat") )
 						continue
 					}
-				}
-				Catch {
-					write-error ( "Cannot load profile for: " + ($UsersProfileFolder + "\" + $CurrentProfile + "\ntuser.dat") )
-					continue
+				}else{
+					#See if the profile location is on the system drive
+					Try {
+						If (Test-Path $UserProfile.Replace($UserProfile.Substring(0,1),($env:systemdrive).Substring(0,1))) {
+							# REG LOAD $HKEY ($UserProfile + "\ntuser.dat")
+							[gc]::collect()
+							$process = (REG LOAD  $HKEY ($UserProfile + "\ntuser.dat"))
+							If ($LASTEXITCODE -ne 0 ) {
+								write-error ( "Cannot load profile for: " + ($UsersProfileFolder + "\" + $CurrentProfile + "\ntuser.dat") )
+								continue
+							}		
+						}else{
+							write-error ( "Cannot load profile for: " + ($UsersProfileFolder + "\" + $CurrentProfile + "\ntuser.dat") )
+							continue
+						}
+					}
+					Catch {
+						write-error ( "Cannot load profile for: " + ($UsersProfileFolder + "\" + $CurrentProfile + "\ntuser.dat") )
+						continue
+					}
 				}
 			}
 			#File permission that would not work with default profile.
 			If ($Store) {
 				#Add AllowFolder ACL
 				ForEach ( $file in (($ConfigFile.Config.Permissions.FileSystem.AllowFolder.Item | Where-Object {$_.store -eq 'true' -and $_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)}).'#text')) {
-					If (-Not (Test-Path $file)){
-						New-Item -Path $file -Force
+					If (-Not (Test-Path (Get-envValueFromString -Path $file))){
+						New-Item -Path (Get-envValueFromString -Path $file) -Force
 					} 
-					Write-Host ("`t`tDenying: " + $file)
-					$Acl = Get-Acl ($file)
+					Write-Host ("`t`tDenying: " + (Get-envValueFromString -Path $file))
+					$Acl = Get-Acl(Get-envValueFromString -Path $file)
 					$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "Modify", "Allow")
 					$Acl.Setaccessrule($Ar)
-					Set-Acl ($file) $Acl
+					Set-Acl (Get-envValueFromString -Path $file) $Acl
 				}
 				#Add Deny ACL
 				ForEach ( $file in (($ConfigFile.Config.Permissions.FileSystem.Deny.Item | Where-Object {$_.store -eq 'true' -and $_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)}).'#text')) {
-					If (Test-Path $file) {
-						Write-Host ("`t`tDenying: " + $file)
-						$Acl = Get-Acl ($file)
+					If (Test-Path (Get-envValueFromString -Path $file)) {
+						Write-Host ("`t`tDenying: " + (Get-envValueFromString -Path $file))
+						$Acl = Get-Acl (Get-envValueFromString -Path $file)
 						$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "ReadAndExecute", "Deny")
 						$Acl.Setaccessrule($Ar)
-						Set-Acl ($file) $Acl	
+						Set-Acl (Get-envValueFromString -Path $file) $Acl	
+					} else {
+						Write-Warning ("`t`tCannot find '" + (Get-envValueFromString -Path $file) + "' to deny access to.")
 					}
 				}
 				#Add Deny ACL User Profile
@@ -1207,29 +1318,33 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 						$Acl.Setaccessrule($Ar)
 						Set-Acl ($UserProfile + "\"+ $file) $Acl	
 						Get-ChildItem -path ($UserProfile + "\"+ $file) -Recurse -Force | ForEach-Object {$_.attributes = "Hidden"}
+					} else {
+						Write-Warning ("`t`tCannot find '" + ($UserProfile + "\"+ $file) + "' to deny access to.")
 					}
 				}
 				
 			}else {
 				#Add AllowFolder ACL
 				ForEach ( $file in (($ConfigFile.Config.Permissions.FileSystem.AllowFolder.Item | Where-Object {$_.store -eq 'false' -and $_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)}).'#text')) {
-					If (-Not (Test-Path $file)){
-						New-Item -Path $file -Force
+					If (-Not (Test-Path (Get-envValueFromString -Path $file))){
+						New-Item -Path (Get-envValueFromString -Path $file) -Force
 					} 
-					Write-Host ("`t`tDenying: " + $file)
-					$Acl = Get-Acl ($file)
+					Write-Host ("`t`tDenying: " + (Get-envValueFromString -Path $file))
+					$Acl = Get-Acl (Get-envValueFromString -Path $file)
 					$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "Modify", "Allow")
 					$Acl.Setaccessrule($Ar)
-					Set-Acl ($file) $Acl
+					Set-Acl (Get-envValueFromString -Path $file) $Acl
 				}
 				#Add Deny ACL
 				ForEach ( $file in (($ConfigFile.Config.Permissions.FileSystem.Deny.Item | Where-Object {$_.store -eq 'false' -and $_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)}).'#text')) {
-					If (Test-Path $file) {
-						Write-Host ("`t`tDenying: " + $file)
-						$Acl = Get-Acl ($file)
+					If (Test-Path (Get-envValueFromString -Path $file)) {
+						Write-Host ("`t`tDenying: " + (Get-envValueFromString -Path $file))
+						$Acl = Get-Acl (Get-envValueFromString -Path $file)
 						$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "ReadAndExecute", "Deny")
 						$Acl.Setaccessrule($Ar)
-						Set-Acl ($file) $Acl	
+						Set-Acl (Get-envValueFromString -Path $file) $Acl	
+					} else {
+						Write-Warning ("`t`tCannot find '" + (Get-envValueFromString -Path $file) + "' to deny access to.")
 					}
 				}
 				#Add Deny ACL User Profile
@@ -1241,6 +1356,8 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 						$Acl.Setaccessrule($Ar)
 						Set-Acl ($UserProfile + "\"+ $file) $Acl	
 						Get-ChildItem -path ($UserProfile + "\"+ $file) -Recurse -Force | ForEach-Object {$_.attributes = "Hidden"}
+					} else {
+						Write-Warning ("`t`tCannot find '" + ($UserProfile + "\"+ $file) + "' to deny access to.")
 					}
 				}
 			}
@@ -1251,19 +1368,23 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				#Update/Add Items Values
 				write-host ("`tUpdating Registry Settings:")
 				Foreach ($key in ($ConfigFile.Config.UserSettings.UserRegistry.Item | Where-Object {$_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
-					If ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false') {				
+					If ($key.Default -eq 'true' -and $key.Store -eq 'false' -and $CurrentProfile.ToUpper() -eq "DEFAULT") {		
+						Write-Color -Text "Default User:  ",
+											$key.Comment -Color Blue,DarkGray -StartTab 2
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
+					} ElseIf ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {		
 						Write-Color -Text "LockedDown:  ",
 											$key.Comment -Color Blue,DarkGray -StartTab 2
 						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
-					} ElseIf ($Store -and $key.Store -eq 'true') {				
+					} ElseIf ($Store -and $key.Store -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
 						Write-Color -Text "Store:       ",
 											$key.Comment -Color Red,DarkGray -StartTab 2
 						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
-					} ElseIf ($Manager -and $key.Manager -eq 'true') {				
+					} ElseIf ($Manager -and $key.Manager -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
 						Write-Color -Text "Manager:     ",
 											$key.Comment -Color Yellow,DarkGray -StartTab 2
 						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
-					} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false') {
+					} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false' -and $key.Default -eq 'false' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {
 						Write-Color -Text "All:         ",
 									$key.Comment -Color DarkGreen,DarkGray -StartTab 2
 						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type	
@@ -1271,19 +1392,23 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				}			
 				If ($IsVM) {
 					Foreach ($key in ($ConfigFile.Config.UserSettings.VM.UserRegistry.Item | Where-Object { $_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
-						If ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false') {			
+						If ($key.Default -eq 'true' -and $key.Store -eq 'false' -and $CurrentProfile.ToUpper() -eq "DEFAULT") {		
+							Write-Color -Text "Default User:  ",
+												$key.Comment -Color Blue,DarkGray -StartTab 2
+							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
+						} ElseIf ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {		
 							Write-Color -Text "LockedDown:  ",
 												$key.Comment -Color Blue,DarkGray -StartTab 2
 							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
-						} ElseIf ($Store -and $key.Store -eq 'true') {			
+						} ElseIf ($Store -and $key.Store -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
 							Write-Color -Text "Store:       ",
 												$key.Comment -Color Red,DarkGray -StartTab 2
 							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
-						} ElseIf ($Manager -and $key.Manager -eq 'true') {				
+						} ElseIf ($Manager -and $key.Manager -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
 							Write-Color -Text "Manager:     ",
 												$key.Comment -Color Yellow,DarkGray -StartTab 2
 							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
-						} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false') {
+						} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false' -and $key.Default -eq 'false' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {
 							Write-Color -Text "All:         ",
 										$key.Comment -Color DarkGreen,DarkGray -StartTab 2
 							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type	
@@ -1300,7 +1425,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 						} else {
 							Remove-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key)  -Confirm:$False  -erroraction 'silentlycontinue'
 						}
-					} ElseIf ($Store -and $key.Store -eq 'true') {				
+					} ElseIf ($Store -and $key.Store -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
 						Write-Color -Text "Store:       ",
 											$key.Comment -Color Red,DarkGray -StartTab 2
 						If ($key.Value) {
@@ -1308,7 +1433,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 						} else {
 							Remove-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key)  -Confirm:$False  -erroraction 'silentlycontinue'
 						}
-					} ElseIf ($Manager -and $key.Manager -eq 'true') {				
+					} ElseIf ($Manager -and $key.Manager -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
 						Write-Color -Text "Manager:     ",
 											$key.Comment -Color Yellow,DarkGray -StartTab 2
 						If ($key.Value) {
@@ -1334,13 +1459,13 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 						If ($key.key -and -Not (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key))) {
 							New-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Force | Out-Null
 						}
-					} ElseIf ($Store -and $key.Store -eq 'true') {				
+					} ElseIf ($Store -and $key.Store -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
 						Write-Color -Text "Store:       ",
 											$key.Comment -Color Red,DarkGray -StartTab 2
 						If ($key.key -and -Not (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key))) {
 							New-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Force | Out-Null
 						}
-					} ElseIf ($Manager -and $key.Manager -eq 'true') {				
+					} ElseIf ($Manager -and $key.Manager -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
 						Write-Color -Text "Manager:     ",
 											$key.Comment -Color Yellow,DarkGray -StartTab 2
 						If ($key.key -and -Not (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key))) {
@@ -1628,11 +1753,19 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 					#endregion Deny Programs to run		
 				}
 			#endregion Set Store
-			#region Set Manager 
-				If (($Manager.ToUpper() -eq $CurrentProfile.ToUpper()) -and ($CurrentProfile.ToUpper() -ne "DEFAULT" )) {
+			#region Set Active User 
+				If (($ActiveUser.ToUpper() -eq $CurrentProfile.ToUpper()) -and ($CurrentProfile.ToUpper() -ne "DEFAULT" )) {
+					If (Get-LocalUser $CurrentProfile) {
+						Write-Color -Text "Enabling User: ",
+									$CurrentProfile -Color White,Green -StartTab 2
+						Enable-LocalUser $CurrentProfile -Confirm:$false
+					}
+					If ($Manager) {
+
+					}
 
 				}
-			#endregion Set Manager 
+			#endregion Actvie User 
 		#endregion Set User
 	}#End if User Exsits
 
@@ -1645,7 +1778,12 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				Copy-Item  ($LICache + "\Favorites") -Destination ($UsersProfileFolder + "\Default\Favorites") -recurse -force
 			}
 		}else{
-			$UserProfile = (Get-WmiObject Win32_UserProfile |Where-Object { (Split-Path -leaf -Path ($_.LocalPath)) -eq $CurrentProfile} |Select-Object Localpath).localpath
+			$CurrentUserSID = (Get-LocalUser -Name $CurrentProfile).SID
+			If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
+				$UserProfile = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $CurrentUserSID}).localpath
+			} Else {
+				$UserProfile = (Get-WmiObject Win32_UserProfile | Where-Object { $_.SID -eq $CurrentUserSID}).localpath
+			} 
 			If (Test-Path ($UserProfile + "\Favorites")) {
 				Remove-Item -path ($UserProfile + "\Favorites") -recurse -force
 				Copy-Item  ($LICache + "\Favorites") -Destination ($UserProfile + "\Favorites") -recurse -force
@@ -1671,19 +1809,22 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		}
 	}
 	#endregion WinX		
-	# Unload the User profile hive
-	Write-Host ("`t" + $CurrentProfile + ": Unloading User Registry")
-	[gc]::collect()
-	$process = (REG UNLOAD $HKEY)
-	If ($LASTEXITCODE -ne 0 ) {
+
+	#Unload only if use is not logged in. 
+	If (-Not (Test-Path ("HKU:\" + $CurrentUserSID))) {
+		# Unload the User profile hive
+		Write-Host ("`t" + $CurrentProfile + ": Unloading User Registry")
 		[gc]::collect()
-		Start-Sleep 3
 		$process = (REG UNLOAD $HKEY)
 		If ($LASTEXITCODE -ne 0 ) {
-			write-error ("`t" + $CurrentProfile + ": Can not unload user registry!")
+			[gc]::collect()
+			Start-Sleep 3
+			$process = (REG UNLOAD $HKEY)
+			If ($LASTEXITCODE -ne 0 ) {
+				write-error ("`t" + $CurrentProfile + ": Can not unload user registry!")
+			}
 		}
 	}
-	
 	[gc]::collect()
 	$UserProgress++
 }
@@ -1703,28 +1844,32 @@ If (-Not $UserOnly) {
 		#region Windows Feature setup
 		Write-Host "Disabling Windows Features:"
 		ForEach ( $Feature in $ConfigFile.Config.WindowsSettings.RemoveWindowsFeatures.Remove ) {
-			If ((Get-WindowsOptionalFeature -Online -FeatureName $Feature).state -eq "Enabled") {
-				# Write-Host ("`t" + $Feature) -ForegroundColor gray
-				Write-Color -Text "Disabling Windows Optional Feature: ",
-									$Feature -Color DarkYellow,White -StartTab 1
-				Disable-WindowsOptionalFeature -Online -FeatureName $Feature -NoRestart | out-null
-			} else {
-				If (Get-WindowsOptionalFeature -Online -FeatureName $Feature) {
-					# Write-Host ("`tWindows Optional Feature: " + $Feature + " Already disabled.") -ForegroundColor green
-					Write-Color -Text "Disabled Windows Optional Feature: ",
-										$Feature -Color DarkGreen,White -StartTab 1
+			If (Get-Command Get-WindowsOptionalFeature -errorAction SilentlyContinue) {
+				If ((Get-WindowsOptionalFeature -Online -FeatureName $Feature).state -eq "Enabled") {
+					# Write-Host ("`t" + $Feature) -ForegroundColor gray
+					Write-Color -Text "Disabling Windows Optional Feature: ",
+										$Feature -Color DarkYellow,White -StartTab 1
+					Disable-WindowsOptionalFeature -Online -FeatureName $Feature -NoRestart | out-null
+				} else {
+					If (Get-WindowsOptionalFeature -Online -FeatureName $Feature) {
+						# Write-Host ("`tWindows Optional Feature: " + $Feature + " Already disabled.") -ForegroundColor green
+						Write-Color -Text "Disabled Windows Optional Feature: ",
+											$Feature -Color DarkGreen,White -StartTab 1
+					}
 				}
 			}
-			If ((Get-WindowsCapability -Online | Where-Object {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"}).state) {
-				# Write-Host ("`t" + $Feature) -ForegroundColor gray
-				Write-Color -Text "Disabling Windows Capability: ",
-									$Feature -Color DarkYellow,White -StartTab 1
-				Get-WindowsCapability -Online | Where-Object {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"} | Remove-WindowsCapability -online | out-null
-			} else {
-				If ((Get-WindowsCapability -Online -Name $Feature).Name) {
-					# Write-Host ("`tWindows Capability: " + $Feature + " Already disabled.") -ForegroundColor green
-					Write-Color -Text "Disabled Windows Capability: ",
-									$Feature -Color DarkGreen,White -StartTab 1
+			If (Get-Command Get-WindowsCapability -errorAction SilentlyContinue) {
+				If ((Get-WindowsCapability -Online | Where-Object {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"}).state) {
+					# Write-Host ("`t" + $Feature) -ForegroundColor gray
+					Write-Color -Text "Disabling Windows Capability: ",
+										$Feature -Color DarkYellow,White -StartTab 1
+					Get-WindowsCapability -Online | Where-Object {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"} | Remove-WindowsCapability -online | out-null
+				} else {
+					If ((Get-WindowsCapability -Online -Name $Feature).Name) {
+						# Write-Host ("`tWindows Capability: " + $Feature + " Already disabled.") -ForegroundColor green
+						Write-Color -Text "Disabled Windows Capability: ",
+										$Feature -Color DarkGreen,White -StartTab 1
+					}
 				}
 			}
 		}
@@ -2008,6 +2153,19 @@ If (-Not $UserOnly) {
 		}
 	}	
 }
+If ($Wifi) {
+	ForEach ($service in $configfile.Config.WindowsSettings.WiFiServices.Service) {
+		$ServiceObject = Get-Service -Name $service -erroraction 'silentlycontinue'
+		If ( $ServiceObject) {
+			# write-host ("`tAutomatic Startup: " + $ServiceObject.DisplayName ) -foregroundcolor red 
+			Write-Color -Text "Automatic Startup: ",
+							  $ServiceObject.DisplayName,
+							  " Force for WiFi" -Color White,Red,Green -StartTab 1
+			$ServiceObject | Set-Service -StartupType Automatic -ErrorAction SilentlyContinue | Out-Null
+			$ServiceObject | Start-Service -ErrorAction SilentlyContinue | Out-Null
+		}
+	}	
+}
 #============================================================================
 #endregion Main Local Machine Services
 #============================================================================
@@ -2016,25 +2174,27 @@ If (-Not $UserOnly) {
 #============================================================================
 If (-Not $UserOnly) {
 	If ([int]([environment]::OSVersion.Version.Major.tostring() + [environment]::OSVersion.Version.Minor.tostring()) -gt 61) {
-		Write-Host ("Setting up Certificates:")
-		If (Test-Path ($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot)) {
-			# Write-Host ("Importing Domain CA Root: " + $LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot)
-			Write-color	-Text "Importing Domain CA Root: ",
-								($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -Color White,DarkGreen
-			Import-Certificate -Filepath ($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -CertStoreLocation cert:\LocalMachine\Root | out-null
-		}
-		If (Test-Path ($LICache + "\" + $ConfigFile.Config.Company.PrivateCAIntermediate)) {
-			# Write-Host ("Importing Domain CA Intermediate : " + $LICache + "\" + $ConfigFile.Config.Company.PrivateCAIntermediate)
-			Write-color	-Text "Importing Domain CA Intermediate: ",
-					($LICache + "\" + $ConfigFile.Config.Company.PrivateCAIntermediate) -Color White,DarkGreen
-			Import-Certificate -Filepath ($LICache + "\" + $ConfigFile.Config.Company.PrivateCAIntermediate) -CertStoreLocation cert:\LocalMachine\CA | out-null
-		}
-		#Importing Code Signing Cert
-		If (Test-Path ( $LICache + "\" + $ConfigFile.Config.Company.PrivateCACodeSigning )) {
-			# Write-Host ("Importing Code Signing Cert : " + $LICache + "\" + $ConfigFile.Config.Company.PrivateCACodeSigning)
-			Write-color	-Text "Importing Code Signing Cert: ",
-					($LICache + "\" + $ConfigFile.Config.Company.PrivateCACodeSigning) -Color White,DarkGreen
-			Import-Certificate -Filepath ($LICache + "\" + $ConfigFile.Config.Company.PrivateCACodeSigning) -CertStoreLocation cert:\LocalMachine\TrustedPublisher | out-null
+		If (Get-Command Import-Certificate -errorAction SilentlyContinue) {
+			Write-Host ("Setting up Certificates:")
+			If (Test-Path ($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot)) {
+				# Write-Host ("Importing Domain CA Root: " + $LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot)
+				Write-color	-Text "Importing Domain CA Root: ",
+									($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -Color White,DarkGreen
+				Import-Certificate -Filepath ($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -CertStoreLocation cert:\LocalMachine\Root | out-null
+			}
+			If (Test-Path ($LICache + "\" + $ConfigFile.Config.Company.PrivateCAIntermediate)) {
+				# Write-Host ("Importing Domain CA Intermediate : " + $LICache + "\" + $ConfigFile.Config.Company.PrivateCAIntermediate)
+				Write-color	-Text "Importing Domain CA Intermediate: ",
+						($LICache + "\" + $ConfigFile.Config.Company.PrivateCAIntermediate) -Color White,DarkGreen
+				Import-Certificate -Filepath ($LICache + "\" + $ConfigFile.Config.Company.PrivateCAIntermediate) -CertStoreLocation cert:\LocalMachine\CA | out-null
+			}
+			#Importing Code Signing Cert
+			If (Test-Path ( $LICache + "\" + $ConfigFile.Config.Company.PrivateCACodeSigning )) {
+				# Write-Host ("Importing Code Signing Cert : " + $LICache + "\" + $ConfigFile.Config.Company.PrivateCACodeSigning)
+				Write-color	-Text "Importing Code Signing Cert: ",
+						($LICache + "\" + $ConfigFile.Config.Company.PrivateCACodeSigning) -Color White,DarkGreen
+				Import-Certificate -Filepath ($LICache + "\" + $ConfigFile.Config.Company.PrivateCACodeSigning) -CertStoreLocation cert:\LocalMachine\TrustedPublisher | out-null
+			}
 		}
 	}
 }
@@ -2080,7 +2240,7 @@ If (-Not $UserOnly) {
 	}
 	If ($AllowClientTLS1) {
 		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\SHA") "Enabled" 4294967295 "DWORD"
-		Write-Warning "Re-Enabling SHA :" 
+		Write-Warning "Re-Enabling SHA" 
 	}
 	# Set KeyExchangeAlgorithms
 	Foreach ($KeyExchangeAlgorithm in $ConfigFile.Config.WindowsSettings.Schannel.KeyExchangeAlgorithm) {
@@ -2139,8 +2299,10 @@ If (-Not $UserOnly) {
 		}
 	}
 	If ($AllowClientTLS1) {
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\Protocols\TLS 1.0\Client") "Enabled" 4294967295 "DWORD"
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\Protocols\TLS 1.0\Client") "DisabledByDefault" 0 "DWORD"
+		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Client") "Enabled" 4294967295 "DWORD"
+		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Client") "DisabledByDefault" 0 "DWORD"
+		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.1\Client") "Enabled" 4294967295 "DWORD"
+		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.1\Client") "DisabledByDefault" 0 "DWORD"
 		Write-Warning "Re-Enabling Client TLS 1.0" 
 	}
 	#.Net TLS Settings
@@ -2361,6 +2523,21 @@ If (-Not $UserOnly) {
 				$ProgressPreference = "Continue"
 			}
 		}
+		If ($ConfigFile.Config.WindowsSettings.Firewall.DisplayGroup | Where-object {$_.action -eq "enable"}) {
+			Foreach ($DisplayGroup in ($ConfigFile.Config.WindowsSettings.Firewall.DisplayGroup | Where-object {$_.action -eq "enable"})) {
+				# Write-host ("`t`enable DisplayGroup: " + $DisplayGroup)
+				Write-Color -Text "Enabling DisplayGroup: ",
+								($DisplayGroup.'#text') -Color White,Yellow -StartTab 2
+				$ProgressPreference = "SilentlyContinue"
+				Enable-NetFirewallRule -DisplayGroup $DisplayGroup.'#text' -erroraction 'silentlycontinue' | out-null
+				If ($DisplayGroup.AddressFilter) {
+					Write-Color -Text "Alowing Remote Addresses: ",
+										$DisplayGroup.AddressFilter -Color White,Red -StartTab 3
+					Get-NetFirewallRule | Where-Object {$_.DisplayGroup -match ($DisplayGroup.'#text') } | Get-NetFirewallAddressFilter | Where-Object { $_.RemoteAddress -ne $DisplayGroup.AddressFilter} | Set-NetFirewallAddressFilter -RemoteAddress $DisplayGroup.AddressFilter
+				}
+				$ProgressPreference = "Continue"
+			}
+		}		
 	}
 	#endregion DisplayGroup
 	#region New Rule
@@ -2451,81 +2628,79 @@ If (-Not $UserOnly) {
 If (-Not $UserOnly) {
 	If ([int]([environment]::OSVersion.Version.Major.tostring() + [environment]::OSVersion.Version.Minor.tostring()) -gt 61) {
 		Write-Host "Remove Microsoft Store Apps:"
-		#region Get list of currently installed and provisioned Appx packages
-		$AllInstalled = Get-AppxPackage -AllUsers | Where-Object {$_.NonRemovable -ne $True} | ForEach-Object {$_.Name}
-		$AllProvisioned = Get-ProvisionedAppxPackage -Online | Where-Object {$_.NonRemovable -ne $True}| ForEach-Object {$_.DisplayName}
-		#endregion
-		 
 		#region Remove Appx Packages
-		#Turn off the progress bar
-		$ProgressPreference = 'silentlyContinue'
-		[array]$WhiteList = $ConfigFile.Config.WindowsSettings.MicrosoftStore.WhiteList
-		ForEach($Appx in $AllInstalled){
-			$error.Clear()
-			If (-Not ([string]::IsNullOrEmpty($Appx))) {
-				If ($Appx -match '(\{|\()?[A-Za-z0-9]{4}([A-Za-z0-9]{4}\-?){4}[A-Za-z0-9]{12}(\}|\()?' ) {
-					$AppxClean = $Appx
-				} else {
-					$AppxClean = [String]($Appx -replace '\d+' -replace '\.\.')
-				}
-				If (-Not ($WhiteList.Contains($AppxClean))){
-					Try{			
-						Get-AppxPackage -Name $Appx | Remove-AppxPackage
+		If (Get-Command Get-AppxPackage -errorAction SilentlyContinue) {
+			$AllInstalled = Get-AppxPackage -AllUsers | Where-Object {$_.NonRemovable -ne $True} | ForEach-Object {$_.Name}		
+			#Turn off the progress bar
+			$ProgressPreference = 'silentlyContinue'
+			[array]$WhiteList = $ConfigFile.Config.WindowsSettings.MicrosoftStore.WhiteList
+			ForEach($Appx in $AllInstalled){
+				$error.Clear()
+				If (-Not ([string]::IsNullOrEmpty($Appx))) {
+					If ($Appx -match '(\{|\()?[A-Za-z0-9]{4}([A-Za-z0-9]{4}\-?){4}[A-Za-z0-9]{12}(\}|\()?' ) {
+						$AppxClean = $Appx
+					} else {
+						$AppxClean = [String]($Appx -replace '\d+' -replace '\.\.')
 					}
+					If (-Not ($WhiteList.Contains($AppxClean))){
+						Try{			
+							Get-AppxPackage -Name $Appx | Remove-AppxPackage
+						}
+						Catch{
+							$ErrorMessage = $_.Exception.Message
+							$FailedItem = $_.Exception.ItemName
+							Write-Host "There was an error removing Appx: $Appx"
+							Write-Host $ErrorMessage
+							Write-Host $FailedItem
+						}
+						If(!$error){
+							# Write-Host "Removed Appx: $Appx" -ForegroundColor Green
+							Write-Color -Text "Removed App: ",
+										$Appx -Color White,DarkGreen -StartTab 1
+						}
+					}
+					Else{
+						# Write-Host "Appx Package is whitelisted: $Appx" -ForegroundColor DarkBlue
+						Write-Color -Text "Whitelisted App: ",
+										$Appx -Color White,DarkCyan -StartTab 1
+					}
+				}
+			}
+			#Turn on the progress bar
+			$ProgressPreference = 'Continue'		
+		}
+		#endregion
+		#region Remove Provisioned Appx Packages
+		If (Get-Command Get-ProvisionedAppxPackage -errorAction SilentlyContinue) {
+			$AllProvisioned = Get-ProvisionedAppxPackage -Online | Where-Object {$_.NonRemovable -ne $True}| ForEach-Object {$_.DisplayName}
+			ForEach($Appx in $AllProvisioned){
+				$error.Clear()
+				If(-Not ([array]$ConfigFile.Config.WindowsSettings.MicrosoftStore.WhiteList).Contains([system.String]::Join(".", ($Appx.split(".") |  ForEach-Object {if (($_ -as [int] -eq $null )) {$_ }})))){
+					Try{
+						Get-ProvisionedAppxPackage -Online | Where-Object {$_.DisplayName -eq $Appx} | Remove-ProvisionedAppxPackage -Online | Out-Null
+					}
+					 
 					Catch{
 						$ErrorMessage = $_.Exception.Message
 						$FailedItem = $_.Exception.ItemName
-						Write-Host "There was an error removing Appx: $Appx"
+						Write-Host "There was an error removing Provisioned Appx: $Appx"
 						Write-Host $ErrorMessage
 						Write-Host $FailedItem
 					}
 					If(!$error){
-						# Write-Host "Removed Appx: $Appx" -ForegroundColor Green
+						# Write-Host "Removed Provisioned Appx: $Appx" -ForegroundColor Green
 						Write-Color -Text "Removed App: ",
-									$Appx -Color White,DarkGreen -StartTab 1
+										$Appx -Color White,DarkGreen -StartTab 1
 					}
 				}
 				Else{
-					# Write-Host "Appx Package is whitelisted: $Appx" -ForegroundColor DarkBlue
+					#Write-Host "Appx Package is whitelisted: $Appx" -ForegroundColor DarkBlue
 					Write-Color -Text "Whitelisted App: ",
-									$Appx -Color White,DarkCyan -StartTab 1
+										$Appx -Color White,DarkCyan -StartTab 1
 				}
 			}
 		}
-		#Turn on the progress bar
-		$ProgressPreference = 'Continue'
 		#endregion
-		 
-		#region Remove Provisioned Appx Packages
-
-		ForEach($Appx in $AllProvisioned){
-			$error.Clear()
-			If(-Not ([array]$ConfigFile.Config.WindowsSettings.MicrosoftStore.WhiteList).Contains([system.String]::Join(".", ($Appx.split(".") |  ForEach-Object {if (($_ -as [int] -eq $null )) {$_ }})))){
-				Try{
-					Get-ProvisionedAppxPackage -Online | Where-Object {$_.DisplayName -eq $Appx} | Remove-ProvisionedAppxPackage -Online | Out-Null
-				}
-				 
-				Catch{
-					$ErrorMessage = $_.Exception.Message
-					$FailedItem = $_.Exception.ItemName
-					Write-Host "There was an error removing Provisioned Appx: $Appx"
-					Write-Host $ErrorMessage
-					Write-Host $FailedItem
-				}
-				If(!$error){
-					# Write-Host "Removed Provisioned Appx: $Appx" -ForegroundColor Green
-					Write-Color -Text "Removed App: ",
-									$Appx -Color White,DarkGreen -StartTab 1
-				}
-			}
-			Else{
-				#Write-Host "Appx Package is whitelisted: $Appx" -ForegroundColor DarkBlue
-				Write-Color -Text "Whitelisted App: ",
-									$Appx -Color White,DarkCyan -StartTab 1
-			}
-		}
-		#endregion
-
 		Write-Host "`n"
 	}
 }
@@ -2603,64 +2778,43 @@ If (-Not $UserOnly) {
 #============================================================================
 If (-Not $UserOnly) {
 	If (Test-Path ($LICache + "\RemoveFCTID.exe")) {
-		Write-Host ("Copying RemoveFCTID.exe")
-		
-		If (-Not (Test-Path ($env:ProgramFiles + "\Fortinet\FortiClient\RemoveFCTID.exe"))) {
-			If (Test-Path ($env:ProgramFiles + "\Fortinet\FortiClient")) {
-				Try {
-					Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination ($env:ProgramFiles + "\Fortinet\FortiClient") -Force -ErrorAction SilentlyContinue
-				}
-				Catch {
-					Write-Warning "Failed to copy RemoveFCTID.exe, please manually copy and create shortcut."
-				}
-			}else{
-				New-Item -ItemType directory -Path ($env:ProgramFiles + "\Fortinet") | out-null
-				New-Item -ItemType directory -Path ($env:ProgramFiles + "\Fortinet\FortiClient") | out-null
-				Set-Acl ($env:ProgramFiles + "\Fortinet\FortiClient") $Acl	
-				Try {	
-					Copy-Item ($LICache + "\RemoveFCTID.exe") -Destination ($env:ProgramFiles + "\Fortinet\FortiClient") -Force -ErrorAction SilentlyContinue
-				}
-				Catch {
-					Write-Warning "Failed to copy RemoveFCTID.exe, please manually copy and create shortcut."
-				}
-			}
-			If ((Test-Path ($env:USERPROFILE + "\Desktop")) -and -Not (Test-Path($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk"))){
-				If (Test-Path ($env:ProgramFiles + "\Fortinet\FortiClient\RemoveFCTID.exe")) {				
-					$ShortCut = $WScriptShell.CreateShortcut($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk")
-					$ShortCut.TargetPath=($env:ProgramFiles + "\Fortinet\FortiClient\RemoveFCTID.exe")
-					$ShortCut.WorkingDirectory = ($env:ProgramFiles + "\Fortinet\FortiClient")
-					$ShortCut.Hotkey = "CTRL+SHIFT+F"
-					$ShortCut.IconLocation = "%SystemRoot%\System32\imageres.dll, 100"
-					$ShortCut.Description = "Run Before Imaging"
-					$ShortCut.Save()
-					#Make ShortCut ran as admin https://stackoverflow.com/questions/28997799/how-to-create-a-run-as-administrator-shortcut-using-powershell
-					$bytes = [System.IO.File]::ReadAllBytes($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk")
-					$bytes[0x15] = $bytes[0x15] -bor 0x20 #set byte 21 (0x15) bit 6 (0x20) ON
-					[System.IO.File]::WriteAllBytes($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk", $bytes)
-				} else {
-					Write-Warning "Copy failed please manually copy and create shortcut."
-				}
-			}
-			If ((Test-Path ($UsersProfileFolder + "\administrator\Desktop")) -and -Not (Test-Path($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk"))) {			If (Test-Path ($env:ProgramFiles + "\Fortinet\FortiClient\RemoveFCTID.exe")) {
-					$ShortCut = $WScriptShell.CreateShortcut($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk")
-					$ShortCut.TargetPath=(${env:ProgramFiles(x86)} + "\Fortinet\FortiClient\RemoveFCTID.exe")
-					$ShortCut.WorkingDirectory = (${env:ProgramFiles(x86)} + "\Fortinet\FortiClient")
-					$ShortCut.Hotkey = "CTRL+SHIFT+F"
-					$ShortCut.IconLocation = "%SystemRoot%\System32\imageres.dll, 100"
-					$ShortCut.Description = "Run Before Imaging"
-					$ShortCut.Save()
-					#Make ShortCut ran as admin https://stackoverflow.com/questions/28997799/how-to-create-a-run-as-administrator-shortcut-using-powershell
-					$bytes = [System.IO.File]::ReadAllBytes($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk")
-					$bytes[0x15] = $bytes[0x15] -bor 0x20 #set byte 21 (0x15) bit 6 (0x20) ON
-					[System.IO.File]::WriteAllBytes($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk", $bytes)
-				} else {
-					Write-Warning "Copy failed please manually copy and create shortcut."
-				}
+		Write-Host ("Setting up RemoveFCTID Shortcut")
+		If ((Test-Path ($env:USERPROFILE + "\Desktop")) -and -Not (Test-Path($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk"))){
+			If (Test-Path ($LICache + "\RemoveFCTID.exe")) {				
+				$ShortCut = $WScriptShell.CreateShortcut($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk")
+				$ShortCut.TargetPath=($LICache + "\RemoveFCTID.exe")
+				$ShortCut.WorkingDirectory = ($env:ProgramFiles + "\Fortinet\FortiClient")
+				$ShortCut.Hotkey = "CTRL+SHIFT+F"
+				$ShortCut.IconLocation = "%SystemRoot%\System32\imageres.dll, 100"
+				$ShortCut.Description = "Run Before Imaging"
+				$ShortCut.Save()
+				#Make ShortCut ran as admin https://stackoverflow.com/questions/28997799/how-to-create-a-run-as-administrator-shortcut-using-powershell
+				$bytes = [System.IO.File]::ReadAllBytes($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk")
+				$bytes[0x15] = $bytes[0x15] -bor 0x20 #set byte 21 (0x15) bit 6 (0x20) ON
+				[System.IO.File]::WriteAllBytes($env:USERPROFILE + "\Desktop\RemoveFCTID.lnk", $bytes)
+			} else {
+				Write-Warning "Copy failed please manually copy and create shortcut."
 			}
 		}
-		If (Test-Path ($env:ProgramFiles + "\Fortinet\FortiClient\RemoveFCTID.exe")) {
+		If ((Test-Path ($UsersProfileFolder + "\administrator\Desktop")) -and -Not (Test-Path($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk"))) {			If (Test-Path ($env:ProgramFiles + "\Fortinet\FortiClient\RemoveFCTID.exe")) {
+				$ShortCut = $WScriptShell.CreateShortcut($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk")
+				$ShortCut.TargetPath=($LICache + "\RemoveFCTID.exe")
+				$ShortCut.WorkingDirectory = ($env:ProgramFiles + "\Fortinet\FortiClient")
+				$ShortCut.Hotkey = "CTRL+SHIFT+F"
+				$ShortCut.IconLocation = "%SystemRoot%\System32\imageres.dll, 100"
+				$ShortCut.Description = "Run Before Imaging"
+				$ShortCut.Save()
+				#Make ShortCut ran as admin https://stackoverflow.com/questions/28997799/how-to-create-a-run-as-administrator-shortcut-using-powershell
+				$bytes = [System.IO.File]::ReadAllBytes($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk")
+				$bytes[0x15] = $bytes[0x15] -bor 0x20 #set byte 21 (0x15) bit 6 (0x20) ON
+				[System.IO.File]::WriteAllBytes($UsersProfileFolder + "\administrator\Desktop\RemoveFCTID.lnk", $bytes)
+			} else {
+				Write-Warning "Copy failed please manually copy and create shortcut."
+			}
+		}
+		If (Test-Path ($LICache + "\RemoveFCTID.exe")) {
 			Write-Host "Running FortiClient ID Cleanup"
-			$process = Start-Process -FilePath ('"' + $env:ProgramFiles + '\Fortinet\FortiClient\RemoveFCTID.exe"') -PassThru -NoNewWindow -Wait
+			$process = Start-Process -FilePath ('"' + $LICache + "\RemoveFCTID.exe" + '"') -PassThru -NoNewWindow -Wait
 		}
 	}
 }
@@ -2693,21 +2847,27 @@ If (-Not $UserOnly) {
 #============================================================================
 #region SNMP Setup
 #============================================================================
-If ($Store) {
+If ($Store -and -Not $UserOnly) {
 	Write-Host ("Setting up SNMP") -foregroundcolor darkgray
 	If (-Not (Get-Service -Name "SNMP" -ErrorAction SilentlyContinue)) {
-		If (Get-WindowsOptionalFeature -Online -FeatureName "SNMP" -ErrorAction SilentlyContinue) {
-			Write-Host ("`tInstalling up SNMP") -foregroundcolor darkgray
-			Enable-WindowsOptionalFeature -online -FeatureName "SNMP" -NoRestart | Out-Null
-			Get-Service -Name "SNMP" -ErrorAction SilentlyContinue | Set-Service -StartupType Disabled 
+		If (Get-Command Get-WindowsOptionalFeature -errorAction SilentlyContinue) {
+			If (Get-WindowsOptionalFeature -Online -FeatureName "SNMP" -ErrorAction SilentlyContinue) {
+				Write-Host ("`tInstalling up SNMP") -foregroundcolor darkgray
+				Enable-WindowsOptionalFeature -online -FeatureName "SNMP" -NoRestart | Out-Null
+				Get-Service -Name "SNMP" -ErrorAction SilentlyContinue | Set-Service -StartupType Disabled 
+			}
 		}
-		If ((Get-WindowsCapability -Online -Name "SNMP.Client*" -ErrorAction SilentlyContinue).name ) {
-			Write-Host ("`tInstalling up SNMP") -foregroundcolor darkgray
-			Add-WindowsCapability -Online -Name "SNMP.Client*" | Out-Null
-			Get-Service -Name "SNMP" -ErrorAction SilentlyContinue | Set-Service -StartupType Disabled 
+		If (Get-Command Get-WindowsCapability -errorAction SilentlyContinue) {
+			If ((Get-WindowsCapability -Online -Name "SNMP.Client*" -ErrorAction SilentlyContinue).name ) {
+				Write-Host ("`tInstalling up SNMP") -foregroundcolor darkgray
+				Add-WindowsCapability -Online -Name "SNMP.Client*" | Out-Null
+				Get-Service -Name "SNMP" -ErrorAction SilentlyContinue | Set-Service -StartupType Disabled 
+			}
 		}
 	}
-	(get-item "HKLM:SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities").property| ForEach-Object { Remove-ItemProperty -Name $_ -Path "HKLM:SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities"}
+	If (Test-Path -Path "HKLM:SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities") {
+		(get-item "HKLM:SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities").property| ForEach-Object { Remove-ItemProperty -Name $_ -Path "HKLM:SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities"}
+	}
 	#Set Community
 	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities" $ConfigFile.Config.Company.SNMP 4 "DWORD"
 	#Sets All info
@@ -2761,107 +2921,150 @@ Write-Host ("Setting Registry Permissions ... ") -foregroundcolor darkgray
 #============================================================================
 #region Main Local Machine VMWare Horzion Settings
 #============================================================================
-Write-Host ("VMWare Horzion Settings: ") -foregroundcolor darkgray
-If ([Environment]::Is64BitOperatingSystem) {
-	If ($ConfigFile.Config.VMWare_Horizon.AllowCmdLineCredentials) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "AllowCmdLineCredentials" $ConfigFile.Config.VMWare_Horizon.AllowCmdLineCredentials "DWord"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.CertCheckMode) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "CertCheckMode" $ConfigFile.Config.VMWare_Horizon.CertCheckMode "DWord"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "LogInAsCurrentUser" $ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser "String"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser_Display) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "LogInAsCurrentUser_Display" $ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser_Display "String" 
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.SSLCipherList) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "SSLCipherList" $ConfigFile.Config.VMWare_Horizon.SSLCipherList "String"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.EnableTicketSSLAuth) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "EnableTicketSSLAuth" $ConfigFile.Config.VMWare_Horizon.EnableTicketSSLAuth "DWORD" 
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.AutoUpdateAllowed) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "AutoUpdateAllowed" $ConfigFile.Config.VMWare_Horizon.AutoUpdateAllowed "String"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.AllowDataSharing) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "AllowDataSharing" $ConfigFile.Config.VMWare_Horizon.AllowDataSharing "String"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.IpProtocolUsage) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "IpProtocolUsage" $ConfigFile.Config.VMWare_Horizon.IpProtocolUsage "String"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.NetBIOSDomain) {	
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "DomainName" $ConfigFile.Config.VMWare_Horizon.NetBIOSDomain "String"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.Server) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "ServerURL" $ConfigFile.Config.VMWare_Horizon.Server "String"
-	}
-} else {
-	If ($ConfigFile.Config.VMWare_Horizon.AllowCmdLineCredentials) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "AllowCmdLineCredentials" $ConfigFile.Config.VMWare_Horizon.AllowCmdLineCredentials "DWord"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.CertCheckMode) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "CertCheckMode" $ConfigFile.Config.VMWare_Horizon.CertCheckMode "DWord"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "LogInAsCurrentUser"$ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser "String"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser_Display) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "LogInAsCurrentUser_Display" $ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser_Display "String"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.SSLCipherList) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "SSLCipherList" $ConfigFile.Config.VMWare_Horizon.SSLCipherList "String"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.EnableTicketSSLAuth){
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "EnableTicketSSLAuth" $ConfigFile.Config.VMWare_Horizon.EnableTicketSSLAuth "DWORD"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.AutoUpdateAllowed) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "AutoUpdateAllowed" "false" "String"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.AllowDataSharing) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "AllowDataSharing" $ConfigFile.Config.VMWare_Horizon.AllowDataSharing "String"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.IpProtocolUsage){
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "IpProtocolUsage" $ConfigFile.Config.VMWare_Horizon.IpProtocolUsage "String"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.NetBIOSDomain){
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "DomainName" $ConfigFile.Config.VMWare_Horizon.NetBIOSDomain "String"
-	}
-	If ($ConfigFile.Config.VMWare_Horizon.Server) {
-		Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "ServerURL" $VMware_Horizon_Server "String"
+If (-Not $UserOnly) {
+	Write-Host ("VMWare Horzion Settings: ") -foregroundcolor darkgray
+	If ([Environment]::Is64BitOperatingSystem) {
+		If ($ConfigFile.Config.VMWare_Horizon.AllowCmdLineCredentials) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "AllowCmdLineCredentials" $ConfigFile.Config.VMWare_Horizon.AllowCmdLineCredentials "DWord"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.CertCheckMode) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "CertCheckMode" $ConfigFile.Config.VMWare_Horizon.CertCheckMode "DWord"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "LogInAsCurrentUser" $ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser "String"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser_Display) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "LogInAsCurrentUser_Display" $ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser_Display "String" 
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.SSLCipherList) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "SSLCipherList" $ConfigFile.Config.VMWare_Horizon.SSLCipherList "String"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.EnableTicketSSLAuth) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "EnableTicketSSLAuth" $ConfigFile.Config.VMWare_Horizon.EnableTicketSSLAuth "DWORD" 
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.AutoUpdateAllowed) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "AutoUpdateAllowed" $ConfigFile.Config.VMWare_Horizon.AutoUpdateAllowed "String"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.AllowDataSharing) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "AllowDataSharing" $ConfigFile.Config.VMWare_Horizon.AllowDataSharing "String"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.IpProtocolUsage) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "IpProtocolUsage" $ConfigFile.Config.VMWare_Horizon.IpProtocolUsage "String"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.NetBIOSDomain) {	
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "DomainName" $ConfigFile.Config.VMWare_Horizon.NetBIOSDomain "String"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.Server) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "ServerURL" $ConfigFile.Config.VMWare_Horizon.Server "String"
+		}
+	} else {
+		If ($ConfigFile.Config.VMWare_Horizon.AllowCmdLineCredentials) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "AllowCmdLineCredentials" $ConfigFile.Config.VMWare_Horizon.AllowCmdLineCredentials "DWord"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.CertCheckMode) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "CertCheckMode" $ConfigFile.Config.VMWare_Horizon.CertCheckMode "DWord"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "LogInAsCurrentUser"$ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser "String"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser_Display) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "LogInAsCurrentUser_Display" $ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser_Display "String"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.SSLCipherList) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "SSLCipherList" $ConfigFile.Config.VMWare_Horizon.SSLCipherList "String"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.EnableTicketSSLAuth){
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "EnableTicketSSLAuth" $ConfigFile.Config.VMWare_Horizon.EnableTicketSSLAuth "DWORD"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.AutoUpdateAllowed) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "AutoUpdateAllowed" "false" "String"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.AllowDataSharing) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "AllowDataSharing" $ConfigFile.Config.VMWare_Horizon.AllowDataSharing "String"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.IpProtocolUsage){
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "IpProtocolUsage" $ConfigFile.Config.VMWare_Horizon.IpProtocolUsage "String"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.NetBIOSDomain){
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "DomainName" $ConfigFile.Config.VMWare_Horizon.NetBIOSDomain "String"
+		}
+		If ($ConfigFile.Config.VMWare_Horizon.Server) {
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "ServerURL" $VMware_Horizon_Server "String"
+		}
 	}
 }
-
 #============================================================================
 #endregion Main Local Machine VMWare Horzion Settings
 #============================================================================
 #============================================================================
 #region Main Local Machine Temp Cleanup
 #============================================================================
-If ($ConfigFile.Config.WindowsSettings.CleanTempOnStart -eq "true" -or $ConfigFile.Config.WindowsSettings.CleanTempOnStart -eq "yes") {
-	If (get-ScheduledJob | Where-Object {$_.Name -eq "Clean-Temp-Folders"}) {
-		get-ScheduledJob | Where-Object {$_.Name -eq "Clean-Temp-Folders"} | Unregister-ScheduledJob
-	}
-
-	$SchTrigger = New-JobTrigger -AtStartup
-	$SchJobOptions = New-ScheduledJobOption -RunElevated
-	Register-ScheduledJob -Name "Clean-Temp-Folders" -Trigger $SchTrigger -ScheduledJobOption $SchJobOptions  -ScriptBlock {
-		#C:\temp
-		If (Test-Path($env:systemdrive + "\temp")) {
-			Get-ChildItem -Path ($env:systemdrive + "\temp") | Remove-Item -Recurse -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
-		}
-		#C:\windows\temp
-		If (Test-Path($env:windir + "\temp")) {
-			Get-ChildItem -Path ($env:windir + "\temp") | Remove-Item -Recurse -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
-		}
-		#C:\users\<user>\AppData\Local\Temp
-		$UsersProfileFolders = @((Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' -Name "ProfilesDirectory").ProfilesDirectory,($env:systemdrive + "\Users"))
-		ForEach ($UserFolders in ($UsersProfileFolders | Select-Object -Unique)) {
-			ForEach ($Folder in (Get-ChildItem -Directory -Path $UserFolders).fullname) {
-				write-host ($Folder + "\AppData\Local\Temp")
-				If (Test-Path($Folder + "\AppData\Local\Temp")) {
-					Get-ChildItem -Path ($Folder + "\AppData\Local\Temp") | Remove-Item -Recurse -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+If (-Not $UserOnly) {
+	If ($configfile.Config.WindowsSettings.ScheduledJobs.Job) {
+		If (Get-Command Get-ScheduledJob -errorAction SilentlyContinue) {
+			ForEach ($Job in $configfile.Config.WindowsSettings.ScheduledJobs.Job) {
+				#Clean Up Old Job
+				If (get-ScheduledJob | Where-Object {$_.Name -eq $Job.Name}) {
+					get-ScheduledJob | Where-Object {$_.Name -eq $Job.Name} | Unregister-ScheduledJob -Force
 				}
+				#
+				$ArrayJTrigger = $Job.Trigger -split ";"
+				$HashJTrigger = @{}
+				$ArrayJTrigger | ForEach-Object { 
+					If ($_ -match "=") {
+						$tajt = $_ -split "="
+						$HashJTrigger.Add($tajt[0],$tajt[1])
+					} Else {
+						$HashJTrigger.Add($_ ,"")
+					}
+				}
+				$SchJobOptions = New-ScheduledJobOption -RunElevated
+				Register-ScheduledJob -Name $Job.Name -Trigger $HashJTrigger -ScheduledJobOption $SchJobOptions  -ScriptBlock {$Job.'#text'}
+			}
+		} Else {
+			ForEach ($Job in $configfile.Config.WindowsSettings.ScheduledJobs.Job) {
+				If (Get-ScheduledTask | Where-Object { $_.TaskName -eq $Job.Name}) {
+					Get-ScheduledTask | Where-Object { $_.TaskName -eq $Job.Name} | Unregister-ScheduledTask -Confirm:$false
+				}
+				$STT = $null
+				$STTF = $null
+				$STTR = $null
+				$STTA = $null
+				$STTDW = $null	
+				$EAction = [convert]::ToBase64String([System.Text.encoding]::Unicode.GetBytes($Job.'#text')) 
+				$ArrayJTrigger = $Job.Trigger -split ";"
+				$ArrayJTrigger | ForEach-Object { 
+					If ($_ -match "=") {
+						$tajt = $_ -split "="
+						If ($tajt[0] -eq "Frequency") {
+							$STTF = $tajt[1]
+						}
+						If ($tajt[0] -eq "RandomDelay") {
+							$STTR = [timespan]$tajt[1]
+						}
+						If ($tajt[0] -eq "At") {
+							$STTA = [datetime]$tajt[1]
+						}
+						If ($tajt[0] -eq "DaysOfWeek") {
+							$STTDW =$tajt[1]
+						}
+					} 
+				}
+				switch ($STTF) {
+					Once {$STT = New-ScheduledTaskTrigger -Once -AT $STTA}
+					Daily {
+						If ($STTR) {
+							$STT = New-ScheduledTaskTrigger -Daily -AT $STTA -RandomDelay $STTR
+						} Else {
+							$STT = New-ScheduledTaskTrigger -Daily -AT $STTA
+						}
+					}
+					Weekly {$STT = New-ScheduledTaskTrigger -Weekly -AT $STTA -DaysOfWeek $STTDW}
+					AtLogon {$STT = New-ScheduledTaskTrigger -AtLogOn}
+					AtStartup {$STT = New-ScheduledTaskTrigger -AtStartup}
+				}
+				$action = New-ScheduledTaskAction -Execute 'Powershell.exe' -Argument ('-NoProfile -WindowStyle Hidden -EncodedCommand "' + $EAction + '"')
+				Register-ScheduledTask -Action $action -Trigger $STT -TaskName $Job.Name -Description ("Created by: " +  $MyInvocation.MyCommand.Name + " Script Version: " + $ScriptVersion + " XML Version: " + $ConfigFile.Config.Company.Version) -TaskPath "\Microsoft\Windows\PowerShell\ScheduledJobs"
 			}
 		}
 	}
@@ -2875,9 +3078,9 @@ If ($ConfigFile.Config.WindowsSettings.CleanTempOnStart -eq "true" -or $ConfigFi
 #Recording Version of script
 write-host " "
 if ($ConfigFile.Config.Company.ScriptVersionValue -and $ConfigFile.Config.Company.ScriptXMLVersionValue -and $ConfigFile.Config.Company.Version -and $ConfigFile.Config.Company.ScriptKey -and $ConfigFile.Config.Company.ScriptDateValue) {
-	write-host ("Recording " + $ConfigFile.Config.Company.ScriptVersionValue + ": " + $ScriptVersion + " in " + $ScriptVersionKey + " Key.") -foregroundcolor "Green"
+	write-host ("Recording " + $ConfigFile.Config.Company.ScriptVersionValue + ": " + $ScriptVersion + " in " + $ConfigFile.Config.Company.ScriptVersionValue + " Key.") -foregroundcolor "Green"
 	Set-Reg ("HKLM:\Software\" + $ConfigFile.Config.Company.ScriptKey) $ConfigFile.Config.Company.ScriptVersionValue  $ScriptVersion "String"
-	write-host ("Recording " + $ConfigFile.Config.Company.ScriptXMLVersionValue + ": " + $ScriptVersion + " in " + $ConfigFile.Config.Company.Version + " Key.") -foregroundcolor "Green"
+	write-host ("Recording " + $ConfigFile.Config.Company.ScriptXMLVersionValue + ": " + $ConfigFile.Config.Company.Version + " in " + $ConfigFile.Config.Company.ScriptXMLVersionValue + " Key.") -foregroundcolor "Green"
 	Set-Reg ("HKLM:\Software\" + $ConfigFile.Config.Company.ScriptKey) $ConfigFile.Config.Company.ScriptXMLVersionValue  $ConfigFile.Config.Company.Version "String"
 	Set-Reg ("HKLM:\Software\" + $ConfigFile.Config.Company.ScriptKey) $ConfigFile.Config.Company.ScriptDateValue  (Get-Date -format yyyyMMdd) "String"
 }
