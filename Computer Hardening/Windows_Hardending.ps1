@@ -24,7 +24,7 @@
 	Password that goes with useranme for network configureation share.
 .PARAMETER ActiveUser
 	User that will Actively logon to the computer every day. 
-.PARAMETER Manager
+.PARAMETER Managers
 	Enable relaxation of policies for Managers.
 .PARAMETER Store
 	Enables more locked down of users and creates store Local Windows accounts.
@@ -37,7 +37,7 @@
 .PARAMETER AllowClientTLS1
 	Enables Computer to go to TLS 1.0 sites.
 .PARAMETER NoOEMInfo
-	Keeps from reseting the OEM Info.	
+	Keeps from reseting the OEM Info.
 .PARAMETER OEMInfoAddSerial
 	Added Serial number to the System Preferences.
 .PARAMETER NoBgInfo
@@ -53,27 +53,33 @@
 .NOTES
  Author: Paul Fuller
  Changes:
-    * Version 3.00.00 - Switch to XML Config
+ 	* Version 3.00.00 - Switch to XML Config
 	* Version 3.00.01 - Fixed Cipher issue where powershell could not handle "/"
 	* Version 3.00.02 - Fixed VM Detection
 	* Version 3.00.03 - Fixed Setting A Binary Registry key.
 	* Version 3.00.04 - Use "Get-CimInstance" when avalible if not default to "Get-WmiObject". 
-						Also use Regex to detect Manager and Store PC's. 
-						Added AddressFilter to the Firewall to better control remote connections. 
-						Moved contol of ScheduledJob to xml; also if ScheduledJob is not avalible use ScheduledTask.
-						Fixed Issue with locking down Default user.
-						Using SID to find local profile.
-						Disable WiFi by default; use -Wifi to enable Wifi.
-						Updated RemoveFCTID Shortcut.
-	* Version 3.00.05 -	Fixed Bug with AllowClientTLS1 switch. Updated Get-MachineType.  	
-						Added more debugging to Deny files.
-						Added Get-envValueFromString Function to handle powershell $env: varibles from XML.
-	* Version 3.00.06 -	Cleaned up messages when Deny file does not exist.
-						Cleaned up usage of -UserOnly
-						Create new if user exists and the profiles does not.
-						Apply certain keys only to Default User.
-						Fixed Password generation bug.
-						Fixed bug where account was not enabled when trying to recoreate user profile.
+			    Also use Regex to detect Manager and Store PC's. 
+			    Added AddressFilter to the Firewall to better control remote connections. 
+			    Moved contol of ScheduledJob to xml; also if ScheduledJob is not avalible use ScheduledTask.
+			    Fixed Issue with locking down Default user.
+			    Using SID to find local profile.
+			    Disable WiFi by default; use -Wifi to enable Wifi.
+			    Updated RemoveFCTID Shortcut.
+	* Version 3.00.05 - Fixed Bug with AllowClientTLS1 switch. Updated Get-MachineType.  	
+			    Added more debugging to Deny files.
+			    Added Get-envValueFromString Function to handle PowerShell $env: variables from XML.
+	* Version 3.00.06 - Cleaned up messages when Deny file does not exist.
+			    Cleaned up usage of -UserOnly
+			    Create new if user exists and the profiles does not.
+			    Apply certain keys only to Default User.
+			    Fixed Password generation bug.
+			    Fixed bug where account was not enabled when trying to recreate user profile.
+	* Version 3.00.07 - Fixed "Import-StartLayout: Access to the path"
+			    Fixed Active User bug.
+	* Version 3.00.08 -  Reset Startmenu layout on Windows 10 1809+.
+	* Version 3.00.09 - Hide errors for Start Menu 1809 reset.
+	* Version 3.00.10 - Updated name of log file. Added function to install fonts. Import Security Template INI
+	* Version 3.00.11 - Updated info for Taskmenu layout. Clear old StartMenu layout.
 	#>
 #Requires -Version 5.1 -PSEdition Desktop
 #############################################################################
@@ -85,7 +91,7 @@ PARAM (
 	[string]$LICache	  		= $null,
 	[string]$RemoteFiles  		= (Split-Path -Parent -Path $MyInvocation.MyCommand.Definition),
 	[String]$User		    	= $null,
-	[String]$Password	    	= $null,
+	[String]$			= $null,
 	[String]$ActiveUser	    	= $null,
 	[string]$StartLayoutXML		= $null,
 	[String]$BackgroundFolder 	= $null,
@@ -115,9 +121,9 @@ If (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 #############################################################################
 #region User Variables
 #############################################################################
-$ScriptVersion = "3.0.6"
+$ScriptVersion = "3.0.11"
 $LogFile = ("\Logs\" + `
-		   $MyInvocation.MyCommand.Name + "_" + `
+		   ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
 		   $env:computername + "_" + `
 		   (Get-Date -format yyyyMMdd-hhmm) + ".log")
 $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -239,8 +245,10 @@ If (-Not $ActiveUser) {
 	If ( $ActiveAN -notin ([int]$ConfigFile.Config.Company.UserRangeStart)..([int]$ConfigFile.Config.Company.UserRangeEnd) ) {
 		$ActiveAN = ([int]$ConfigFile.Config.Company.UserRangeStart)
 	}
-	$ActiveUser = ($ConfigFile.Config.Company.UserBaseName + $ActiveAN)
-	Write-Host ('Active User: ' + $ActiveUser)
+	If ($Store) {
+		$ActiveUser = ($ConfigFile.Config.Company.UserBaseName + $ActiveAN)
+		Write-Host ('Active User: ' + $ActiveUser)
+	}
 }
 #Find if Managers Computer
 If ($Manager -eq $false -and $env:computername -match ($configfile.Config.Company.ManagerComputernameRegEx)) {
@@ -784,21 +792,25 @@ function Get-envValueFromString {
         # String to Enumerate
         $Path
 	)
-	[Array]$PathArray = $null
-	If ($Path -match '\$env:') {
-		#Loop though and test for var
-		Foreach ($Folder in ($Path.Split("\"))) {
-			If ($Folder -match '\$env:') {
+    [Array]$PathArray = $null
+    #cleanup brackets in input
+    If ($Path -match "{" -or $Path -match "}") {
+        $Path = $Path -replace "{","" -replace "}",""
+    }
+    If ($Path -match '\$env:') {
+        #Loop though and test for var
+        Foreach ($Folder in ($Path.Split("\"))) {
+            If ($Folder -match '\$env:') {
                 #Get value of matchin envoriment varible
-				$PathArray += (Get-ChildItem Env: | Where-Object{ $_.Name -eq ($Folder.Replace("`$env:",""))}).value
-			} else {
-				$PathArray += $Folder
+                $PathArray += (Get-ChildItem Env: | Where-Object{ $_.Name -eq ($Folder.Replace("`$env:",""))}).value
+            } else {
+                $PathArray += $Folder
             }
         }
         return ( $PathArray -join "\")
-	} else {
-		return $Path
-	}
+    } else {
+        return $Path
+    }
 }
 function Write-Color {
     <#
@@ -929,6 +941,143 @@ function Write-Color {
         $TextToFile = ""
         for ($i = 0; $i -lt $Text.Length; $i++) { $TextToFile += $Text[$i] }
         try { if ($LogTime) { Write-Output -InputObject "[$([datetime]::Now.ToString($DateTimeFormat))]$TextToFile" | Out-File -FilePath $LogFile -Encoding $Encoding -Append } else { Write-Output -InputObject "$TextToFile" | Out-File -FilePath $LogFile -Encoding $Encoding -Append } } catch { $_.Exception }
+    }
+}
+Function Install-Font {
+    <#
+        .Synopsis
+        Installs one or more fonts.
+        .Parameter FontPath
+        The path to the font to be installed or a directory containing fonts to install.
+        .Parameter Recurse
+        Searches for fonts to install recursively when a path to a directory is provided.
+        .Notes
+        There's no checking if a given font is already installed. This is problematic as an existing
+        installation will trigger a GUI dialogue requesting confirmation to overwrite the installed
+		font, breaking unattended and CLI-only scenarios.
+		.Source
+		 https://www.powershellgallery.com/packages/PSWinGlue/0.3.3/Content/Functions%5CInstall-Font.ps1
+    #>
+
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [String]$FontPath,
+
+        [Switch]$Recurse
+    )
+	function Get-FontName
+	{
+	<#
+	.SYNOPSIS
+		Retrieves the font name from a TTF file.
+
+	.DESCRIPTION
+		This cmdlet does not install a font. It retrieves the font name from the given file, or the provided path
+
+	.PARAMETER Path
+		Specifies the path to the font files
+
+
+	.PARAMETER Item
+		Specifies the file item object. This is provided by Get-Item or Get-ChildItem.
+
+	.EXAMPLE 
+		Get-FontName -Path $myfontPath
+
+	.EXAMPLE 
+		Get-ChildItem -Path *.ttf | Get-FontName
+
+	.NOTES
+		Micky Balladelli
+		Source: https://github.com/MickyBalladelli/Get-FontName/blob/master/Get-FontName.ps1
+	#>
+		[CmdletBinding()]
+		PARAM(
+			[Parameter(
+				ParameterSetName='Path'
+			)]
+			[String]$Path,
+	 
+			[Parameter(
+				ValueFromPipeline = $true,
+				ParameterSetName='Item'
+			)]
+			[object[]]$Item
+
+		)
+
+		BEGIN
+		{
+			Add-Type -AssemblyName System.Drawing
+			$ttfFiles = @()
+			$fontCollection = new-object System.Drawing.Text.PrivateFontCollection
+		}
+		
+		PROCESS
+		{
+			if ($Path -ne "")
+			{
+				$ttfFiles = Get-ChildItem $path
+			}
+			else
+			{
+				$ttfFiles += $Item
+			}
+
+		}
+
+		END
+		{
+			$ttfFiles | ForEach-Object {
+				$fontCollection.AddFontFile($_.fullname)
+				$fontCollection.Families[-1].Name
+			}
+		}
+	}
+    $ErrorActionPreference = 'Stop'
+    $ShellAppFontNamespace = 0x14
+	#list Fonts
+	[void] [System.Reflection.Assembly]::LoadWithPartialName("System.Drawing")
+	$objFonts = New-Object System.Drawing.Text.InstalledFontCollection
+	$colFonts = $objFonts.Families
+
+    if (Test-Path -Path $FontPath) {
+        $FontItem = Get-Item -Path $FontPath
+        if ($FontItem -is [IO.DirectoryInfo]) {
+            if ($Recurse) {
+                $Fonts = Get-ChildItem -Path $FontItem -Include ('*.fon','*.otf','*.ttc','*.ttf') -Recurse
+            } else {
+                $Fonts = Get-ChildItem -Path "$FontItem\*" -Include ('*.fon','*.otf','*.ttc','*.ttf')
+            }
+
+            if (!$Fonts) {
+                throw ('Unable to locate any fonts in provided directory: {0}' -f $FontItem.FullName)
+            }
+        } elseif ($FontItem -is [IO.FileInfo]) {
+            if ($FontItem.Extension -notin ('.fon','.otf','.ttc','.ttf')) {
+                throw ('Provided file does not appear to be a valid font: {0}' -f $FontItem.FullName)
+            }
+
+            $Fonts = $FontItem
+        } else {
+            throw ('Expected directory or file but received: {0}' -f $FontItem.GetType().Name)
+        }
+    } else {
+        throw ('Provided font path does not appear to be valid: {0}' -f $FontPath)
+    }
+
+    $ShellApp = New-Object -ComObject Shell.Application
+    $FontsFolder = $ShellApp.NameSpace($ShellAppFontNamespace)
+    foreach ($Font in $Fonts) {
+        If ((Get-FontName -Path $Font.FullName) -notin $colFonts){
+            Write-Verbose -Message ('Installing font: {0}' -f $Font.BaseName)
+            #Write-Host ('Installing font: {0}' -f (Get-FontName -Path $Font.FullName))
+            $FontsFolder.CopyHere($Font.FullName)
+        }else{
+            Write-Verbose -Message ('Skipping font: {0}' -f (Get-FontName -Path $Font.FullName))
+            #Write-Host ('Skipping font: {0}' -f (Get-FontName -Path $Font.FullName))
+        }
     }
 }
 #############################################################################
@@ -1187,6 +1336,16 @@ If ($env:username -ne "Administrator") {
 #Import Start Menu Layout
 If (-Not $UserOnly) {
 	If ([environment]::OSVersion.Version.Major -ge 10 -and (Get-Command Import-StartLayout -ErrorAction SilentlyContinue)) {
+		ForEach ($ProfileLocation in (Get-ChildItem "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" | Foreach-object { $_.GetValue("ProfileImagePath")})) {
+			#Fix "Import-StartLayout : Access to the path" issue 
+			If (Test-Path -Path ($ProfileLocation + "\AppData\Local\Microsoft\Windows\Shell\LayoutModification.xml")) {
+				Remove-Item -Force -Path ($ProfileLocation + "\AppData\Local\Microsoft\Windows\Shell\LayoutModification.xml")
+			}
+		}
+		#Fix "Import-StartLayout : Access to the path" issue Default user
+		If (Test-Path -Path ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" ).Default + "\AppData\Local\Microsoft\Windows\Shell\LayoutModification.xml")) {
+			Remove-Item -Force -Path ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" ).Default + "\AppData\Local\Microsoft\Windows\Shell\LayoutModification.xml")
+		}
 		#If no Command override use XML
 		If (-Not $StartLayoutXML) {
 			If ($Store) {
@@ -1198,6 +1357,8 @@ If (-Not $UserOnly) {
 		If (Test-Path ($LICache + "\" + $StartLayoutXML)) {
 			write-host ("Setting Taskbar and Start Menu: " + ($LICache + "\" + $StartLayoutXML))
 			Import-StartLayout -LayoutPath ($LICache + "\" + $StartLayoutXML) -MountPath ($env:systemdrive + "\") | Out-Null
+			Copy-Item -Path ($LICache + "\" + $StartLayoutXML) -Destination 'C:\Windows\OEM\TaskbarLayoutModification.xml' -Force -Confirm:$false
+			Copy-Item -Path ($LICache + "\" + $StartLayoutXML) -Destination 'C:\Recovery\AutoApply\TaskbarLayoutModification.xml' -Force -Confirm:$false
 		}
 	}
 }
@@ -1284,6 +1445,10 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 					}
 				}
 			}
+			#Reset Start Menu Windows 1809+
+			If ($StartLayoutXML) {
+				Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\Cache\DefaultAccount\*$start.tilegrid$windows.data.curatedtilecollection.tilecollection")  -Force -Recurse -ErrorAction SilentlyContinue | Out-Null
+			}
 			#File permission that would not work with default profile.
 			If ($Store) {
 				#Add AllowFolder ACL
@@ -1291,7 +1456,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 					If (-Not (Test-Path (Get-envValueFromString -Path $file))){
 						New-Item -Path (Get-envValueFromString -Path $file) -Force
 					} 
-					Write-Host ("`t`tDenying: " + (Get-envValueFromString -Path $file))
+					Write-Host ("`t`tAllowing: " + (Get-envValueFromString -Path $file))
 					$Acl = Get-Acl(Get-envValueFromString -Path $file)
 					$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "Modify", "Allow")
 					$Acl.Setaccessrule($Ar)
@@ -1329,7 +1494,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 					If (-Not (Test-Path (Get-envValueFromString -Path $file))){
 						New-Item -Path (Get-envValueFromString -Path $file) -Force
 					} 
-					Write-Host ("`t`tDenying: " + (Get-envValueFromString -Path $file))
+					Write-Host ("`t`tAllowing: " + (Get-envValueFromString -Path $file))
 					$Acl = Get-Acl (Get-envValueFromString -Path $file)
 					$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\" + $CurrentProfile), "Modify", "Allow")
 					$Acl.Setaccessrule($Ar)
@@ -1836,6 +2001,110 @@ Write-Host ("-"*[console]::BufferWidth)
 #endregion Main Set User Defaults 
 #============================================================================
 #============================================================================
+#region Import and Set Security Template INI
+#============================================================================
+If ($ConfigFile.Config.WindowsSettings.SecurityTemplateINI) {
+	Write-Host "Importing Security Template Settings ..."
+	[string[]]$InICollection = $null 
+	#First Manitory Section Unicode
+	[string]$LastSection = $null
+	ForEach ($ini in ($ConfigFile.Config.WindowsSettings.SecurityTemplateINI.ini | Where-Object {$_.Section -eq "Unicode"}) ) {
+		If ($LastSection -ne $ini.Section) {
+			#Create new Section
+			$InICollection += "[" + $ini.Section + "]"
+			If ($ini.Value) {
+				If ($ini.Data) {
+					$InICollection += $ini.Value + "=" + $ini.Data
+				}Else{
+					$InICollection += $ini.Value + "="
+				}
+			}
+			$LastSection = $ini.Section
+		}Else{
+			If ($ini.Value) {
+				If ($ini.Data) {
+					$InICollection += $ini.Value + "=" + $ini.Data
+				}Else{
+					$InICollection += $ini.Value + "="
+				}
+			}
+		}
+	}
+	#Second Manitory Section Version
+	[string]$LastSection = $null
+	ForEach ($ini in ($ConfigFile.Config.WindowsSettings.SecurityTemplateINI.ini | Where-Object {$_.Section -eq "Version"}) ) {
+		If ($LastSection -ne $ini.Section) {
+			#Create new Section
+			$InICollection += ""
+			$InICollection += "[" + $ini.Section + "]"
+			If ($ini.Value) {
+				If ($ini.Data) {
+					$InICollection += $ini.Value + "=" + $ini.Data
+				}Else{
+					$InICollection += $ini.Value + "="
+				}
+			}
+			$LastSection = $ini.Section
+		}Else{
+			If ($ini.Value) {
+				If ($ini.Data) {
+					$InICollection += $ini.Value + "=" + $ini.Data
+				}Else{
+					$InICollection += $ini.Value + "="
+				}
+			}
+		}
+	}
+	#All other Sections
+	[string]$LastSection = $null
+	ForEach ($ini in ($ConfigFile.Config.WindowsSettings.SecurityTemplateINI.ini | Where-Object {$_.Section -ne "Unicode" -and $_.Section -ne "Version"}) ) {
+		If ($LastSection -ne $ini.Section) {
+			#Create new Section
+			$InICollection += ""
+			$InICollection += "[" + $ini.Section + "]"
+			If ($ini.Value) {
+				If ($ini.Data) {
+					$InICollection += $ini.Value + "=" + $ini.Data
+				}Else{
+					If ($ini.Section -eq "File Security") {
+						$InICollection += $ini.Value
+					}Else{
+						$InICollection += $ini.Value + "="
+					}
+				}
+			}
+			$LastSection = $ini.Section
+		}Else{
+			If ($ini.Value) {
+				If ($ini.Data) {
+					$InICollection += $ini.Value + "=" + $ini.Data
+				}Else{
+					If ($ini.Section -eq "File Security") {
+						$InICollection += $ini.Value
+					}Else{
+						$InICollection += $ini.Value + "="
+					}
+				}
+			}
+		}
+	}
+	#create file
+	If (Test-Path -Path ($env:TMP + "\WHST.inf")) {
+		Remove-Item -Force -Confirm:$false -Path ($env:TMP + "\WHST.inf")
+	}
+	If (Test-Path -Path ($env:TMP + "\WHST.sdb")) {
+		Remove-Item -Force -Confirm:$false -Path ($env:TMP + "\WHST.sdb")
+	}
+	$InICollection | Out-File -FilePath ($env:TMP + "\WHST.inf") 
+	#import file
+	If (Test-Path -Path ($env:TMP + "\WHST.inf")) {
+		Secedit /import /db ($env:TMP + "\WHST.sdb") /cfg ($env:TMP + "\WHST.inf") /quiet
+	}
+}
+#============================================================================
+#endregion Import and Set Security Template INI
+#============================================================================
+#============================================================================
 #region Main Local Machine
 #============================================================================
 If (-Not $UserOnly) {
@@ -2068,8 +2337,10 @@ If (-Not $UserOnly) {
 			Disable-ComputerRestore -Drive "C:\"
 		}
 		If ($ConfigFile.Config.WindowsSettings.VM.NewNetworkWindowOff -eq 'true' -or $ConfigFile.Config.WindowsSettings.VM.NewNetworkWindowOff -eq 'yes') {
-			Write-Host "Disabling New Network Dialog..." -ForegroundColor Green
-			New-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Network' -Name 'NewNetworkWindowOff' | Out-Null
+			If (-Not (Test-path -path 'HKLM:\SYSTEM\CurrentControlSet\Control\Network\NewNetworkWindowOff')) {			
+				Write-Host "Disabling New Network Dialog..." -ForegroundColor Green
+				New-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Network' -Name 'NewNetworkWindowOff' | Out-Null
+			}
 		}
 	}	
 	#endregion VM
@@ -2088,6 +2359,17 @@ If (-Not $UserOnly) {
 		powercfg -SetActive SCHEME_CURRENT	
 	}
 	#endregion Powerbutton
+	#regon Install Font
+	Foreach ($key in ($ConfigFile.Config.WindowsSettings.Fonts.Path)) {
+		If (Test-Path -Path (Get-envValueFromString -Path $key.'#text')) {
+			If ($key.Recurse -match "true") {
+				Install-Font -FontPath (Get-envValueFromString -Path $key.'#text') -Recurse
+			}else {
+				Install-Font -FontPath (Get-envValueFromString -Path $key.'#text')
+			}
+		}
+	}
+	#endregon Install Font
 }
 #============================================================================
 #endregion Main Local Machine
