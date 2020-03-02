@@ -23,7 +23,7 @@ Changes:
 	Version 1.0.4 - Update Logs to Create sub-folder called Logs for log files 
 	Version 1.0.5 - Update to run multible Commands. Also Allow a program to be copied to remote computer
 	Version 1.0.6 - Fixed Progress bars and other tweaks.
-    Version 1.0.7 - Run remote command as admin 
+        Version 1.0.7 - Run remote command as admin 
 #>
 
 PARAM (
