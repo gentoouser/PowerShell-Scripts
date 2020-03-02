@@ -1,26 +1,17 @@
 <# 
 .SYNOPSIS
-    Name: Execute_Remote_Commands.ps1
+    Name: Execute_Command_Remote.ps1
     Runs commands on remote computer using PSExec using CSV
 
 .DESCRIPTION
   Runs commands on remote computer using PSExec using CSV
 
 
-.PARAMETER Computers
-.PARAMETER ComputerList
-.PARAMETER PSExecPath
-.PARAMETER Commands
-.PARAMETER ALLCSV
-.PARAMETER csv_Name
-.PARAMETER csv_IP
-.PARAMETER User
-.PARAMETER Password
-.PARAMETER Copy
+.PARAMETER SourceFiles
 
 
 .EXAMPLE
-   & Execute_Remote_Commands.ps1 -Command "shutdown -r -t 00" -computer 127.0.0.1
+   & Execute_Command_Remote.ps1 -Command "shutdown -r -t 00" -computer 127.0.0.1
 
 .NOTES
  Author: Paul Fuller
@@ -32,6 +23,7 @@ Changes:
 	Version 1.0.4 - Update Logs to Create sub-folder called Logs for log files 
 	Version 1.0.5 - Update to run multible Commands. Also Allow a program to be copied to remote computer
 	Version 1.0.6 - Fixed Progress bars and other tweaks.
+    Version 1.0.7 - Run remote command as admin 
 #>
 
 PARAM (
@@ -42,18 +34,18 @@ PARAM (
 	[switch]$ALLCSV 	  = $true,
 	[String]$csv_Name     = "Device name",
 	[String]$csv_IP       = "IP address",
-	[String]$User	= 'administrator',
-	[String]$Password = 'Development1',
+	[String]$User,
+	[String]$Password ,
 	[boolean]$Copy
 )
 
-$ScriptVersion = "1.0.6"
+$ScriptVersion = "1.0.7"
 
 #############################################################################
 #region User Variables
 #############################################################################
 $LogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + `
-		   $MyInvocation.MyCommand.Name + "_" + `
+		   ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
 		   (Get-Date -format yyyyMMdd-hhmm) + ".log")
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $count = 1
@@ -223,15 +215,15 @@ Function Start-PSExec()
 		Write-Host ("`t`t Running program: " + $Command)
 		if ( $User -and $Pass) {
 			If ($Copy) {
-				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -c -v -i -accepteula -nobanner -u " + $User + " -p " + $Pass + " " + $Command) -PassThru -NoNewWindow
+				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -h -c -v -i -accepteula -nobanner -u " + $User + " -p " + $Pass + " " + $Command) -PassThru -NoNewWindow
 			} else {
-				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -i -accepteula -nobanner -u " + $User + " -p " + $Pass + " " + $Command) -PassThru -NoNewWindow
+				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -h -i -accepteula -nobanner -u " + $User + " -p " + $Pass + " " + $Command) -PassThru -NoNewWindow
 			}
 		}else{
 			If ($Copy) {
-				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -c -v -i -accepteula -nobanner " + $Command) -PassThru -NoNewWindow
+				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -h -c -v -i -accepteula -nobanner " + $Command) -PassThru -NoNewWindow
 			} else {
-				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -i -accepteula -nobanner " + $Command) -PassThru -NoNewWindow
+				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -h -i -accepteula -nobanner " + $Command) -PassThru -NoNewWindow
 			}
 		}
 		try 
