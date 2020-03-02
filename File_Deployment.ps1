@@ -81,39 +81,51 @@
 	Version 1.6.04 - Using PSDrive to mapp remote computer UNC. *** Beta
 	Version 1.6.05 - Fixed issue where Copy-Item  was not using correct variable. 
 	Version 1.6.06 - Changed how logging is outputted to reduce errors. Updated better status. 
-
+	Version 1.6.07 - Fix false error showing up. Clean up progress bars
+	Version 1.6.08 - Fix Log writing errors
+	Version 1.6.09 - Fixed issue With Computers Parameter.
+	Version 1.6.10 - Changed Commands to and array to allow running multible commands. 
+	Version 1.6.11 - Change how commands are ran.
+	Version 1.6.12 - Added logic to detect csv files. Added -Timeout Param
+	Version 1.6.13 - Aded logic to create destination folder. Also move where commands are ran to run only on hosts that are up.
+	Version 1.6.14 - Cleaned up output.
+	Version 1.6.15 - Fixed but about creating folder when credentials are not preset
 #>
 
 PARAM (
     [Parameter(Mandatory=$true)][Array]$SourceFiles,
     [Parameter(Mandatory=$true)][string]$Destination, 
 	[Array]$Computers, 
+	[Array]$Commands,	
     [string]$ComputerList,    
     [string]$PSKillPath 	= ".\pskill.exe",    
     [string]$PSServicePath  = ".\PsService.exe",   
 	[string]$PSExecPath     = ".\PsExec.exe",	
-	[string]$Command,
     [string]$Program,    
-    [string]$Service,    
-	[switch]$VerboseLog 	= $false,
-	[switch]$ErrorCSV 		= $false,
+	[string]$Service,    
+	[String]$csv_Name       = "Device name",
+	[String]$csv_IP         = "IP address",
+	[String]$User		    = $null,
+	[String]$Password	    = $null,
+	[int]$Timeout 			= 30,
+	[switch]$CommandForeachFile,
+	[switch]$VerboseLog,
+	[switch]$ErrorCSV,
 	[switch]$ALLCSV 		= $true,
 	[switch]$UseDate 		= $true,
-	[switch]$Copy 			= $true,
-	[String]$User		    = $null,
-	[String]$Password	    = $null
+	[switch]$Copy 			= $true
+
 	
 )
-$ScriptVersion = "1.6.06"
+$ScriptVersion = "1.6.15"
 #############################################################################
 #region User Variables
 #############################################################################
 $SourceFileObjects=@{}
 $LogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + `
-		   $MyInvocation.MyCommand.Name + "_" + `
+		   ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
 		   (Split-Path -leaf -Path $Destination ) + "_" + `
 		   (Get-Date -format yyyyMMdd-hhmm) + ".log")
-$maximumRuntimeSeconds = 30
 $count = 1
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $GoodIPs=@()
@@ -145,14 +157,76 @@ If ([string]::IsNullOrEmpty($ComputerList)) {
 		throw " -Computers or -ComputerList is required."
 	}Else{
 		# $Computers is already set.
-		If (($Computers.GetType().BaseType).Name -eq "String") {
-			$Computers = $Computers.split(" ")
-		}
+		# If (($Computers.GetType().BaseType).Name -eq "String") {
+		# 	$Computers = $Computers.split(" ")
+		# } else {
+
+		# }
 	}
 }Else{
-	[Array]$Computers += Get-Content -Path $ComputerList
+	If (($ComputerList.Substring($ComputerList.Length - 3)).ToLower() -eq "csv" ) {
+		If ($ComputerList) {
+			If ( Test-Path $ComputerList ) {
+				$ObjCSV = Import-Csv  $ComputerList
+				$outItems = New-Object System.Collections.Generic.List[System.Object]
+				Foreach ($objline in $ObjCSV) {				
+					#Clean up IP 
+					#Write-Host ("Cleaning IP: " + $objline.$csv_IP)
+					If (!([string]::IsNullOrEmpty($objline.$csv_IP))) {
+						$arrTempIP = ($objline.$csv_IP).Split(".")
+						If ($arrTempIP.Count -eq 4) {
+							$TempIP = ([String]([int16]$arrTempIP[0]) + "." + [String]([int16]$arrTempIP[1]) + "." + [String]([int16]$arrTempIP[2]) + "." + [String]([int16]$arrTempIP[3]))
+						} else {
+							$TempIP = $objline.$csv_IP
+						}
+					}
+					#Testing for duplicate host entries
+					If (!($outItems.Contains($objline.$csv_Name))) {		
+						$addresslist = $null
+						try {
+								$addresslist = [Net.DNS]::GetHostEntry($objline.$csv_Name)
+								$addresslist = $addresslist.addresslist.ipaddresstostring
+							} catch {
+								$addresslist = $null
+							}
+							
+						If (!($addresslist)) {
+							$IP = $null
+							$IP = [ipaddress]$TempIP
+							If ($IP.IPAddressToString) {
+								Write-Verbose ("`t Computer does not exists in DNS: " + $objline.$csv_Name + " using IP: " + $IP.IPAddressToString) 
+								If ($ALLCSV) {
+									If (Test-Path -Path ($LogFile + "_all.csv")) {
+										#"Date,Computer,Command,Status"
+										Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $Command + ",Does not exists in DNS")
+									}
+								}
+								$outItems.Add($IP.IPAddressToString)
+							}
+						}else{
+							#Add to list
+							$outItems.Add($objline.$csv_Name)
+						}
+					} else {
+						 Write-Warning ("Duplicate entry " + $objline.$csv_Name + " with IP " + $TempIP)
+						If ($ALLCSV) {
+							If (Test-Path -Path ($LogFile + "_all.csv")) {
+								#"Date,Computer,Command,Status"
+								Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $Command + ",Duplicate Entry")
+							}
+						}
+					}
+				}
+				$Computers += $outItems.ToArray()	
+				$ObjCSV=$null
+			}
+		}
+	}Else{
+		[Array]$Computers += Get-Content -Path $ComputerList
+	}
 }
 #Getting Source File Info.
+
 Foreach ($SourceFile in $SourceFiles) {
 	#Check $SourceFile
 	If (Test-Path $SourceFile -PathType Leaf) {
@@ -229,7 +303,7 @@ Function FormatElapsedTime($ts)
     }
     return $elapsedTime
 }
-Function Stop-PSService($Computer,$Service,$PSServicePath,$PSKillPath,$maximumRuntimeSeconds) 
+Function Stop-PSService($Computer,$Service,$PSServicePath,$PSKillPath,$Timeout) 
 {
 	#Stops and then kills service on remote computer
 	If ($Service) {
@@ -237,7 +311,7 @@ Function Stop-PSService($Computer,$Service,$PSServicePath,$PSKillPath,$maximumRu
 		$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "stop",'"' + $Service + '"') -PassThru -NoNewWindow
 		try 
 		{
-			$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+			$process | Wait-Process -Timeout $Timeout -ErrorAction Stop 
 			If ($process.ExitCode -le 0) {
 				Write-Host ("`t`tPSService successfully completed within timeout.")
 			}else{
@@ -254,7 +328,7 @@ Function Stop-PSService($Computer,$Service,$PSServicePath,$PSKillPath,$maximumRu
 				$process = Start-Process -FilePath $PSKillPath -ArgumentList $("-t -nobanner \\" + $Computer + " " + $Program) -PassThru -NoNewWindow
 				try 
 				{
-					$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+					$process | Wait-Process -Timeout $Timeout -ErrorAction Stop 
 					If ($process.ExitCode -le 0) {
 						Write-Host ("`t`tPSKill successfully completed within timeout.")
 					}else{
@@ -270,14 +344,14 @@ Function Stop-PSService($Computer,$Service,$PSServicePath,$PSKillPath,$maximumRu
 		} 
 	}
 }
-Function Start-PSService($Computer,$Service,$PSServicePath,$maximumRuntimeSeconds)
+Function Start-PSService($Computer,$Service,$PSServicePath,$Timeout)
 {
 	#Starts service on remote computer
 	If ($Service) {
 		Write-Host ("`t`t Stopping Service: " + $Service)
 		$process = Start-Process -FilePath $PSServicePath -ArgumentList @("\\" + $Computer, "start",'"' + $Service + '"') -PassThru -NoNewWindow
 
-		$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+		$process | Wait-Process -Timeout $Timeout -ErrorAction Stop 
 		If ($process.ExitCode -le 0) {
 			Write-Host ("`t`tPSService Start successfully completed within timeout.")
 		}else{
@@ -287,7 +361,7 @@ Function Start-PSService($Computer,$Service,$PSServicePath,$maximumRuntimeSecond
 		}
 	}
 }
-Function Kill-PSProgram($Computer,$Program,$PSKillPath,$maximumRuntimeSeconds)
+Function Kill-PSProgram($Computer,$Program,$PSKillPath,$Timeout)
 {
 	#Kills Process on remote computer
 	If ($Program) {
@@ -295,7 +369,7 @@ Function Kill-PSProgram($Computer,$Program,$PSKillPath,$maximumRuntimeSeconds)
 		$process = Start-Process -FilePath $PSKillPath -ArgumentList $("-t -nobanner \\" + $Computer + " " + $Program) -PassThru -NoNewWindow
 		try 
 		{
-			$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+			$process | Wait-Process -Timeout $Timeout -ErrorAction Stop 
 			If ($process.ExitCode -le 0) {
 				Write-Host ("`t`tPSKill successfully completed within timeout.")
 			}else{
@@ -315,28 +389,37 @@ Function Start-PSProgram()
 		[Parameter(Mandatory=$true)][string]$Computer,
 		[Parameter(Mandatory=$true)][string]$Command,
 		[Parameter(Mandatory=$true)][string]$PSExecPath,
-		[Parameter(Mandatory=$false)]$maximumRuntimeSeconds = 30,
+		[Parameter(Mandatory=$false)]$Timeout = 30,
 		[Parameter(Mandatory=$false)][string]$User,
-		[Parameter(Mandatory=$false)][string]$Pass
+		[Parameter(Mandatory=$false)][string]$Pass,
+		[Parameter(Mandatory=$false)][bool]$Copy
 		)
 
 	If ($Command) {
 		Write-Host ("`t`t Running program: " + $Command)
 		if ( $User -and $Pass) {
-			$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -i -accepteula -nobanner -u " + $User + " -p " + $Pass + " " + $Command) -PassThru -NoNewWindow
+			If ($Copy) {
+				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -c -v -i -accepteula -nobanner -u " + $User + " -p " + $Pass + " " + $Command) -PassThru -NoNewWindow
+			} else {
+				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -i -accepteula -nobanner -u " + $User + " -p " + $Pass + " " + $Command) -PassThru -NoNewWindow
+			}
 		}else{
-			$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -i -accepteula -nobanner " + $Command) -PassThru -NoNewWindow
+			If ($Copy) {
+				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -c -v -i -accepteula -nobanner " + $Command) -PassThru -NoNewWindow
+			} else {
+				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -i -accepteula -nobanner " + $Command) -PassThru -NoNewWindow
+			}
 		}
 		try 
 		{
-			$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+			$process | Wait-Process -Timeout $Timeout -ErrorAction Stop 
 			If ($process.ExitCode -le 0) {
 				Write-Host ("`t`t PSExec successfully completed within timeout.")
 				If ($ALLCSV) {
 					If (Test-Path -Path ($LogFile + "_all.csv")) {
 						#"Date,Computer,Source File,Source File Version,Source file Date,Destination File,Destination File Version,Destination File Date,Status")
 						# Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + ",,,,,,," + $Command + ":success")
-						((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + ",,,,,,," + $Command + ":success") | Out-File -Append -FilePath ($LogFile + "_all.csv")
+						((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + ",,,,,,," + $Command + ": success") | Out-File -Append -FilePath ($LogFile + "_all.csv")
 					}
 				}
 			}else{
@@ -345,7 +428,7 @@ Function Start-PSProgram()
 					If (Test-Path -Path ($LogFile + "_all.csv")) {
 						#"Date,Computer,Command,Status"
 						# Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + ",,,,,,," + $Command + ":Failed Error:" + $process.ExitCode)
-						((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + ",,,,,,," + $Command + ":Failed Error:" + $process.ExitCode) | Out-File -Append -FilePath ($LogFile + "_all.csv")
+						((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + ",,,,,,," + $Command + ": Failed Error: " + $process.ExitCode) | Out-File -Append -FilePath ($LogFile + "_all.csv")
 					}
 				}
 				continue
@@ -367,6 +450,44 @@ Function Start-PSProgram()
 	}
 	
 }
+function New-RemoteFolder {
+	param (
+		[Parameter(Mandatory=$true)]$Destination,
+		[Parameter(Mandatory=$true)]$Credential
+	)
+	#clean up
+	if (Test-Path ("PSRemoteFolder:\" + (Split-Path -Leaf -Path $Destination)) -ErrorAction SilentlyContinue) {
+		Remove-PSDrive -Name "PSRemoteFolder" -Force | Out-Null
+	} 
+    If (Split-Path -Parent -Path $Destination) {
+        write-verbose ("Mapping Parent folder: " + (Split-Path -Parent -Path $Destination) )
+        New-PSDrive -Name "PSRemoteFolder" -PSProvider "FileSystem" -Root (Split-Path -Parent -Path $Destination) -Credential $Credential -ErrorAction SilentlyContinue | Out-Null
+        if (Test-Path "PSRemoteFolder:\"  -ErrorAction SilentlyContinue) {
+            write-verbose "Creating new folder: $Destination"
+            New-Item -ItemType "directory" -Path ("PSRemoteFolder:\" + (Split-Path -Leaf -Path $Destination)) -Force -ErrorAction SilentlyContinue| Out-Null
+        } else {
+			New-RemoteFolder -Destination (Split-Path -Parent -Path $Destination) -Credential $Credential
+			#Create child folder
+			New-PSDrive -Name "PSRemoteFolder" -PSProvider "FileSystem" -Root (Split-Path -Parent -Path $Destination) -Credential $Credential -ErrorAction SilentlyContinue | Out-Null
+			if (Test-Path "PSRemoteFolder:\"  -ErrorAction SilentlyContinue) {
+				write-verbose "Creating new folder: $Destination"
+				New-Item -ItemType "directory" -Path ("PSRemoteFolder:\" + (Split-Path -Leaf -Path $Destination)) -Force -ErrorAction SilentlyContinue| Out-Null
+			} else {
+				write-verbose "Creating new folder: $Destination"
+			}
+        }			
+        #clean up
+        if (Test-Path ("PSRemoteFolder:\" + (Split-Path -Leaf -Path $Destination)) -ErrorAction SilentlyContinue) {
+            Remove-PSDrive -Name "PSRemoteFolder" -Force | Out-Null
+        } else {
+            Write-Warning ("Error creating folder: " + $Destination) 
+        }
+    } else {
+        #Parent folder is root
+        Write-verbose ("Error accessing folder: " + $Destination) 
+    }
+
+}
 #############################################################################
 #endregion Functions
 #############################################################################
@@ -380,19 +501,19 @@ Foreach ($Computer in $Computers) {
 	$UpdatesNeeded = $false
 	$MissingFiles = $false
 	$ComputerError = $false
-	Write-Progress -Activity ("Resolving Computer Name") -Status ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer) -percentComplete ($count / $Computers.count*100)
-	Write-Host ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer)
+	Write-Progress -ID 0 -Activity ("Resolving Computer Name") -Status ("( " + $count.ToString().PadLeft($Computers.count.ToString().Length - $count.ToString().Length) + "\" + $Computers.count + ") Computer: " + $Computer) -percentComplete ($count / $Computers.count*100)
+	Write-Host ("( " + $count.ToString().PadLeft($Computers.count.ToString().Length - $count.ToString().Length) + "\" + $Computers.count + ") Computer: " + $Computer)
 	#test for good IPs from host
 	$GoodIPs=@()
 	If ([bool]($Computer -as [ipaddress])) {
-		If (Test-Connection -Cn $Computer -BufferSize 16 -Count 1 -ea 0 -quiet) {
+		If (Test-Connection -ComputerName $Computer -BufferSize 16 -Count 1 -Quiet) {
 			Write-Host ("`t Is up with IP: " + $Computer)
 			$GoodIPs += $Computer
 		}
 	}else{
 		Foreach ($IP in ((([Net.DNS]::GetHostEntry($Computer)).addresslist.ipaddresstostring))) {
 			If ($IP -ne "127.0.0.1" -and $IP -ne "::1") {
-				If (Test-Connection -Cn $IP -BufferSize 16 -Count 1 -ea 0 -quiet) {
+				If (Test-Connection -ComputerName $IP -BufferSize 16 -Count 1 -Quiet) {
 					Write-Host ("`t Responds with IP: " + $IP)
 					$GoodIPs += $IP
 				}
@@ -407,21 +528,34 @@ Foreach ($Computer in $Computers) {
 				Remove-PSDrive -Name "PSRemote"
 				If ($LASTEXITCODE) {
 					#Remove Existing Mapping 
-					Remove-PSDrive -Name "PSRemote" -Force
+					if (Test-Path "PSRemote:\" -ErrorAction SilentlyContinue) {
+						Remove-PSDrive -Name "PSRemote" -Force
+					}
 				}
 			}
-			#Map remote UNC using PSDrive to allow for Credential to be mapped.
+
+			#Map remote UNC using PSDrive to allow for Credential to be mapped.			
 			If ($Credential) {
-				New-PSDrive -Name "PSRemote" -PSProvider "FileSystem" -Root ("\\" +  $IP + "\" + $Destination.replace(":","$")) -Credential $Credential | out-null
+				#Create Directory if it does not exsit
+				If (-Not (Test-Path -Path ("\\" +  $IP + "\" + $Destination.replace(":","$")) -Credential $Credential -PathType Container)) {
+					New-RemoteFolder -Destination ("\\" +  $IP + "\" + $Destination.replace(":","$")) -Credential $Credential
+				} 
+				New-PSDrive -Name "PSRemote" -PSProvider "FileSystem" -Root ("\\" +  $IP + "\" + $Destination.replace(":","$")) -Credential $Credential -ErrorAction SilentlyContinue | out-null
 			}else{
-				New-PSDrive -Name "PSRemote" -PSProvider "FileSystem" -Root ("\\" +  $IP + "\" + $Destination.replace(":","$")) | out-null
+				#Create Directory if it does not exsit
+				If (-Not (Test-Path -Path ("\\" +  $IP + "\" + $Destination.replace(":","$")) -PathType Container)) {
+					New-Item -Path ("\\" +  $IP + "\" + $Destination.replace(":","$")) -ItemType "directory" | Out-Null
+				} 
+				New-PSDrive -Name "PSRemote" -PSProvider "FileSystem" -Root ("\\" +  $IP + "\" + $Destination.replace(":","$")) -ErrorAction SilentlyContinue | out-null
 			}		
 			#Test Destination Path
 			If (Test-Path "PSRemote:\"){
+				$fCount = 1
+				Write-Progress -ID 0 -Activity ("Copying Files") -Status ("( " + $count.ToString().PadLeft($Computers.count.ToString().Length - $count.ToString().Length) + "\" + $Computers.count + ") Computer: " + $Computer) -percentComplete ($count / $Computers.count*100)
 				Foreach ($SourceFileInfo in $SourceFileObjects.GetEnumerator()) {
 					$DestinationFileInfo = $null
 					$NewName = $null
-					Write-Progress -Activity ("Testing File: " + (Split-Path -leaf -Path $SourceFileInfo.value.name )) -Status ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer + " IP: " + $IP + " Runtime: " + (FormatElapsedTime($sw.Elapsed))) -percentComplete ($count / $Computers.count*100)
+					Write-Progress -Id 1 -Activity ("Testing File") -Status ("( " + $fCount.ToString().PadLeft($SourceFileObjects.count.ToString().Length - $fcount.ToString().Length) + "\" + $SourceFileObjects.count + ") File: " + $SourceFileInfo.value.name ) -percentComplete ($FCount / ($SourceFileObjects.count)*100)
 					#Test for File.
 					If (Test-Path $("PSRemote:\" + $SourceFileInfo.value.name)) {
 						Write-Host ("`t Found at destination: " + $("\\" +  $IP + "\" + $Destination.replace(":","$") + "\" + $SourceFileInfo.value.name))
@@ -431,15 +565,15 @@ Foreach ($Computer in $Computers) {
 							#Copy newer version
 							#Term Service
 							If ($Service) {
-								Write-Progress -Activity ("Test if we need to Stop: " +$Service) -Status ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer + " IP: " + $IP + " Runtime: " + (FormatElapsedTime($sw.Elapsed))) -percentComplete ($count / $Computers.count*100)
+								Write-Progress -Id 1 -Activity ("Test if we need to Stop: " +$Service) -Status ("( " + $fCount.ToString().PadLeft($SourceFileObjects.count.ToString().Length - $fcount.ToString().Length)  + "\" + $SourceFileObjects.count + ") File: " + $SourceFileInfo.value.name ) -percentComplete ($FCount / ($SourceFileObjects.count)*100)
 								Write-Host ("`t Test if we need to Stop: " + $Service)
-								Stop-PSService $IP $Service $PSServicePath $PSKillPath $maximumRuntimeSeconds
+								Stop-PSService $IP $Service $PSServicePath $PSKillPath $Timeout
 							}
 							#Term Program
 							If ($Program) {
-								Write-Progress -Activity ("Test if we need to kill: " + $Program) -Status ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer + " IP: " + $IP + " Runtime: " + (FormatElapsedTime($sw.Elapsed))) -percentComplete ($count / $Computers.count*100)
+								Write-Progress -Id 1 -Activity ("Test if we need to kill: " + $Program) -Status ("( " + $fCount.ToString().PadLeft($SourceFileObjects.count.ToString().Length - $fcount.ToString().Length)  + "\" + $SourceFileObjects.count + ") File: " + $SourceFileInfo.value.name ) -percentComplete ($FCount / ($SourceFileObjects.count)*100)
 								Write-Host ("`t Test if we need to kill: " + $Program)
-								Kill-PSProgram $IP $Program $PSKillPath $maximumRuntimeSeconds
+								Kill-PSProgram $IP $Program $PSKillPath $Timeout
 							}
 							If ($Copy) {
 								#Backup Old 
@@ -466,14 +600,20 @@ Foreach ($Computer in $Computers) {
 							}
 							$UpdatesNeeded = $true
 							#Start Service
-							Start-PSService $IP $Service $PSServicePath $maximumRuntimeSeconds
-							If ($Command) {
-								#Write-Host ("`t`t Running $Command on  $Computer.") -foregroundcolor green
-								if ( $User -and $Password) {
-									Start-PSProgram $Computer $Command $PSExecPath $maximumRuntimeSeconds $User $Password
-								}else{
-									Start-PSProgram $Computer $Command $PSExecPath $maximumRuntimeSeconds
-								}	
+							Start-PSService $IP $Service $PSServicePath $Timeout
+							If ($Commands -and $CommandForeachFile) {
+								$cCount = 1
+								Foreach ($Command in $Commands) {
+									If ($Command) {
+										Write-Progress -Id 2 -Activity ("Running Commands") -Status ("( " + $cCount.ToString().PadLeft($Commands.count.ToString().Length - $cCount.ToString().Length)  + "\" + $Commands.count + ") Command: " + $Command ) -percentComplete ($cCount / ($Commands.count)*100)
+										#Write-Host ("`t`t Running $Command on  $Computer.") -foregroundcolor green
+										if ( $User -and $Password) {
+											Start-PSProgram -Computer $Computer -Command $Command -PSExecPath $PSExecPath -Timeout $Timeout -User $User -Pass $Password
+										}else{
+											Start-PSProgram -Computer $Computer -Command $Command -PSExecPath $PSExecPath -Timeout $Timeout
+										}	
+									}
+								}
 							}
 							
 						}Else{
@@ -481,15 +621,15 @@ Foreach ($Computer in $Computers) {
 								If ($SourceFileInfo.value.LastWriteTime.ToString("yyyyMMddHHmmssffff") -gt $DestinationFileInfo.LastWriteTime.ToString("yyyyMMddHHmmssffff")) {
 									#Term Service
 									If ($Service) {
-										Write-Progress -Activity ("Test if we need to Stop: " +$Service) -Status ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer + " IP: " + $IP + " Runtime: " + (FormatElapsedTime($sw.Elapsed))) -percentComplete ($count / $Computers.count*100)
+										Write-Progress -Id 1 -Activity ("Test if we need to Stop: " +$Service)  -Status ("( " + $fCount.ToString().PadLeft($SourceFileObjects.count.ToString().Length - $fcount.ToString().Length)  + "\" + $SourceFileObjects.count + ") File: " + $SourceFileInfo.value.name ) -percentComplete ($FCount / ($SourceFileObjects.count)*100)
 										Write-Host ("`t Test if we need to Stop: " + $Service)
-										Stop-PSService $IP $Service $PSServicePath $PSKillPath $maximumRuntimeSeconds
+										Stop-PSService $IP $Service $PSServicePath $PSKillPath $Timeout
 									}
 									#Term Program
 									If ($Program) {
-										Write-Progress -Activity ("Test if we need to kill: " + $Program) -Status ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer + " IP: " + $IP + " Runtime: " + (FormatElapsedTime($sw.Elapsed))) -percentComplete ($count / $Computers.count*100)
+										Write-Progress -Id 1 -Activity ("Test if we need to kill: " + $Program)  -Status ("( " + $fCount.ToString().PadLeft($SourceFileObjects.count.ToString().Length - $fcount.ToString().Length)  + "\" + $SourceFileObjects.count + ") File: " + $SourceFileInfo.value.name ) -percentComplete ($FCount / ($SourceFileObjects.count)*100)
 										Write-Host ("`t Test if we need to kill: " + $Program)
-										Kill-PSProgram $IP $Program $PSKillPath $maximumRuntimeSeconds
+										Kill-PSProgram $IP $Program $PSKillPath $Timeout
 									}
 									If ($Copy) {
 										#Backup Old
@@ -506,22 +646,30 @@ Foreach ($Computer in $Computers) {
 									}
 									If ($ErrorCSV) {
 										#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Error"
-										Add-Content ($LogFile + "_errors.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is newer by date")
+										# Add-Content ($LogFile + "_errors.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is newer by date")
+										((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is newer by date") | Out-File -Append -FilePath ($LogFile + "_errors.csv")
 									}
 									If ($AllCSV) {
 										#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Status"
-										Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is newer by date; copying file")
+										# Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is newer by date; copying file")
+										((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is newer by date; copying file") | Out-File -Append -FilePath ($LogFile + "_errors.csv")
 									}
 									$UpdatesNeeded = $true
 									#Start Service
-									Start-PSService $IP $Service $PSServicePath $maximumRuntimeSeconds
-									If ($Command) {
-										#Write-Host ("`t`t Running $Command on  $Computer.") -foregroundcolor green
-										if ( $User -and $Password) {
-											Start-PSProgram $Computer $Command $PSExecPath $maximumRuntimeSeconds $User $Password
-										}else{
-											Start-PSProgram $Computer $Command $PSExecPath $maximumRuntimeSeconds
-										}	
+									Start-PSService $IP $Service $PSServicePath $Timeout
+									If ($Commands -and $CommandForeachFile) {
+										$cCount = 1
+										Foreach ($Command in $Commands) {
+											If ($Command) {
+												Write-Progress -Id 2 -Activity ("Running Commands") -Status ("( " + $cCount.ToString().PadLeft($Commands.count.ToString().Length - $cCount.ToString().Length)  + "\" + $Commands.count + ") Command: " + $Command ) -percentComplete ($cCount / ($Commands.count)*100)
+												#Write-Host ("`t`t Running $Command on  $Computer.") -foregroundcolor green
+												if ( $User -and $Password) {
+													Start-PSProgram -Computer $Computer -Command $Command -PSExecPath $PSExecPath -Timeout $Timeout -User $User -Pass $Password
+												}else{
+													Start-PSProgram -Computer $Computer -Command $Command -PSExecPath $PSExecPath -Timeout $Timeout
+												}	
+											}
+										}
 									}
 								}else{
 									# Older version or same version
@@ -534,14 +682,20 @@ Foreach ($Computer in $Computers) {
 										# Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is Same or older by date")
 										((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is Same or older by date") | Out-File -Append -FilePath ($LogFile + "_all.csv")
 									}
-                                    If ($Command) {
-								        #Write-Host ("`t`t Running $Command on  $Computer.") -foregroundcolor green
-								        if ( $User -and $Password) {
-									        Start-PSProgram $Computer $Command $PSExecPath $maximumRuntimeSeconds $User $Password
-								        }else{
-									        Start-PSProgram $Computer $Command $PSExecPath $maximumRuntimeSeconds
-                                        }
-								    }	
+									If ($Commands -and $CommandForeachFile) {
+										$cCount = 1
+										Foreach ($Command in $Commands) {
+											If ($Command) {
+												Write-Progress -Id 2 -Activity ("Running Commands") -Status ("( " + $cCount.ToString().PadLeft($Commands.count.ToString().Length - $cCount.ToString().Length)  + "\" + $Commands.count + ") Command: " + $Command ) -percentComplete ($cCount / ($Commands.count)*100)
+												#Write-Host ("`t`t Running $Command on  $Computer.") -foregroundcolor green
+												if ( $User -and $Password) {
+													Start-PSProgram -Computer $Computer -Command $Command -PSExecPath $PSExecPath -Timeout $Timeout -User $User -Pass $Password
+												}else{
+													Start-PSProgram -Computer $Computer -Command $Command -PSExecPath $PSExecPath -Timeout $Timeout
+												}	
+											}
+										}
+									}	
 							
 								}
 							}else{
@@ -555,30 +709,34 @@ Foreach ($Computer in $Computers) {
 									# Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is Same or older by version")
 									((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + "," + $DestinationFileInfo.name + "," + $DestinationFileInfo.VersionInfo.ProductVersion + "," + $DestinationFileInfo.LastWriteTime + ",Source file is Same or older by version") | Out-File -Append -FilePath ($LogFile + "_all.csv")
 								}
-                                If ($Command) {
-								    #Write-Host ("`t`t Running $Command on  $Computer.") -foregroundcolor green
-								    if ( $User -and $Password) {
-									    Start-PSProgram $Computer $Command $PSExecPath $maximumRuntimeSeconds $User $Password
-								    }else{
-									    Start-PSProgram $Computer $Command $PSExecPath $maximumRuntimeSeconds
-                                    }
+								If ($Commands -and $CommandForeachFile) {
+									$cCount = 1
+									Foreach ($Command in $Commands) {
+										If ($Command) {
+											Write-Progress -Id 2 -Activity ("Running Commands") -Status ("( " + $cCount.ToString().PadLeft($Commands.count.ToString().Length - $cCount.ToString().Length)  + "\" + $Commands.count + ") Command: " + $Command ) -percentComplete ($cCount / ($Commands.count)*100)
+											#Write-Host ("`t`t Running $Command on  $Computer.") -foregroundcolor green
+											if ( $User -and $Password) {
+												Start-PSProgram -Computer $Computer -Command $Command -PSExecPath $PSExecPath -Timeout $Timeout -User $User -Pass $Password
+											}else{
+												Start-PSProgram -Computer $Computer -Command $Command -PSExecPath $PSExecPath -Timeout $Timeout
+											}	
+										}
+									}
 								}
-
 							}
 						}
 					}Else{
 						#Copy; Missing
 						#Term Service
 						If ($Service) {
-							Write-Progress -Activity ("Test if we need to Stop: " +$Service) -Status ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer + " IP: " + $IP + " Runtime: " + (FormatElapsedTime($sw.Elapsed))) -percentComplete ($count / $Computers.count*100)
+							Write-Progress -ID 1 -Activity ("Test if we need to Stop: " +$Service)  -Status ("( " + $fCount + "\" + $SourceFileObjects.count + ") File: " + $SourceFileInfo.value.name ) -percentComplete ($FCount / ($SourceFileObjects.count)*100)
 							Write-Host ("`t Test if we need to Stop: " + $Service)
-							Stop-PSService $IP $Service $PSServicePath $PSKillPath $maximumRuntimeSeconds
+							Stop-PSService $IP $Service $PSServicePath $PSKillPath $Timeout
 						}
 						#Term Program
 						If ($Program) {
-							Write-Progress -Activity ("Test if we need to kill: " + $Program) -Status ("( " + $count + "\" + $Computers.count + ") Computer: " + $Computer + " IP: " + $IP + " Runtime: " + (FormatElapsedTime($sw.Elapsed))) -percentComplete ($count / $Computers.count*100)
-							Write-Host ("`t Test if we need to kill: " + $Program)
-							Kill-PSProgram $IP $Program $PSKillPath $maximumRuntimeSeconds
+							Write-Progress -ID 1 -Activity ("Test if we need to kill: " + $Program)  -Status ("( " + $fCount + "\" + $SourceFileObjects.count + ") File: " + $SourceFileInfo.value.name ) -percentComplete ($FCount / ($SourceFileObjects.count)*100)
+							Kill-PSProgram $IP $Program $PSKillPath $Timeout
 						}
 						If ($Copy) {
 							Write-Host ("`t`t Copying missing " + $SourceFileInfo.value.name + " to destination: " + $("\\" +  $IP + "\" + $Destination.replace(":","$"))) -foregroundcolor green
@@ -596,35 +754,56 @@ Foreach ($Computer in $Computers) {
 							((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + ",,,,Destination File is missing; copying file") | Out-File -Append -FilePath ($LogFile + "_all.csv")
 						}
 						#Start Service
-						Start-PSService $IP $Service $PSServicePath $maximumRuntimeSeconds
+						Start-PSService $IP $Service $PSServicePath $Timeout
 						#Run Program
-						If ($Command) {
-							#Write-Host ("`t`t Running $Command on  $Computer.") -foregroundcolor green
-							if ( $User -and $Password) {
-								Start-PSProgram $Computer $Command $PSExecPath $maximumRuntimeSeconds $User $Password
-							}else{
-								Start-PSProgram $Computer $Command $PSExecPath $maximumRuntimeSeconds
-							}	
+						$cCount = 1
+						If ($Commands -and $CommandForeachFile) {
+							Foreach ($Command in $Commands) {
+								If ($Command) {
+									Write-Progress -Id 2 -Activity ("Running Commands") -Status ("( " + $cCount.ToString().PadLeft($Commands.count.ToString().Length - $cCount.ToString().Length)  + "\" + $Commands.count + ") Command: " + $Command ) -percentComplete ($cCount / ($Commands.count)*100)
+									#Write-Host ("`t`t Running $Command on  $Computer.") -foregroundcolor green
+									if ( $User -and $Password) {
+										Start-PSProgram -Computer $Computer -Command $Command -PSExecPath $PSExecPath -Timeout $Timeout -User $User -Pass $Password
+									}else{
+										Start-PSProgram -Computer $Computer -Command $Command -PSExecPath $PSExecPath -Timeout $Timeout
+									}		
+								}
+							}
 						}
 					}
+					$fCount ++
 				}
-			}else {
-			Write-Warning ("Unable to access admin are of: " + "\\" +  $IP + "\" + $Destination.replace(":","$"))
-			If ($ErrorCSV) {
-				#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Error"
-				# Add-Content ($LogFile + "_errors.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + ",,,,,,,"+ "Unable to access admin are of: " + "\\" +  $IP + "\" + $Destination.replace(":","$"))
-				 ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + ",,,,,,,"+ "Unable to access admin are of: " + "\\" +  $IP + "\" + $Destination.replace(":","$")) | Out-File -Append -FilePath ($LogFile + "_errors.csv")
+				#Run Program at the end
+				If ($Commands -and $CommandForeachFile -eq $false) {
+					$cCount = 1
+					Foreach ($Command in $Commands) {
+						If ($Command) {
+							Write-Progress -Id 2 -Activity ("Running Commands") -Status ("( " + $cCount.ToString().PadLeft($Commands.count.ToString().Length - $cCount.ToString().Length)  + "\" + $Commands.count + ") Command: " + $Command ) -percentComplete ($cCount / ($Commands.count)*100)
+							#Write-Host ("`t`t Running $Command on  $Computer.") -foregroundcolor green
+							if ( $User -and $Password) {
+								Start-PSProgram -Computer $Computer -Command $Command -PSExecPath $PSExecPath -Timeout $Timeout -User $User -Pass $Password
+							}else{
+								Start-PSProgram -Computer $Computer -Command $Command -PSExecPath $PSExecPath -Timeout $Timeout
+							}		
+						}
+					}
+				}	
+			} else {
+				Write-Warning ("Unable to access admin share of: " + "\\" +  $IP + "\" + $Destination.replace(":","$"))
+				If ($ErrorCSV) {
+					#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Error"
+					# Add-Content ($LogFile + "_errors.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + ",,,,,,,"+ "Unable to access admin are of: " + "\\" +  $IP + "\" + $Destination.replace(":","$"))
+					((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + ",,,,,,,"+ "Unable to access admin are of: " + "\\" +  $IP + "\" + $Destination.replace(":","$")) | Out-File -Append -FilePath ($LogFile + "_errors.csv")
+				}
+				If ($AllCSV) {
+					#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Status"
+					# Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + ",,,," + "Unable to access admin are of: " + "\\" +  $IP + "\" + $Destination.replace(":","$"))
+					((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + ",,,," + "Unable to access admin are of: " + "\\" +  $IP + "\" + $Destination.replace(":","$")) | Out-File -Append -FilePath ($LogFile + "_all.csv")
+				}
 			}
-			If ($AllCSV) {
-				#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Status"
-				# Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + ",,,," + "Unable to access admin are of: " + "\\" +  $IP + "\" + $Destination.replace(":","$"))
-				((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + ",,,," + "Unable to access admin are of: " + "\\" +  $IP + "\" + $Destination.replace(":","$")) | Out-File -Append -FilePath ($LogFile + "_all.csv")
-			}
-			
-			}
-		}
+		}		
 	}Else{
-		#Error missing folder or computer.
+		#Error computer.
 		Write-Warning -Message ("Error: $Computer has NO working IP Addresses")
 		If (Test-Connection -ComputerName $Computer -Quiet){ 
 			Write-Host ("`t`t Host is up") -ForegroundColor green
@@ -639,7 +818,7 @@ Foreach ($Computer in $Computers) {
 		If ($AllCSV) {
 			#"Date,Computer,Source File, Source File Version, Source file Date,Destination File,Destination File Version,Destination File Date,Status"
 			# Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + ",,,,Cannot access host")
-			Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + ",,,,Cannot access host") | Out-File -Append -FilePath ($LogFile + "_all.csv")
+			((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $SourceFileInfo.value.name + "," + $SourceFileInfo.value.VersionInfo.ProductVersion + "," + $SourceFileInfo.value.LastWriteTime + ",,,,Cannot access host") | Out-File -Append -FilePath ($LogFile + "_all.csv")
 		}
 		$ComputerError = $true
 	}
@@ -655,8 +834,7 @@ Foreach ($Computer in $Computers) {
 	# IF ($ComputerError) {Add-Content ($LogFile + "_ErrorComputers.txt") ("$OldComputer")}
 	IF ($ComputerError) { ("$OldComputer")  | Out-File -Append -FilePath ($LogFile + "_ErrorComputers.txt")}
 	#Increase Progress counter
-	$count++
-	
+	$count++	
 }
 
 $sw.Stop()
