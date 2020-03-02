@@ -13,7 +13,7 @@
   https://gallery.technet.microsoft.com/scriptcenter/PowerShell-Hardware-f99336f6
 
 .NOTES
-  Version 1.2
+  Version 1.3
 
   Updated:      01-06-2018        - Replaced Get-WmiObject cmdlet with Get-CimInstance
                                   - Added Serial Number Information
@@ -25,6 +25,9 @@
                                   - Added Software
                                   - Added Installed Roles
                                   - Added Installed Features
+                09/24/2019        - Added DNS Server
+                                  - Added DNS Search Suffix
+                01/27/2020        - Added Certificates Expiration info for Listening connections.
   Release Date: 10-02-2018
    
   Author: Stephanos Constantinou
@@ -83,7 +86,101 @@ function FormatElapsedTime($ts) {
   }
   return $elapsedTime
 }
+function Get-CheckUrl ()
+{
+    [CmdletBinding()]	
+    param(
+        [parameter(Mandatory=$true)][string]$url,
+        [int]$timeoutMilliseconds = 10000,
+        [int]$MinimumCertAgeDays = 90
+    )
+    #source: https://stackoverflow.com/questions/39253055/powershell-script-to-get-certificate-expiry-for-a-website-remotely-for-multiple
+    [string]$details = $null
+    #Ignore Certs
+    #https://blog.ukotic.net/2017/08/15/could-not-establish-trust-relationship-for-the-ssltls-invoke-webrequest/
+    if (-not ([System.Management.Automation.PSTypeName]'ServerCertificateValidationCallback').Type)
+    {
+    $certCallback = @"
+using System;
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public class ServerCertificateValidationCallback
+{
+  public static void Ignore()
+  {
+      if(ServicePointManager.ServerCertificateValidationCallback ==null)
+      {
+          ServicePointManager.ServerCertificateValidationCallback += 
+              delegate
+              (
+                  Object obj, 
+                  X509Certificate certificate, 
+                  X509Chain chain, 
+                  SslPolicyErrors errors
+              )
+              {
+                  return true;
+              };
+      }
+  }
+}
+"@
+    Add-Type $certCallback
+    }
+    [ServerCertificateValidationCallback]::Ignore()
+    #disabling the cert validation check. This is what makes this whole thing work with invalid certs...
+    #[Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
 
+    #Start Request
+    $req = [Net.HttpWebRequest]::Create($url)
+    # $req.ServerCertificateValidationCallback = [ServerCertificateValidationCallback]::Ignore()
+    $req.Timeout = $timeoutMilliseconds
+    $req.AllowAutoRedirect = $false
+    try 
+    {
+        # GET WEB RESPONSE
+        $res = $req.GetResponse().Dispose()
+        if ($null -eq $req.ServicePoint.Certificate) {$details = "No certificate in use for connection"}
+    } 
+    catch 
+    {
+        $details = "Exception while checking URL $url`: $_ "
+    }
+    if ( $null -eq $details -or $details -eq "")
+    {
+        [datetime]$expiration = [System.DateTime]::Parse($req.ServicePoint.Certificate.GetExpirationDateString())
+        [int]$certExpiresIn = ($expiration - $(get-date)).Days
+        $certName = $req.ServicePoint.Certificate.GetName()
+        $certPublicKeyString = $req.ServicePoint.Certificate.GetPublicKeyString()
+        $certSerialNumber = $req.ServicePoint.Certificate.GetSerialNumberString()
+        $certThumbprint = $req.ServicePoint.Certificate.GetCertHashString()
+        $certEffectiveDate = $req.ServicePoint.Certificate.GetEffectiveDateString()
+        $certIssuer = $req.ServicePoint.Certificate.GetIssuerName()
+        if ($certExpiresIn -gt $minimumCertAgeDays) {
+            $returnData += new-object psobject -property  @{Url = $url; CheckResult = "OK"; CertExpiresInDays = [int]$certExpiresIn; ExpirationOn = [datetime]$expiration; CertName = $certname; Details = $details}
+        }else{
+            $details = ""
+            $details += "Cert for site $url expires in $certExpiresIn days [on $expiration]`n"
+            $details += "Threshold is $minimumCertAgeDays days. Check details:`n"
+            $details += "Cert name: $certName`n"
+            $details += "Cert public key: $certPublicKeyString`n"
+            $details += "Cert serial number: $certSerialNumber`n"
+            $details += "Cert thumbprint: $certThumbprint`n"
+            $details += "Cert effective date: $certEffectiveDate`n"
+            $details += "Cert issuer: $certIssuer"
+            $returnData += new-object psobject -property  @{Url = $url; CheckResult = "WARNING"; CertExpiresInDays = [int]$certExpiresIn; ExpirationOn = [datetime]$expiration; CertName = $certname; Details = $details}
+        }
+        Remove-Variable expiration
+        Remove-Variable certExpiresIn
+    }else{
+        $returnData += new-object psobject -property  @{Url = $url; CheckResult = "ERROR"; CertExpiresInDays = $null; ExpirationOn = $null; CertName = $certname; Details = $details}
+    }
+
+    Remove-Variable req
+    #Remove-Variable res
+    return $returnData
+}
 
 If (-Not [string]::IsNullOrEmpty($LogFile)) {
   If (-Not( Test-Path (Split-Path -Path $LogFile -Parent))) {
@@ -143,14 +240,19 @@ Foreach ($ComputerName in $AllComputersNames) {
 
   If ($Connection -eq "True") {
     Write-Host ("`tHost is up")
-    $ArrComputerIP= (Get-WmiObject -Class Win32_NetworkAdapterConfiguration -ComputerName $ComputerName -Filter 'IPEnabled = True' -ErrorAction SilentlyContinue | Where-object {$_.IPaddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1"} | Select-Object IPAddress,Description)
+    $ArrComputerIP= (Get-CimInstance -Class Win32_NetworkAdapterConfiguration -ComputerName $ComputerName -Filter 'IPEnabled = True' -ErrorAction SilentlyContinue | Where-object {$_.IPaddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1"} | Select-Object IPAddress,Description,DNSServerSearchOrder)
 
     If ($ArrComputerIP) {    
-      If (($ArrComputerIP | Measure-Object).count -gt 1) {
-        $ComputerIP = ('"' + (($ArrComputerIP | ForEach-Object { ($_.IPAddress + " - " + $_.Description) -join " "}) -Join ",") + '"')
-      } else {
+      # If (($ArrComputerIP | Measure-Object).count -gt 1) {
+      #   $ComputerIP = ('"' + (($ArrComputerIP | ForEach-Object { ($_.IPAddress + " - " + $_.Description) -join " "}) -Join ",") + '"')
+      #   $ComputerDNS = ('"' + (($ArrComputerIP | ForEach-Object { ($_.DNSServerSearchOrder + " - " + $_.Description) -join " "}) -Join ",") + '"')
+      #   $ComputerDNSSuffix = ('"' + (($ArrComputerIP | ForEach-Object { ($_.DNSDomainSuffixSearchOrder + " - " + $_.Description) -join " "}) -Join ",") + '"')
+      # } else {
         $ComputerIP = ('"' + ($ArrComputerIP | ForEach-Object { ($_.IPAddress + " - " + $_.Description) -join " "})  + '"')
-      }
+        $ComputerDNS = ('"' + ($ArrComputerIP | ForEach-Object { ($_.DNSServerSearchOrder + " - " + $_.Description) -join " "})  + '"')
+        $ComputerDNSSuffix = ('"' + ($ArrComputerIP | ForEach-Object { ($_.DNSDomainSuffixSearchOrder + " - " + $_.Description) -join " "})  + '"')
+      # }
+
       Write-Host ("`t`tHost WMI reachable with IPs: " + $ComputerIP)
       $ComputerHW = Get-CimInstance -Class Win32_ComputerSystem -ComputerName $ComputerName |
           Select-Object Manufacturer,Model,NumberOfProcessors,@{Expression={($_.TotalPhysicalMemory / 1GB).ToString("#.##")};Label="TotalPhysicalMemoryGB"}
@@ -198,7 +300,10 @@ Foreach ($ComputerName in $AllComputersNames) {
       } else {
         $ComputerSoftware = ('"' + ($ArrComputerSoftware.Name + " - " + $ArrComputerSoftware.Version)  + '"')
       }
+      
       $ComputerInfo | Add-Member -MemberType NoteProperty -Name "ComputerIPs" -Value $ComputerIP -Force
+      $ComputerInfo | Add-Member -MemberType NoteProperty -Name "DNS" -Value $ComputerDNS -Force
+      $ComputerInfo | Add-Member -MemberType NoteProperty -Name "DNSSuffix" -Value $ComputerDNSSuffix -Force
       $ComputerInfo | Add-Member -MemberType NoteProperty -Name "Manufacturer" -Value "$ComputerInfoManufacturer" -Force
       $ComputerInfo | Add-Member -MemberType NoteProperty -Name "Model" -Value "$ComputerInfoModel" -Force
       $ComputerInfo | Add-Member -MemberType NoteProperty -Name "Serial" -Value "$ComputerSerial" -Force
@@ -222,9 +327,23 @@ Foreach ($ComputerName in $AllComputersNames) {
         $ComputerInfo | Add-Member -MemberType NoteProperty -Name "WindowsRoles" -Value "" -Force
       }
       $ComputerInfo | Add-Member -MemberType NoteProperty -Name "Software" -Value "$ComputerSoftware" -Force
+      #SSL Certs
+      $NetConnections = Get-NetTCPConnection -CimSession $ComputerName -State Listen | Where-Object {$_.RemoteAddress -ne "::1" -and $_.RemoteAddress -ne "127.0.0.1" -and $_.LocalAddress -ne "127.0.0.1" -and $_.LocalAddress -ne "::1" }
+      $WebCerts = @()
+      Foreach ($NetConnection in $NetConnections) {
+          $WebCerts += Get-CheckUrl -Url ("Https://" + $ComputerName + ":"  + $NetConnection.LocalPort)
+      }
+      If (( $WebCerts | Measure-Object).count -gt 1) {
+          $StrWebCerts = ('"' + (( $WebCerts | Where-Object {$null -ne $_.ExpirationOn} | ForEach-Object {($_.Url + " - " + $_.ExpirationOn)})  -join ", ") + '"')
+      } else {
+          $StrWebCerts = ('"' + ( $WebCerts.Url + " - " +  $WebCerts.ExpirationOn)  + '"')
+      }
+      $ComputerInfo | Add-Member -MemberType NoteProperty -Name "SSLCertsExpiration" -Value "$StrWebCerts" -Force
     } else {
       Write-Host ("`t`tHost WMI Not Reachable for computer: " + $ComputerName) -ForegroundColor Red
       $ComputerInfo | Add-Member -MemberType NoteProperty -Name "ComputerIPs" -Value ""
+      $ComputerInfo | Add-Member -MemberType NoteProperty -Name "DNSs" -Value ""
+      $ComputerInfo | Add-Member -MemberType NoteProperty -Name "DNSSuffixs" -Value ""
       $ComputerInfo | Add-Member -MemberType NoteProperty -Name "Manufacturer" -Value "" -Force
       $ComputerInfo | Add-Member -MemberType NoteProperty -Name "Model" -Value "" -Force
       $ComputerInfo | Add-Member -MemberType NoteProperty -Name "Serial" -Value "" -Force
@@ -244,6 +363,8 @@ Foreach ($ComputerName in $AllComputersNames) {
       $ComputerInfo | Add-Member -MemberType NoteProperty -Name "WindowsFeatures" -Value "" -Force
       $ComputerInfo | Add-Member -MemberType NoteProperty -Name "WindowsRoles" -Value ""-Force
       $ComputerInfo | Add-Member -MemberType NoteProperty -Name "Software" -Value "" -Force
+      $ComputerInfo | Add-Member -MemberType NoteProperty -Name "SSLCertsExpiration" -Value "" -Force
+
     }
   }
 
