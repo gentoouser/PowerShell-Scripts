@@ -46,6 +46,11 @@
 	Enables services needed for WiFi
 .PARAMETER IPv6
 	Keeps IPv6 enabled; otherwise IPv6 will be disabled. 
+.PARAMETER OneDrive
+	Keeps OneDrive enabled; otherwise OneDrive will be disabled. 
+.PARAMETER SkipMSStore
+	Keeps Microsoft Store untouched; all non-whitelisted apps will be removed. 
+
 .EXAMPLE
    & .\Windows_Hardending.ps1 -AllowClientTLS1
 .EXAMPLE
@@ -53,33 +58,37 @@
 .NOTES
  Author: Paul Fuller
  Changes:
- 	* Version 3.00.00 - Switch to XML Config
+    * Version 3.00.00 - Switch to XML Config
 	* Version 3.00.01 - Fixed Cipher issue where powershell could not handle "/"
 	* Version 3.00.02 - Fixed VM Detection
 	* Version 3.00.03 - Fixed Setting A Binary Registry key.
 	* Version 3.00.04 - Use "Get-CimInstance" when avalible if not default to "Get-WmiObject". 
-			    Also use Regex to detect Manager and Store PC's. 
-			    Added AddressFilter to the Firewall to better control remote connections. 
-			    Moved contol of ScheduledJob to xml; also if ScheduledJob is not avalible use ScheduledTask.
-			    Fixed Issue with locking down Default user.
-			    Using SID to find local profile.
-			    Disable WiFi by default; use -Wifi to enable Wifi.
-			    Updated RemoveFCTID Shortcut.
-	* Version 3.00.05 - Fixed Bug with AllowClientTLS1 switch. Updated Get-MachineType.  	
-			    Added more debugging to Deny files.
-			    Added Get-envValueFromString Function to handle PowerShell $env: variables from XML.
-	* Version 3.00.06 - Cleaned up messages when Deny file does not exist.
-			    Cleaned up usage of -UserOnly
-			    Create new if user exists and the profiles does not.
-			    Apply certain keys only to Default User.
-			    Fixed Password generation bug.
-			    Fixed bug where account was not enabled when trying to recreate user profile.
-	* Version 3.00.07 - Fixed "Import-StartLayout: Access to the path"
-			    Fixed Active User bug.
-	* Version 3.00.08 -  Reset Startmenu layout on Windows 10 1809+.
+						Also use Regex to detect Manager and Store PC's. 
+						Added AddressFilter to the Firewall to better control remote connections. 
+						Moved contol of ScheduledJob to xml; also if ScheduledJob is not avalible use ScheduledTask.
+						Fixed Issue with locking down Default user.
+						Using SID to find local profile.
+						Disable WiFi by default; use -Wifi to enable Wifi.
+						Updated RemoveFCTID Shortcut.
+	* Version 3.00.05 -	Fixed Bug with AllowClientTLS1 switch. Updated Get-MachineType.  	
+						Added more debugging to Deny files.
+						Added Get-envValueFromString Function to handle PowerShell $env: variables from XML.
+	* Version 3.00.06 -	Cleaned up messages when Deny file does not exist.
+						Cleaned up usage of -UserOnly
+						Create new if user exists and the profiles does not.
+						Apply certain keys only to Default User.
+						Fixed Password generation bug.
+						Fixed bug where account was not enabled when trying to recreate user profile.
+	* Version 3.00.07 -	Fixed "Import-StartLayout: Access to the path"
+						Fixed Active User bug.
+	* Version 3.00.08 -	Reset Startmenu layout on Windows 10 1809+.
 	* Version 3.00.09 - Hide errors for Start Menu 1809 reset.
 	* Version 3.00.10 - Updated name of log file. Added function to install fonts. Import Security Template INI
-	* Version 3.00.11 - Updated info for Taskmenu layout. Clear old StartMenu layout.
+	* Version 3.00.11 - Updated info for Taskmenu layout. Clear old StartMenu layout. Fixed Font function error.
+	* Version 3.00.12 - OneDrive Switch. Enabled different screensaver settings for VMs. ScreenSaver Parameter. 
+	* Version 3.00.13 - Updated Certificates to be folders instead of files. 
+	* Version 3.00.14 - Fixed BGinfo cleanup. Added switch SkipMSStore to ignore remove MS Store apps.
+	* Version 3.00.15 - Added Detection of Laptops and set different Logon Cache count for Laptops.
 	#>
 #Requires -Version 5.1 -PSEdition Desktop
 #############################################################################
@@ -91,10 +100,11 @@ PARAM (
 	[string]$LICache	  		= $null,
 	[string]$RemoteFiles  		= (Split-Path -Parent -Path $MyInvocation.MyCommand.Definition),
 	[String]$User		    	= $null,
-	[String]$			= $null,
+	[String]$Password	    	= $null,
 	[String]$ActiveUser	    	= $null,
 	[string]$StartLayoutXML		= $null,
 	[String]$BackgroundFolder 	= $null,
+	[String]$ScreenSaver 		= $null,
 	[switch]$Manager	    	= $false,
 	[switch]$Store	  	  		= $false,
 	[switch]$LockedDown	  		= $false,
@@ -105,7 +115,9 @@ PARAM (
 	[switch]$NoOEMInfo			= $false,
 	[switch]$OEMInfoAddSerial	= $false,
 	[switch]$NoBgInfo			= $false,
-	[switch]$IPv6				= $false
+	[switch]$IPv6				= $false,
+	[switch]$OneDrive			= $false,
+	[switch]$SkipMSStore		= $false
 )
 #############################################################################
 #endregion Parameter Config
@@ -121,13 +133,14 @@ If (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 #############################################################################
 #region User Variables
 #############################################################################
-$ScriptVersion = "3.0.11"
+$ScriptVersion = "3.0.15"
 $LogFile = ("\Logs\" + `
 		   ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
 		   $env:computername + "_" + `
 		   (Get-Date -format yyyyMMdd-hhmm) + ".log")
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $IsVM = $False
+$IsLaptop = $False
 $HKEY = "HKU\DEFAULTUSER"
 $UsersProfileFolder = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' -Name "ProfilesDirectory").ProfilesDirectory
 $ProfileList =  New-Object System.Collections.ArrayList
@@ -181,6 +194,13 @@ If (-Not $LICache) {
 	Write-Host ("Local Cache: " + $LICache)
 }
 #endregion Update Local Cache variable
+#region set ScreenSaver
+#Override XML ScreenSaver settings
+If ($ScreenSaver) {
+	$ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver = $ScreenSaver
+	$ConfigFile.Config.WindowsSettings.VM.ScreenSave.ScreenSaver = $ScreenSaver
+}
+#endregion set ScreenSaver
 #region Start logging.
 If (-Not [string]::IsNullOrEmpty($LICache + $LogFile)) {
 	If (-Not( Test-Path (Split-Path -Path ($LICache + $LogFile) -Parent))) {
@@ -1052,19 +1072,19 @@ Function Install-Font {
             }
 
             if (!$Fonts) {
-                throw ('Unable to locate any fonts in provided directory: {0}' -f $FontItem.FullName)
+                Write-Warning ('Unable to locate any fonts in provided directory: {0}' -f $FontItem.FullName)
             }
         } elseif ($FontItem -is [IO.FileInfo]) {
             if ($FontItem.Extension -notin ('.fon','.otf','.ttc','.ttf')) {
-                throw ('Provided file does not appear to be a valid font: {0}' -f $FontItem.FullName)
+                Write-Warning ('Provided file does not appear to be a valid font: {0}' -f $FontItem.FullName)
             }
 
             $Fonts = $FontItem
         } else {
-            throw ('Expected directory or file but received: {0}' -f $FontItem.GetType().Name)
+			Write-Warning ('Expected directory or file but received: {0}' -f $FontItem.GetType().Name)
         }
     } else {
-        throw ('Provided font path does not appear to be valid: {0}' -f $FontPath)
+        Write-Warning ('Provided font path does not appear to be valid: {0}' -f $FontPath)
     }
 
     $ShellApp = New-Object -ComObject Shell.Application
@@ -1099,6 +1119,17 @@ If ((Get-MachineType).type -eq "VM") {
 	Write-Host ("Running in on Physical Hardware")
 }
 #endregion VM Test
+#region Test for Laptop
+If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
+	If (Get-CimInstance -Class win32_systemenclosure | Where-Object { $_.chassistypes -eq 9 -or $_.chassistypes -eq 10 -or $_.chassistypes -eq 14}) {
+		$isLaptop = $true
+	}
+} Else {
+	If (Get-WmiObject -Class win32_systemenclosure | Where-Object { $_.chassistypes -eq 9 -or $_.chassistypes -eq 10 -or $_.chassistypes -eq 14}) {
+		$isLaptop = $true
+	}
+} 
+#endregion Test for Laptop
 #region Local Cache Update
 #Skip updating local cache
 If (-Not $NoCacheUpdate) {
@@ -1357,6 +1388,12 @@ If (-Not $UserOnly) {
 		If (Test-Path ($LICache + "\" + $StartLayoutXML)) {
 			write-host ("Setting Taskbar and Start Menu: " + ($LICache + "\" + $StartLayoutXML))
 			Import-StartLayout -LayoutPath ($LICache + "\" + $StartLayoutXML) -MountPath ($env:systemdrive + "\") | Out-Null
+			If (-Not (Test-Path -Path ($env:systemroot + "\OEM\"))) {
+				New-item -ItemType Directory -Force -Path ($env:systemroot + "\OEM\") 
+			}
+			If (-Not (Test-Path -Path ($env:systemdrive + "\Recovery\AutoApply\"))) {
+				New-item -ItemType Directory -Force -Path ($env:systemdrive + "\Recovery\AutoApply\") 
+			}
 			Copy-Item -Path ($LICache + "\" + $StartLayoutXML) -Destination 'C:\Windows\OEM\TaskbarLayoutModification.xml' -Force -Confirm:$false
 			Copy-Item -Path ($LICache + "\" + $StartLayoutXML) -Destination 'C:\Recovery\AutoApply\TaskbarLayoutModification.xml' -Force -Confirm:$false
 		}
@@ -1529,6 +1566,39 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 		}		
 		#endregion Load User Regsitry
 		#region Set User 
+			#region Set ScreenSaver
+			If (-Not $UserOnly) {
+				If ($IsVM) {
+					If ($ConfigFile.Config.WindowsSettings.VM.ScreenSave.Active -and $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Secure -and $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut -and $ConfigFile.Config.WindowsSettings.VM.ScreenSave.ScreenSaver) {
+						Write-Host "Setup Logon Screen Saver:"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Active "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Active "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Secure "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Secure "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.ScreenSaver "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.ScreenSaver "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "WallpaperStyle" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.WallpaperStyle "STRING"
+						
+					}
+				}Else{
+					If ($ConfigFile.Config.WindowsSettings.ScreenSave.Active -and $ConfigFile.Config.WindowsSettings.ScreenSave.Secure -and $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut -and $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver) {
+						Write-Host "Setup Logon Screen Saver:"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.ScreenSave.Active "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.ScreenSave.Active "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.ScreenSave.Secure "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.ScreenSave.Secure "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "WallpaperStyle" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.WallpaperStyle "STRING"
+					}
+				}
+			}
+			#endregion Set ScreenSaver
 			#region Registry Setup
 				#Update/Add Items Values
 				write-host ("`tUpdating Registry Settings:")
@@ -1647,7 +1717,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			#endregion Registry Setup 
 			#region Set Non-Store 
 				#region OneDrive
-					If ($ConfigFile.Config.UserSettings.DisableOnedrive -eq "true") {
+					If ($ConfigFile.Config.UserSettings.DisableOnedrive -eq "true" -and $OneDrive -eq $False) {
 						write-host ("`tRemove OneDrive:")
 						Remove-Itemproperty -Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Run") -name 'OneDriveSetup' -erroraction 'silentlycontinue'| out-null
 					}
@@ -2370,6 +2440,22 @@ If (-Not $UserOnly) {
 		}
 	}
 	#endregon Install Font
+	#region Caching of logon
+		#Caching of logon credentials must be limited.
+		# 	<Item Default="false" Store="false" LockedDown="false" Manager="false" MinimumVersion="5">
+		# 	<Comment>Caching of logon credentials must be limited.</Comment>
+		# 	<Key>Software\Microsoft\Windows NT\CurrentVersion\Winlogon</Key>
+		# 	<Value>CachedLogonsCount</Value>
+		# 	<Data>0</Data>
+		# 	<Type>String</Type>
+		# </Item>
+	Write-Host "Setting up Caching of Logons"
+	If ($IsLaptop) {
+		Set-Reg -regPath "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon" -name "CachedLogonsCount" -type "String" -value $ConfigFile.Config.WindowsSettings.LaptopCachedLogonsCount
+	}Else{
+		Set-Reg -regPath "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon" -name "CachedLogonsCount" -type "String" -value $ConfigFile.Config.WindowsSettings.CachedLogonsCount
+	}
+	#endregion Caching of logon
 }
 #============================================================================
 #endregion Main Local Machine
@@ -2458,24 +2544,101 @@ If (-Not $UserOnly) {
 	If ([int]([environment]::OSVersion.Version.Major.tostring() + [environment]::OSVersion.Version.Minor.tostring()) -gt 61) {
 		If (Get-Command Import-Certificate -errorAction SilentlyContinue) {
 			Write-Host ("Setting up Certificates:")
-			If (Test-Path ($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot)) {
-				# Write-Host ("Importing Domain CA Root: " + $LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot)
-				Write-color	-Text "Importing Domain CA Root: ",
-									($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -Color White,DarkGreen
-				Import-Certificate -Filepath ($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -CertStoreLocation cert:\LocalMachine\Root | out-null
+			#Root Certs
+			If (Test-Path ($LICache + "\" + $ConfigFile.Config.Company.CertRootFolder)) {
+				write-host ("`tInstalling Root Certificates:" )
+				$files = (get-childitem -Path ($LICache + "\" + $ConfigFile.Config.Company.CertRootFolder + "\*") -Include ("*.crt","*.cer"))
+				$CertStoreLocation = "Cert:\LocalMachine\Root"
+				Foreach ($file in $RootCertFiles ) {
+					If ($null -ne $file) {
+						$installed = $false
+						$failed = $false
+						$CRT = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $file.FullName
+						If (Get-ChildItem $CertStoreLocation | Where-Object Thumbprint -eq $CRT.Thumbprint) {
+							Write-color	-Text "tExisting Cert: ",
+									($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -Color White,DarkYellow -StartTab 2
+						}else {
+							Import-Certificate -FilePath $file.FullName -CertStoreLocation $CertStoreLocation | out-null
+							If ($LASTEXITCODE -eq 0 ) {
+								Write-color	-Text "Installed Cert: ",
+									($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -Color White,DarkGreen -StartTab 2
+								$installed = $true
+							}else{
+								If (-Not (Get-ChildItem $CertStoreLocation | Where-Object Thumbprint -eq $CRT.Thumbprint)) {
+									$failed = $true
+								}else{
+									Write-color	-Text "Installed Cert: ",
+									($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -Color White,DarkGreen -StartTab 2
+									$installed = $true
+								}
+							}
+						}
+					}
+				}
 			}
-			If (Test-Path ($LICache + "\" + $ConfigFile.Config.Company.PrivateCAIntermediate)) {
-				# Write-Host ("Importing Domain CA Intermediate : " + $LICache + "\" + $ConfigFile.Config.Company.PrivateCAIntermediate)
-				Write-color	-Text "Importing Domain CA Intermediate: ",
-						($LICache + "\" + $ConfigFile.Config.Company.PrivateCAIntermediate) -Color White,DarkGreen
-				Import-Certificate -Filepath ($LICache + "\" + $ConfigFile.Config.Company.PrivateCAIntermediate) -CertStoreLocation cert:\LocalMachine\CA | out-null
+			#Intermediate Certs
+			If (Test-Path ($LICache + "\" + $ConfigFile.Config.Company.CertIntermediateFolder)) {
+				write-host ("`tInstalling Intermediate Certificates:" )
+				$files = (get-childitem -Path ($LICache + "\" + $ConfigFile.Config.Company.CertIntermediateFolder + "\*") -Include ("*.crt","*.cer"))
+				$CertStoreLocation = "Cert:\LocalMachine\CA"
+				Foreach ($file in $RootCertFiles ) {
+					If ($null -ne $file) {
+						$installed = $false
+						$failed = $false
+						$CRT = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $file.FullName
+						If (Get-ChildItem $CertStoreLocation | Where-Object Thumbprint -eq $CRT.Thumbprint) {
+							Write-color	-Text "tExisting Cert: ",
+									($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -Color White,DarkYellow -StartTab 2
+						}else {
+							Import-Certificate -FilePath $file.FullName -CertStoreLocation $CertStoreLocation | out-null
+							If ($LASTEXITCODE -eq 0 ) {
+								Write-color	-Text "Installed Cert: ",
+									($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -Color White,DarkGreen -StartTab 2
+								$installed = $true
+							}else{
+								If (-Not (Get-ChildItem $CertStoreLocation | Where-Object Thumbprint -eq $CRT.Thumbprint)) {
+									$failed = $true
+								}else{
+									Write-color	-Text "Installed Cert: ",
+									($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -Color White,DarkGreen -StartTab 2
+									$installed = $true
+								}
+							}
+						}
+					}
+				}
 			}
-			#Importing Code Signing Cert
-			If (Test-Path ( $LICache + "\" + $ConfigFile.Config.Company.PrivateCACodeSigning )) {
-				# Write-Host ("Importing Code Signing Cert : " + $LICache + "\" + $ConfigFile.Config.Company.PrivateCACodeSigning)
-				Write-color	-Text "Importing Code Signing Cert: ",
-						($LICache + "\" + $ConfigFile.Config.Company.PrivateCACodeSigning) -Color White,DarkGreen
-				Import-Certificate -Filepath ($LICache + "\" + $ConfigFile.Config.Company.PrivateCACodeSigning) -CertStoreLocation cert:\LocalMachine\TrustedPublisher | out-null
+			#Trusted Publisher Certs
+			If (Test-Path ($LICache + "\" + $ConfigFile.Config.Company.CertTrustedPublishersFolder)) {
+				write-host ("`tInstalling Trusted Publisher Certificates:" )
+				$files = (get-childitem -Path ($LICache + "\" + $ConfigFile.Config.Company.CertTrustedPublishersFolder + "\*") -Include ("*.crt","*.cer"))
+				$CertStoreLocation = "Cert:\LocalMachine\TrustedPublisher"
+				Foreach ($file in $RootCertFiles ) {
+					If ($null -ne $file) {
+						$installed = $false
+						$failed = $false
+						$CRT = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $file.FullName
+						If (Get-ChildItem $CertStoreLocation | Where-Object Thumbprint -eq $CRT.Thumbprint) {
+							Write-color	-Text "tExisting Cert: ",
+									($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -Color White,DarkYellow -StartTab 2
+						}else {
+							Import-Certificate -FilePath $file.FullName -CertStoreLocation $CertStoreLocation | out-null
+							If ($LASTEXITCODE -eq 0 ) {
+								Write-color	-Text "Installed Cert: ",
+									($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -Color White,DarkGreen -StartTab 2
+								$installed = $true
+							}else{
+								If (-Not (Get-ChildItem $CertStoreLocation | Where-Object Thumbprint -eq $CRT.Thumbprint)) {
+									$failed = $true
+								}else{
+									Write-color	-Text "Installed Cert: ",
+									($LICache + "\" + $ConfigFile.Config.Company.PrivateCARoot) -Color White,DarkGreen -StartTab 2
+									$installed = $true
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 	}
@@ -2756,7 +2919,7 @@ If (-Not $UserOnly) {
 		Write-Host "Setting up BGInfo: "
 		If (Test-Path ($LICache + "\BgInfo")) {
 			copy-item ($LICache + "\BgInfo") -Destination ($env:programfiles) -Force -Recurse
-			Get-ChildItem ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp") | Where-Object Name -Like "*bginfo*.lnk" | ForEach-Object { Remove-Item $_.fullname}
+			Get-ChildItem ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp") | Where-Object Name -Like "*bginfo*.lnk" | ForEach-Object { Remove-Item -Force -Path $_.fullname}
 			If ($Store -or $IsVM) {
 				copy-item ($env:programfiles + "\BgInfo\" + ($ConfigFile.Config.BGInfo.Store)) ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp") -Force
 			}else{
@@ -2891,12 +3054,22 @@ If (-Not $UserOnly) {
 #region Main Local Machine Setup Screen Saver
 #============================================================================
 If (-Not $UserOnly) {
-	If ($ConfigFile.Config.WindowsSettings.ScreenSave.Active -and $ConfigFile.Config.WindowsSettings.ScreenSave.Secure -and $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut -and $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver) {
-		Write-Host "Setup Logon Screen Saver:"
-		Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.ScreenSave.Active "STRING"
-		Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.ScreenSave.Secure "STRING"
-		Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut "STRING"
-		Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver "STRING"
+	If ($IsVM) {
+		If ($ConfigFile.Config.WindowsSettings.VM.ScreenSave.Active -and $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Secure -and $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut -and $ConfigFile.Config.WindowsSettings.VM.ScreenSave.ScreenSaver) {
+			Write-Host "Setup Logon Screen Saver:"
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Active "STRING"
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Secure "STRING"
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut "STRING"
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.ScreenSaver "STRING"
+		}
+	}Else{
+		If ($ConfigFile.Config.WindowsSettings.ScreenSave.Active -and $ConfigFile.Config.WindowsSettings.ScreenSave.Secure -and $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut -and $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver) {
+			Write-Host "Setup Logon Screen Saver:"
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.ScreenSave.Active "STRING"
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.ScreenSave.Secure "STRING"
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut "STRING"
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver "STRING"
+		}
 	}
 }
 
@@ -2907,7 +3080,7 @@ If (-Not $UserOnly) {
 #region Main Local Machine Microsoft Store
 #============================================================================
 #Disable MS Apps
-If (-Not $UserOnly) {
+If (-Not $UserOnly -and -Not $SkipMSStore) {
 	If ([int]([environment]::OSVersion.Version.Major.tostring() + [environment]::OSVersion.Version.Minor.tostring()) -gt 61) {
 		Write-Host "Remove Microsoft Store Apps:"
 		#region Remove Appx Packages
