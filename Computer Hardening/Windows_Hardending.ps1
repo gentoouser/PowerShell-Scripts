@@ -89,6 +89,10 @@
 	* Version 3.00.13 - Updated Certificates to be folders instead of files. 
 	* Version 3.00.14 - Fixed BGinfo cleanup. Added switch SkipMSStore to ignore remove MS Store apps.
 	* Version 3.00.15 - Added Detection of Laptops and set different Logon Cache count for Laptops.
+	* Version 3.00.16 - Added "Disable Updates Are Available Popup In Windows 10" logic. Fixed OneDrive Bug
+	* Version 3.00.17 - Start/Task menu import bug.
+	* Version 3.00.18 - Fix script error.
+	* Version 3.00.19 - Start/Task menu import bug.
 	#>
 #Requires -Version 5.1 -PSEdition Desktop
 #############################################################################
@@ -133,7 +137,7 @@ If (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 #############################################################################
 #region User Variables
 #############################################################################
-$ScriptVersion = "3.0.15"
+$ScriptVersion = "3.0.19"
 $LogFile = ("\Logs\" + `
 		   ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
 		   $env:computername + "_" + `
@@ -1368,7 +1372,11 @@ If ($env:username -ne "Administrator") {
 If (-Not $UserOnly) {
 	If ([environment]::OSVersion.Version.Major -ge 10 -and (Get-Command Import-StartLayout -ErrorAction SilentlyContinue)) {
 		ForEach ($ProfileLocation in (Get-ChildItem "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" | Foreach-object { $_.GetValue("ProfileImagePath")})) {
+			
 			#Fix "Import-StartLayout : Access to the path" issue 
+			If (!(Test-Path -Path ($ProfileLocation + "\AppData\Local\Microsoft\Windows\Shell"))){
+				New-Item -type Directory -path ($ProfileLocation + "\AppData\Local\Microsoft\Windows\Shell")
+			}
 			If (Test-Path -Path ($ProfileLocation + "\AppData\Local\Microsoft\Windows\Shell\LayoutModification.xml")) {
 				Remove-Item -Force -Path ($ProfileLocation + "\AppData\Local\Microsoft\Windows\Shell\LayoutModification.xml")
 			}
@@ -1376,6 +1384,10 @@ If (-Not $UserOnly) {
 		#Fix "Import-StartLayout : Access to the path" issue Default user
 		If (Test-Path -Path ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" ).Default + "\AppData\Local\Microsoft\Windows\Shell\LayoutModification.xml")) {
 			Remove-Item -Force -Path ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" ).Default + "\AppData\Local\Microsoft\Windows\Shell\LayoutModification.xml")
+		}
+		#Fix "Import-StartLayout : Could not find part of path
+		If (Test-Path -Path ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" ).Default + "\AppData\Local\Microsoft\Windows\Shell")) {
+			New-Item -type Directory -path  ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" ).Default + "\AppData\Local\Microsoft\Windows\Shell")
 		}
 		#If no Command override use XML
 		If (-Not $StartLayoutXML) {
@@ -2456,6 +2468,26 @@ If (-Not $UserOnly) {
 		Set-Reg -regPath "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon" -name "CachedLogonsCount" -type "String" -value $ConfigFile.Config.WindowsSettings.CachedLogonsCount
 	}
 	#endregion Caching of logon
+	#region Disable Updates Are Available Popup In Windows 10
+	If (-Not $UserOnly -and ($ConfigFile.Config.WindowsSettings.DisableWindowsUpdatePopup -eq "true" -or $ConfigFile.Config.WindowsSettings.DisableWindowsUpdatePopup -eq "yes")) {
+		$file = ($env:windir + "\System32\musnotification.exe")
+		#set-own
+		$Acl = Get-Acl (Get-envValueFromString -Path $file)
+		$Group = New-Object System.Security.Principal.NTAccount("Builtin", "Administrators")
+		$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\Users"), "ReadAndExecute", "Deny")
+		$ACL.SetOwner($Group)
+		$Acl.Setaccessrule($Ar)
+		Set-Acl (Get-envValueFromString -Path $file) $Acl
+
+		$file = ($env:windir + "\System32\musnotificationux.exe")
+		$Acl = Get-Acl (Get-envValueFromString -Path $file)
+		$Group = New-Object System.Security.Principal.NTAccount("Builtin", "Administrators")
+		$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\Users"), "ReadAndExecute", "Deny")
+		$ACL.SetOwner($Group)
+		$Acl.Setaccessrule($Ar)
+		Set-Acl (Get-envValueFromString -Path $file) $Acl
+	}
+#endregion Disable Updates Are Available Popup In Windows 10
 }
 #============================================================================
 #endregion Main Local Machine
@@ -2920,12 +2952,15 @@ If (-Not $UserOnly) {
 		If (Test-Path ($LICache + "\BgInfo")) {
 			copy-item ($LICache + "\BgInfo") -Destination ($env:programfiles) -Force -Recurse
 			Get-ChildItem ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp") | Where-Object Name -Like "*bginfo*.lnk" | ForEach-Object { Remove-Item -Force -Path $_.fullname}
-			If ($Store -or $IsVM) {
+			If ($Store) {
 				copy-item ($env:programfiles + "\BgInfo\" + ($ConfigFile.Config.BGInfo.Store)) ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp") -Force
 			}else{
 				copy-item ($env:programfiles + "\BgInfo\" + ($ConfigFile.Config.BGInfo.Default)) ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp") -Force
 			}
 		}
+	}Else{
+		Write-Host "Removing BGInfo Shortcuts..."
+		Get-ChildItem ($env:programdata + "\Microsoft\Windows\Start Menu\Programs\StartUp") | Where-Object Name -Like "*bginfo*.lnk" | ForEach-Object { Remove-Item -Force -Path $_.fullname}
 	}
 }
 #============================================================================
@@ -3165,7 +3200,7 @@ If (-Not $UserOnly -and -Not $SkipMSStore) {
 #============================================================================
 #region Main Local Machine Remove OneDrive
 #============================================================================
-If (-Not $UserOnly -and ($ConfigFile.Config.WindowsSettings.RemoveOneDrive -eq "true" -or $ConfigFile.Config.WindowsSettings.RemoveOneDrive -eq "yes")) {
+If (-Not $UserOnly -and ($ConfigFile.Config.WindowsSettings.RemoveOneDrive -eq "true" -or $ConfigFile.Config.WindowsSettings.RemoveOneDrive -eq "yes") -and !($OneDrive)) {
 	$process = Start-Process -FilePath "taskkill" -ArgumentList @("/f","/im","OneDrive.exe")
 	#https://social.technet.microsoft.com/Forums/ie/en-US/2eaa1b6a-c906-4161-b76c-370ac8910a11/windows-10-sysprep-issue-image-always-hangs-at-quotgetting-readyquot?forum=win10itprosetup
 	If (Test-Path ($env:systemroot + "\SysWOW64\OneDriveSetup.exe")) {
