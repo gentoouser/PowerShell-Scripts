@@ -58,30 +58,30 @@
 .NOTES
  Author: Paul Fuller
  Changes:
-    * Version 3.00.00 - Switch to XML Config
+        * Version 3.00.00 - Switch to XML Config
 	* Version 3.00.01 - Fixed Cipher issue where powershell could not handle "/"
 	* Version 3.00.02 - Fixed VM Detection
 	* Version 3.00.03 - Fixed Setting A Binary Registry key.
 	* Version 3.00.04 - Use "Get-CimInstance" when avalible if not default to "Get-WmiObject". 
-						Also use Regex to detect Manager and Store PC's. 
-						Added AddressFilter to the Firewall to better control remote connections. 
-						Moved contol of ScheduledJob to xml; also if ScheduledJob is not avalible use ScheduledTask.
-						Fixed Issue with locking down Default user.
-						Using SID to find local profile.
-						Disable WiFi by default; use -Wifi to enable Wifi.
-						Updated RemoveFCTID Shortcut.
-	* Version 3.00.05 -	Fixed Bug with AllowClientTLS1 switch. Updated Get-MachineType.  	
-						Added more debugging to Deny files.
-						Added Get-envValueFromString Function to handle PowerShell $env: variables from XML.
-	* Version 3.00.06 -	Cleaned up messages when Deny file does not exist.
-						Cleaned up usage of -UserOnly
-						Create new if user exists and the profiles does not.
-						Apply certain keys only to Default User.
-						Fixed Password generation bug.
-						Fixed bug where account was not enabled when trying to recreate user profile.
-	* Version 3.00.07 -	Fixed "Import-StartLayout: Access to the path"
-						Fixed Active User bug.
-	* Version 3.00.08 -	Reset Startmenu layout on Windows 10 1809+.
+			    Also use Regex to detect Manager and Store PC's. 
+			    Added AddressFilter to the Firewall to better control remote connections. 
+			    Moved contol of ScheduledJob to xml; also if ScheduledJob is not avalible use ScheduledTask.
+			    Fixed Issue with locking down Default user.
+			    Using SID to find local profile.
+			    Disable WiFi by default; use -Wifi to enable Wifi.
+			    Updated RemoveFCTID Shortcut.
+	* Version 3.00.05 - Fixed Bug with AllowClientTLS1 switch. Updated Get-MachineType.  	
+			    Added more debugging to Deny files.
+			    Added Get-envValueFromString Function to handle PowerShell $env: variables from XML.
+	* Version 3.00.06 - Cleaned up messages when Deny file does not exist.
+			    Cleaned up usage of -UserOnly
+			    Create new if user exists and the profiles does not.
+			    Apply certain keys only to Default User.
+			    Fixed Password generation bug.
+			    Fixed bug where account was not enabled when trying to recreate user profile.
+	* Version 3.00.07 - Fixed "Import-StartLayout: Access to the path"
+			    Fixed Active User bug.
+	* Version 3.00.08 - Reset Startmenu layout on Windows 10 1809+.
 	* Version 3.00.09 - Hide errors for Start Menu 1809 reset.
 	* Version 3.00.10 - Updated name of log file. Added function to install fonts. Import Security Template INI
 	* Version 3.00.11 - Updated info for Taskmenu layout. Clear old StartMenu layout. Fixed Font function error.
@@ -93,6 +93,8 @@
 	* Version 3.00.17 - Start/Task menu import bug.
 	* Version 3.00.18 - Fix script error.
 	* Version 3.00.19 - Start/Task menu import bug.
+	* Version 3.00.20 - Blacklist bug fix. Caching some Installed features calls for speed.
+	* Version 3.00.21 - Service startup and disk timeout bug fix. 
 	#>
 #Requires -Version 5.1 -PSEdition Desktop
 #############################################################################
@@ -121,7 +123,8 @@ PARAM (
 	[switch]$NoBgInfo			= $false,
 	[switch]$IPv6				= $false,
 	[switch]$OneDrive			= $false,
-	[switch]$SkipMSStore		= $false
+	[switch]$SkipMSStore		= $false,
+	[switch]$ReRegisterAppx		= $false
 )
 #############################################################################
 #endregion Parameter Config
@@ -137,7 +140,7 @@ If (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 #############################################################################
 #region User Variables
 #############################################################################
-$ScriptVersion = "3.0.19"
+$ScriptVersion = "3.0.21"
 $LogFile = ("\Logs\" + `
 		   ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
 		   $env:computername + "_" + `
@@ -1386,7 +1389,7 @@ If (-Not $UserOnly) {
 			Remove-Item -Force -Path ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" ).Default + "\AppData\Local\Microsoft\Windows\Shell\LayoutModification.xml")
 		}
 		#Fix "Import-StartLayout : Could not find part of path
-		If (Test-Path -Path ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" ).Default + "\AppData\Local\Microsoft\Windows\Shell")) {
+		If (!(Test-Path -Path ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" ).Default + "\AppData\Local\Microsoft\Windows\Shell"))) {
 			New-Item -type Directory -path  ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" ).Default + "\AppData\Local\Microsoft\Windows\Shell")
 		}
 		#If no Command override use XML
@@ -1989,6 +1992,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 						If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun")) {
 							Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun") -Recurse | out-null
 						}
+						$i=1
 						ForEach ( $Exe in $ConfigFile.Config.WindowsSettings.BlackListPrograms.Block) {
 							# write-host ("`t`tBlackListing: " + $Exe)
 							Write-Color -Text "BlackListing: ",
@@ -2194,15 +2198,21 @@ If (-Not $UserOnly) {
 	If ([environment]::OSVersion.Version.Major -ge 10) {
 		#region Windows Feature setup
 		Write-Host "Disabling Windows Features:"
+		If (Get-Command Get-WindowsOptionalFeature -errorAction SilentlyContinue) {
+			$GWPFC = Get-WindowsOptionalFeature -Online
+		}
+		If (Get-Command Get-WindowsCapability -errorAction SilentlyContinue) {
+			$GWCC = Get-WindowsCapability -Online
+		}
 		ForEach ( $Feature in $ConfigFile.Config.WindowsSettings.RemoveWindowsFeatures.Remove ) {
 			If (Get-Command Get-WindowsOptionalFeature -errorAction SilentlyContinue) {
-				If ((Get-WindowsOptionalFeature -Online -FeatureName $Feature).state -eq "Enabled") {
+				If (($GWPFC | Where-Object {$_.FeatureName -eq $Feature}).state -eq "Enabled") {
 					# Write-Host ("`t" + $Feature) -ForegroundColor gray
 					Write-Color -Text "Disabling Windows Optional Feature: ",
 										$Feature -Color DarkYellow,White -StartTab 1
 					Disable-WindowsOptionalFeature -Online -FeatureName $Feature -NoRestart | out-null
 				} else {
-					If (Get-WindowsOptionalFeature -Online -FeatureName $Feature) {
+					If ($GWPFC | Where-Object {$_.FeatureName -eq $Feature}) {
 						# Write-Host ("`tWindows Optional Feature: " + $Feature + " Already disabled.") -ForegroundColor green
 						Write-Color -Text "Disabled Windows Optional Feature: ",
 											$Feature -Color DarkGreen,White -StartTab 1
@@ -2210,13 +2220,13 @@ If (-Not $UserOnly) {
 				}
 			}
 			If (Get-Command Get-WindowsCapability -errorAction SilentlyContinue) {
-				If ((Get-WindowsCapability -Online | Where-Object {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"}).state) {
+				If (($GWCC | Where-Object {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"}).state) {
 					# Write-Host ("`t" + $Feature) -ForegroundColor gray
 					Write-Color -Text "Disabling Windows Capability: ",
 										$Feature -Color DarkYellow,White -StartTab 1
-					Get-WindowsCapability -Online | Where-Object {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"} | Remove-WindowsCapability -online | out-null
+					$GWCC | Where-Object {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"} | Remove-WindowsCapability -online | out-null
 				} else {
-					If ((Get-WindowsCapability -Online -Name $Feature).Name) {
+					If (($GWCC | Where-Object {$_.name -like ("*" + $Feature + "*")}).Name) {
 						# Write-Host ("`tWindows Capability: " + $Feature + " Already disabled.") -ForegroundColor green
 						Write-Color -Text "Disabled Windows Capability: ",
 										$Feature -Color DarkGreen,White -StartTab 1
@@ -2404,7 +2414,7 @@ If (-Not $UserOnly) {
 		If ($ConfigFile.Config.WindowsSettings.VM.DiskTimeOutValue) {
 			Write-Host ("Increasing Disk I/O Timeout " + $ConfigFile.Config.WindowsSettings.VM.DiskTimeOutValue + " Seconds.") -ForegroundColor Yellow
 			Try {
-				Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control' -Name 'ServicesPipeTimeout' -Value ([int]$ConfigFile.Config.WindowsSettings.VM.DiskTimeOutValue)
+				Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\services\Disk' -Name 'TimeOutValue' -Value ([int]$ConfigFile.Config.WindowsSettings.VM.DiskTimeOutValue)
 			}
 			Catch {
 				Write-Warning "Could Not Set Increasing Disk I/O Timeout"
@@ -3193,6 +3203,13 @@ If (-Not $UserOnly -and -Not $SkipMSStore) {
 		#endregion
 		Write-Host "`n"
 	}
+}
+If (-Not $UserOnly -and $ReRegisterAppx) {
+	Write-Color -Text "ReRegistering WhiteListed Appx Packages: " -Color White	
+	[array]$WhiteList = $ConfigFile.Config.WindowsSettings.MicrosoftStore.WhiteList
+	$WhiteList| Foreach-Object {Get-AppxPackage -Name $_ | ForEach-Object {Add-AppxPackage -DisableDevelopmentMode -Register  "$($_.InstallLocation)\AppXManifest.xml"}}
+	Write-Color -Text "ReRegistering AllUser Appx Packages: " -Color White	
+	Get-AppXPackage -AllUsers| ForEach-Object {Add-AppxPackage -DisableDevelopmentMode -Register "$($_.InstallLocation)\AppXManifest.xml"}	
 }
 #============================================================================
 #endregion Main Local Machine Microsoft Store
