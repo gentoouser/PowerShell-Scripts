@@ -7,7 +7,16 @@
   Runs commands on remote computer using PSExec using CSV
 
 
-.PARAMETER SourceFiles
+.PARAMETER Computers
+.PARAMETER ComputerList
+.PARAMETER PSExecPath
+.PARAMETER Commands
+.PARAMETER ALLCSV
+.PARAMETER csv_Name
+.PARAMETER csv_IP
+.PARAMETER User
+.PARAMETER Password
+.PARAMETER Copy
 
 
 .EXAMPLE
@@ -21,25 +30,27 @@ Changes:
 	Version 1.0.1 - Added Username and Password
 	Version 1.0.2 - Fixed reverse logic for ALLCSV. 
 	Version 1.0.4 - Update Logs to Create sub-folder called Logs for log files 
-	Version 1.0.5 - Update to run multible Commands. Also Allow a program to be copied to remote computer
+	Version 1.0.5 - Update to run multiple Commands. Also Allow a program to be copied to remote computer
 	Version 1.0.6 - Fixed Progress bars and other tweaks.
-        Version 1.0.7 - Run remote command as admin 
+    Version 1.0.7 - Run remote command as admin 
+    Version 1.0.8 - Update to run faster. Use Class for Logging 
 #>
 
 PARAM (
-	[array]$Computers , 
+	[array]$Computers, 
 	[string]$ComputerList,
-	[string]$PSExecPath   = ".\PsExec.exe",
+	[string]$PSExecPath   = "\\github.com\share\PSTools\PsExec.exe",
 	[array]$Commands,
-	[switch]$ALLCSV 	  = $true,
 	[String]$csv_Name     = "Device name",
 	[String]$csv_IP       = "IP address",
 	[String]$User,
-	[String]$Password ,
-	[boolean]$Copy
+	[String]$Password,
+	[int]$Timeout = 30,
+	[switch]$Copy,
+	[switch]$ErrorCSV
 )
 
-$ScriptVersion = "1.0.7"
+$ScriptVersion = "1.0.8"
 
 #############################################################################
 #region User Variables
@@ -47,10 +58,29 @@ $ScriptVersion = "1.0.7"
 $LogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + `
 		   ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
 		   (Get-Date -format yyyyMMdd-hhmm) + ".log")
+$CSVLogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + `
+			($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
+			(Get-Date -format yyyyMMdd-hhmm) + ".csv")
+
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $count = 1
 $maximumRuntimeSeconds = 30
 
+$Logs=New-Object System.Collections.ArrayList
+Class CSVObject {
+	[DateTime]${Date}
+	[string]${Computer}
+	[string]${Source File}
+	[string]${Source File Version}
+	[string]${Source File Date}
+	[string]${Destination File}
+	[string]${Destination File Version}
+	[string]${Destination File Date}
+	[string]${Log Level}
+	[string]${Status}
+	[string]${Command}
+	[switch]${Copy File}
+}
 #############################################################################
 #endregion User Variables
 #############################################################################
@@ -65,203 +95,221 @@ If ($ComputerList) {
 	}
 }
 
-#Start logging.
+#region Start logging.
 If (-Not [string]::IsNullOrEmpty($LogFile)) {
 	If (-Not( Test-Path (Split-Path -Path $LogFile -Parent))) {
 		New-Item -ItemType directory -Path (Split-Path -Path $LogFile -Parent)
+        $Acl = Get-Acl (Split-Path -Path $LogFile -Parent)
+        $Ar = New-Object system.Security.AccessControl.FileSystemAccessRule('Users', "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+        $Acl.SetAccessRule($Ar)
+        Set-Acl (Split-Path -Path $LogFile -Parent) $Acl
 	}
-	try { 
-	Start-Transcript -Path $LogFile -Append
-	} catch { 
+	Try{
+		#Try to make sure we are not logging already.
+		Stop-transcript|out-null
+	}Catch [System.InvalidOperationException]{
+		#Do not care about errors
+	} Finally {
+		#Do not care about errors
+	}
+	Try { 
+	    Start-Transcript -Path $LogFile -Append
+	}Catch{ 
 		Stop-transcript
 		Start-Transcript -Path $LogFile -Append
 	} 
-	Write-Host ("Script: " + $MyInvocation.MyCommand.Name)
-	Write-Host ("Version: " + $ScriptVersion)
-	Write-Host (" ")
 }
-
-If (-Not ([string]::IsNullOrEmpty($PSExecPath))) {
+#endregion Start logging.
+#region Check for PSExec
+If(Get-Command PSExec){
+	$PSExecPath = (get-command PSExec).source
+}Else{
 	If (-Not (Test-Path $PSExecPath -PathType Leaf)) {
-		throw ("psexec.exe is not found at: " + $PSExecPath)
-	}
-}else{
-	throw ("psexec.exe is not found at: " + $PSExecPath)
-}
-
-If ($ALLCSV) {
-	If (!(Test-Path -Path ($LogFile + "_all.csv"))) {
-		Add-Content ($LogFile + "_all.csv") ("Date,Computer,Command,Status")
+		throw ("PSExec.exe is not found at: " + $PSExecPath)
 	}
 }
+#endregion Check for PSExec
 
-If ($ComputerList) {
-	If ( Test-Path $ComputerList ) {
-		$ObjCSV = Import-Csv  $ComputerList
-		$outItems = New-Object System.Collections.Generic.List[System.Object]
-		Foreach ($objline in $ObjCSV) {
-			
-			#Clean up IP 
-            #Write-Host ("Cleaning IP: " + $objline.$csv_IP)
-			If (!([string]::IsNullOrEmpty($objline.$csv_IP))) {
-				$arrTempIP = ($objline.$csv_IP).Split(".")
-				If ($arrTempIP.Count -eq 4) {
-					$TempIP = ([String]([int16]$arrTempIP[0]) + "." + [String]([int16]$arrTempIP[1]) + "." + [String]([int16]$arrTempIP[2]) + "." + [String]([int16]$arrTempIP[3]))
-				} else {
-					$TempIP = $objline.$csv_IP
-				}
-			}
-		    #Testing for duplicate host entries
-            If (!($outItems.Contains($objline.$csv_Name))) {		
-				$addresslist = $null
-				try {
-						$addresslist = [Net.DNS]::GetHostEntry($objline.$csv_Name)
-						$addresslist = $addresslist.addresslist.ipaddresstostring
-					} catch {
-						$addresslist = $null
-					}
-					
-				If (!($addresslist)) {
-					$IP = $null
-					$IP = [ipaddress]$TempIP
-					If ($IP.IPAddressToString) {
-						Write-Host ("`t Computer does not exists in DNS: " + $objline.$csv_Name + " using IP: " + $IP.IPAddressToString) 
-						If ($ALLCSV) {
-							If (Test-Path -Path ($LogFile + "_all.csv")) {
-								#"Date,Computer,Command,Status"
-								Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $Command + ",Does not exists in DNS")
-							}
+#region Importing ComputerList
+#Check which computer input to use to set $Computers
+If ([string]::IsNullOrEmpty($ComputerList)) {
+	If ([string]::IsNullOrEmpty($Computers)) {
+		throw " -Computers or -ComputerList is required."
+	}
+}Else{
+	If (($ComputerList.Substring($ComputerList.Length - 3)).ToLower() -eq "csv") {
+		If ($ComputerList) {
+			If (Test-Path -Path $ComputerList) {
+				$ObjCSV = Import-Csv  $ComputerList
+				$outItems = New-Object System.Collections.Generic.List[System.Object]
+				Foreach ($objline in $ObjCSV) {				
+					#Clean up IP 
+					#Write-Host ("Cleaning IP: " + $objline.$csv_IP)
+					If (!([string]::IsNullOrEmpty($objline.$csv_IP))) {
+						$arrTempIP = ($objline.$csv_IP).Split(".")
+						If ($arrTempIP.Count -eq 4) {
+							$TempIP = ([String]([int16]$arrTempIP[0]) + "." + [String]([int16]$arrTempIP[1]) + "." + [String]([int16]$arrTempIP[2]) + "." + [String]([int16]$arrTempIP[3]))
+						} else {
+							$TempIP = $objline.$csv_IP
 						}
-						$outItems.Add($IP.IPAddressToString)
 					}
-				}else{
-					# Write-Host ("`t Computer already exists in DNS: " + ([Net.DNS]::GetHostEntry($objline.$csv_Name).hostname)) 
-					# If ($ALLCSV) {
-						# If (!(Test-Path -Path ($LogFile + "_all.csv"))) {
-							#"Date,Computer,Command,Status"
-							# Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $Command + ",Exists in DNS")
-						# }
-					# }
-					#Add to list
-					$outItems.Add($objline.$csv_Name)
-
-				}
-				
-            } else {
-				 Write-Warning ("Duplicate entry " + $objline.$csv_Name + " with IP " + $TempIP)
-				If ($ALLCSV) {
-					If (Test-Path -Path ($LogFile + "_all.csv")) {
-						#"Date,Computer,Command,Status"
-						Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $Command + ",Duplicate Entry")
+					#Testing for duplicate host entries
+					If (!($outItems.Contains($objline.$csv_Name))) {		
+						$AddressList = $null
+						try {
+								$AddressList = [Net.DNS]::GetHostEntry($objline.$csv_Name)
+								$AddressList = $AddressList.AddressList.ipaddresstostring
+						} catch {
+								$AddressList = $null
+						}
+							
+						If (!($AddressList)) {
+							$IP = $null
+							$IP = [IPAddress]$TempIP
+							If ($IP.IPAddressToString) {
+								Write-Verbose ("`t Computer does not exists in DNS: " + $objline.$csv_Name + " using IP: " + $IP.IPAddressToString) 
+								$Log = [CSVObject]::new()
+								$Log.Date = Get-Date
+								$Log.Computer = $objline.$csv_Name
+								$Log.Status = ("Computer does not exists in DNS: " + $objline.$csv_Name + " using IP: " + $IP.IPAddressToString)
+								$Log."Log Level" = "Error"
+								$Logs.Add($Log) | Out-Null
+								$outItems.Add($IP.IPAddressToString)
+							}
+						}else{
+							#Add to list
+							$outItems.Add($objline.$csv_Name)
+						}
+					} else {
+						Write-Warning ("Duplicate entry " + $objline.$csv_Name + " with IP " + $TempIP)
+						$Log = [CSVObject]::new()
+						$Log.Date = Get-Date
+						$Log.Computer = $objline.$csv_Name
+						$Log.Status = ("Duplicate entry " + $objline.$csv_Name + " with IP " + $TempIP)
+						$Log."Log Level" = "Error"
+						$Logs.Add($Log) | Out-Null
 					}
 				}
-            }
+				$Computers += $outItems.ToArray()	
+				$ObjCSV=$null
+			}
 		}
-		$Computers += $outItems.ToArray()	
-		$ObjCSV=$null
+	}Else{
+		[Array]$Computers += Get-Content -Path $ComputerList
 	}
 }
-
+#endregion Importing ComputerList
 #############################################################################
 #endregion Setup Sessions
 #############################################################################
 #############################################################################
 #region Functions
 #############################################################################
-Function FormatElapsedTime($ts) 
-{
+Function FormatElapsedTime($ts) {
     #https://stackoverflow.com/questions/3513650/timing-a-commands-execution-in-powershell
 	$elapsedTime = ""
-
-    if ( $ts.Hours -gt 0 )
-    {
-        $elapsedTime = [string]::Format( "{0:00} hours {2:00} min. {3:00}.{4:00} sec.", $ts.Hours, $ts.Minutes, $ts.Seconds, $ts.Milliseconds / 10 );
+    if ( $ts.Hours -gt 0 ) {
+        $elapsedTime = [string]::Format( "{0:00} hours {1:00} min. {2:00}.{3:00} sec.", $ts.Hours, $ts.Minutes, $ts.Seconds, $ts.Milliseconds / 10 );
     }else {
-        if ( $ts.Minutes -gt 0 )
-        {
+        if ( $ts.Minutes -gt 0 ) {
             $elapsedTime = [string]::Format( "{0:00} min. {1:00}.{2:00} sec.", $ts.Minutes, $ts.Seconds, $ts.Milliseconds / 10 );
-        }
-        else
-        {
+        }else{
             $elapsedTime = [string]::Format( "{0:00}.{1:00} sec.", $ts.Seconds, $ts.Milliseconds / 10 );
         }
-
-        if ($ts.Hours -eq 0 -and $ts.Minutes -eq 0 -and $ts.Seconds -eq 0)
-        {
+        if ($ts.Hours -eq 0 -and $ts.Minutes -eq 0 -and $ts.Seconds -eq 0){
             $elapsedTime = [string]::Format("{0:00} ms.", $ts.Milliseconds);
         }
-
-        if ($ts.Milliseconds -eq 0)
-        {
+        if ($ts.Milliseconds -eq 0){
             $elapsedTime = [string]::Format("{0} ms", $ts.TotalMilliseconds);
         }
     }
     return $elapsedTime
 }
-Function Start-PSExec()
-{
+Function Start-PSProgram {
 	param(
-		[Parameter(Mandatory=$true)][string]$Computer,
-		[Parameter(Mandatory=$true)][string]$Command,
-		[Parameter(Mandatory=$true)][string]$PSExecPath,
-		[Parameter(Mandatory=$false)]$maximumRuntimeSeconds = 30,
-		[Parameter(Mandatory=$false)][string]$User,
-		[Parameter(Mandatory=$false)][string]$Pass, 
-		[Parameter(Mandatory=$false)][bool]$Copy
-
+		[Parameter(Mandatory=$true,ValueFromPipeline=$true,Position=0)][string]$Computer,
+		[Parameter(Mandatory=$true,ValueFromPipeline=$true,Position=1)][string]$Command,
+		[Parameter(Mandatory=$true,ValueFromPipeline=$true,Position=2)][string]$PSExecPath,
+		[Parameter(Mandatory=$False,ValueFromPipeline=$true,Position=3)][int]$Timeout = 30,
+		[Parameter(Mandatory=$False,ValueFromPipeline=$true,Position=4)][string]$User,
+		[Parameter(Mandatory=$False,ValueFromPipeline=$true,Position=5)][string]$Pass,
+		[Parameter(Mandatory=$False,ValueFromPipeline=$true,Position=6)][bool]$Copy
 		)
-
+		Class CSVObject {
+			[DateTime]${Date}
+			[string]${Computer}
+			[string]${Source File}
+			[string]${Source File Version}
+			[string]${Source File Date}
+			[string]${Destination File}
+			[string]${Destination File Version}
+			[string]${Destination File Date}
+			[string]${Log Level}
+			[string]${Status}
+			[string]${Command}
+			[switch]${Copy File}
+		}
+		$Logs=New-Object System.Collections.ArrayList
 	If ($Command) {
 		Write-Host ("`t`t Running program: " + $Command)
-		if ( $User -and $Pass) {
-			If ($Copy) {
-				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -h -c -v -i -accepteula -nobanner -u " + $User + " -p " + $Pass + " " + $Command) -PassThru -NoNewWindow
-			} else {
-				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -h -i -accepteula -nobanner -u " + $User + " -p " + $Pass + " " + $Command) -PassThru -NoNewWindow
+		try{
+			If ( $User -and $Pass) {
+				If ($Copy) {
+					$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -h -c -v -i -accepteula -nobanner -u " + $User + " -p " + $Pass + " " + $Command) -PassThru -NoNewWindow
+				}Else{
+					$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -h -i -accepteula -nobanner -u " + $User + " -p " + $Pass + " " + $Command) -PassThru -NoNewWindow
+				}
+			}Else{
+				If ($Copy) {
+					$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -h -c -v -i -accepteula -nobanner " + $Command) -PassThru -NoNewWindow
+				}Else{
+					$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -h -i -accepteula -nobanner " + $Command) -PassThru -NoNewWindow
+				}
 			}
-		}else{
-			If ($Copy) {
-				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -h -c -v -i -accepteula -nobanner " + $Command) -PassThru -NoNewWindow
-			} else {
-				$process = Start-Process -FilePath $PSExecPath -ArgumentList $("\\" + $Computer + " -h -i -accepteula -nobanner " + $Command) -PassThru -NoNewWindow
-			}
-		}
-		try 
-		{
-			$process | Wait-Process -Timeout $maximumRuntimeSeconds -ErrorAction Stop 
+			$process | Wait-Process -Timeout $Timeout -ErrorAction Stop 
 			If ($process.ExitCode -le 0) {
 				Write-Host ("`t`t PSExec successfully completed within timeout.")
-				If ($ALLCSV) {
-					If (Test-Path -Path ($LogFile + "_all.csv")) {
-						#"Date,Computer,Command,Status"
-						Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $Command + ",success")
-					}
-				}
+				$Log = [CSVObject]::new()
+				$Log.Date = Get-Date
+				$Log.Computer = $Computer
+				$Log.Status = "Success"
+				$Log.Command = $Command
+				$Log."Log Level" = "Informational"
+				$Logs.Add($Log) | Out-Null
 			}else{
 				Write-Warning -Message $('PSExec could not run command. Exit Code: ' + $process.ExitCode)
-				If ($ALLCSV) {
-					If (Test-Path -Path ($LogFile + "_all.csv")) {
-						#"Date,Computer,Command,Status"
-						Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $Command + ",Failed Error:" + $process.ExitCode)
-					}
-				}
+				$Log = [CSVObject]::new()
+				$Log.Date = Get-Date
+				$Log.Computer = $Computer
+				$Log.Status = ("Failed Error: " + $process.ExitCode)
+				$Log.Command = $Command
+				$Log."Log Level" = "Error"
+				$Logs.Add($Log) | Out-Null
 				continue
 			}
 		}catch{
 			Write-Warning -Message 'PSExec exceeded timeout, will be killed now.' 
-			If ($ALLCSV) {
-				If (Test-Path -Path ($LogFile + "_all.csv")) {
-					#"Date,Computer,Command,Status"
-					Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $Command + ",Timed Out")
-				}
-			}
+			$Log = [CSVObject]::new()
+			$Log.Date = Get-Date
+			$Log.Computer = $Computer
+			$Log.Status = ("Timed Out")
+			$Log."Log Level" = "Error"
+			$Log.Command = $Command
+			$Logs.Add($Log) | Out-Null
 			$process | Stop-Process -Force
 			continue
 		} 
 	}else{
 		Write-Warning -Message "`t`t NO Commands"
+		$Log = [CSVObject]::new()
+		$Log.Date = Get-Date
+		$Log.Computer = $Computer
+		$Log.Status = "No Commands Given"
+		$Log."Log Level" = "Error"
+		$Log.Command = $Command
+		$Logs.Add($Log) | Out-Null
 	}
-	
+	return $Logs
 }
 #############################################################################
 #endregion Functions
@@ -270,44 +318,84 @@ Function Start-PSExec()
 #region Main
 #############################################################################
 #Loop thru servers
-Foreach ($CurrentComputer in $Computers) {
-	Write-Progress  -Id 0 -Activity ("Processing Computer") -Status ("( " + $count + "\" + $Computers.count + "): " + $CurrentComputer) -percentComplete ($count / $Computers.count*100)
-	Write-Host ("( " + $count + "\" + $Computers.count + ") Computer: " + $CurrentComputer)
-
-	If (Test-Connection -Cn $CurrentComputer -BufferSize 16 -Count 1 -ea 0 -quiet) {
-		Write-Host ("`t Host $CurrentComputer on.") -foregroundcolor green
-		$countCommands = 1
-		ForEach ($Command in $Commands) {
-			Write-Progress  -Id 1 -Activity ("Processing Command") -Status ("( " + $countCommands + "\" + $Commands.count + "): " + $Command) -percentComplete ($countCommands / $Commands.count*100)
-			if ( $User -and $Password) {
-				if ($Copy) {
-					Start-PSExec -Computer $CurrentComputer -Command $Command -PSExecPath $PSExecPath -maximumRuntimeSeconds $maximumRuntimeSeconds -User $User -Pass $Password -Copy
-				} else {
-					Start-PSExec -Computer $CurrentComputer -Command $Command -PSExecPath $PSExecPath -maximumRuntimeSeconds $maximumRuntimeSeconds -User $User -Pass $Password
-				}
-			}else{
-				if ($Copy) {
-					Start-PSExec -Computer $CurrentComputer -Command $Command -PSExecPath $PSExecPath -maximumRuntimeSeconds $maximumRuntimeSeconds -Copy
-				} else {
-					Start-PSExec -Computer $CurrentComputer -Command $Command -PSExecPath $PSExecPath -maximumRuntimeSeconds $maximumRuntimeSeconds
-				}
-			}
-			$countCommands ++
+Foreach ($Computer in $Computers) {
+	#Reset logging variables
+	$NoChange = $false
+	$UpdatesNeeded = $false
+	$MissingFiles = $false
+	$ComputerError = $false
+	Write-Progress -ID 0 -Activity ("Resolving Computer Name") -Status ("(" + $count.ToString().PadLeft($Computers.count.ToString().Length - $count.ToString().Length) + "\" + $Computers.count + ") Computer: " + $Computer) -percentComplete ($count / $Computers.count*100)
+	Write-Host ("(" + $count.ToString().PadLeft($Computers.count.ToString().Length - $count.ToString().Length) + "\" + $Computers.count + ") Computer: " + $Computer)
+	#test for good IPs from host
+	$GoodIPs=@()
+	If ([bool]($Computer -as [ipaddress])) {
+		If (Test-Connection -ComputerName $Computer -BufferSize 16 -Count 1 -Quiet) {
+			Write-Host ("`t Is up with IP: " + $Computer) -ForegroundColor Gray
+			$GoodIPs += $Computer
 		}
-	} else {
-		Write-Host ("`t Host $CurrentComputer off.") -foregroundcolor red
-		If ($ALLCSV) {
-			If (Test-Path -Path ($LogFile + "_all.csv")) {
-				#"Date,Computer,Command,Status"
-				Add-Content ($LogFile + "_all.csv") ((Get-Date -format yyyyMMdd-hhmm) + "," + $Computer + "," + $Command + ",Host Off")
+	}else{
+		Foreach ($IP in ((([Net.DNS]::GetHostEntry($Computer)).AddressList.ipaddresstostring))) {
+			If ($IP -ne "127.0.0.1" -and $IP -ne "::1") {
+				If (Test-Connection -ComputerName $IP -BufferSize 16 -Count 1 -Quiet) {
+					Write-Host ("`t Responds with IP: " + $IP) -ForegroundColor Gray
+					$GoodIPs += $IP
+				}
 			}
 		}
 	}
+	If ($GoodIPs.count -gt 0)	{
+		Foreach ($IP in $GoodIPs ) {
+			$cCount = 1
+			Foreach ($Command in $Commands) {
+				If ($Command) {
+					Write-Progress -Id 2 -Activity ("Running Commands") -Status ("(" + $cCount.ToString().PadLeft($Commands.count.ToString().Length - $cCount.ToString().Length)  + "\" + $Commands.count + ") Command: " + $Command ) -percentComplete ($cCount / ($Commands.count)*100)
+					#Write-Host ("`t`t Running $Command on  $Computer.") -ForegroundColor green
+					if ( $User -and $Password) {
+						$FunctionOut = Start-PSProgram -Computer $Computer -Command $Command -PSExecPath $PSExecPath -Timeout $Timeout -User $User -Pass $Password -Copy:$Copy
+						$Logs.Add($FunctionOut)
+					}else{
+						$FunctionOut = Start-PSProgram -Computer $Computer -Command $Command -PSExecPath $PSExecPath -Timeout $Timeout -Copy:$Copy
+						$Logs.Add($FunctionOut)
+					}		
+				}
+				$cCount++
+			}
+		}
+	} else {
+		#Error computer.
+		Write-Warning -Message ("Error: $Computer has NO working IP Addresses")
+		If (Test-Connection -ComputerName $Computer -Quiet){ 
+			Write-Host ("`t`t Host is up") -ForegroundColor green
+		}else{
+			Write-Warning -Message ("`t`t Host is Down")
+		}
+		$Log = [CSVObject]::new()
+		$Log.Date = Get-Date
+		$Log.Computer = $Computer
+		# $Log."Source File" = $SourceFileInfo.value.name
+		# $Log."Source File Version" = $SourceFileInfo.value.VersionInfo.ProductVersion
+		# $Log."Source File Date" = $SourceFileInfo.value.LastWriteTime
+		# $Log."Destination File" = $DestinationFileInfo.name
+		# $Log."Destination File Version" = $DestinationFileInfo.VersionInfo.ProductVersion
+		# $Log."Destination File Date" = $DestinationFileInfo.LastWriteTime
+		$Log.Status = ("Cannot access host")
+		$Log."Copy File" = $False
+		$Log."Log Level" = "Error"
+		$Logs.Add($Log) | Out-Null
+		$ComputerError = $true
+	}
 	$count++
- }
+}
  
+ If ($Logs) {
+	If ($ErrorCSV) {
+		$Logs | Where-Object {$_."Log Level" -eq "Error"} | Export-csv -NoTypeInformation -Path ($CSVLogFile -replace ".csv","_Error.csv")
+	}
+	$Logs | Export-csv -NoTypeInformation -Path $CSVLogFile
+}
+
 $sw.Stop()
-Write-Host ("Script took: " + (FormatElapsedTime($sw.Elapsed)) + " to run.")
+Write-Host ("Script took: " + (FormatElapsedTime($sw.Elapsed)) + " to run. Averaging " + '{0:N0}' -f ($count / $sw.Elapsed.TotalMinutes) + " Computers per Minute.")
 
 #############################################################################
 #endregion Main
