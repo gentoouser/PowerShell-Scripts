@@ -5,23 +5,23 @@
 
 .DESCRIPTION
 	* Hardens c:\
-	* Caches configureation files
+	* Caches configuration files
 	* Creates Store Users
-	* Lock down users by loading registry and appling settings
-	* Lock down users by appling GPO
+	* Lock down users by loading registry and applying settings
+	* Lock down users by applying GPO
 	
 .PARAMETER Config
 	XML Configuration file with all the hardening settings.
 .PARAMETER Profiles
-	Array of users to lockdown. If Store is enabled all store Window users will be added to the array and locked down.	
+	Array of users to lock-down. If Store is enabled all store Window users will be added to the array and locked down.	
 .PARAMETER LICache
-	Location of the local configureation files cache.	
+	Location of the local configuration files cache.	
 .PARAMETER RemoteFiles
-	Network path of configureation files are to copy down. 	
+	Network path of configuration files are to copy down. 	
 .PARAMETER User
-	Username for network configureation share.
+	Username for network configuration share.
 .PARAMETER Password
-	Password that goes with useranme for network configureation share.
+	Password that goes with username for network configuration share.
 .PARAMETER ActiveUser
 	User that will Actively logon to the computer every day. 
 .PARAMETER Managers
@@ -37,7 +37,7 @@
 .PARAMETER AllowClientTLS1
 	Enables Computer to go to TLS 1.0 sites.
 .PARAMETER NoOEMInfo
-	Keeps from reseting the OEM Info.
+	Keeps from resetting the OEM Info.
 .PARAMETER OEMInfoAddSerial
 	Added Serial number to the System Preferences.
 .PARAMETER NoBgInfo
@@ -50,6 +50,8 @@
 	Keeps OneDrive enabled; otherwise OneDrive will be disabled. 
 .PARAMETER SkipMSStore
 	Keeps Microsoft Store untouched; all non-whitelisted apps will be removed. 
+.PARAMETER SkipSystemPermissions
+	Keeps System drive from having user permissions hardened. 
 
 .EXAMPLE
    & .\Windows_Hardending.ps1 -AllowClientTLS1
@@ -58,30 +60,30 @@
 .NOTES
  Author: Paul Fuller
  Changes:
-        * Version 3.00.00 - Switch to XML Config
+    * Version 3.00.00 - Switch to XML Config
 	* Version 3.00.01 - Fixed Cipher issue where powershell could not handle "/"
 	* Version 3.00.02 - Fixed VM Detection
 	* Version 3.00.03 - Fixed Setting A Binary Registry key.
-	* Version 3.00.04 - Use "Get-CimInstance" when avalible if not default to "Get-WmiObject". 
-			    Also use Regex to detect Manager and Store PC's. 
-			    Added AddressFilter to the Firewall to better control remote connections. 
-			    Moved contol of ScheduledJob to xml; also if ScheduledJob is not avalible use ScheduledTask.
-			    Fixed Issue with locking down Default user.
-			    Using SID to find local profile.
-			    Disable WiFi by default; use -Wifi to enable Wifi.
-			    Updated RemoveFCTID Shortcut.
-	* Version 3.00.05 - Fixed Bug with AllowClientTLS1 switch. Updated Get-MachineType.  	
-			    Added more debugging to Deny files.
-			    Added Get-envValueFromString Function to handle PowerShell $env: variables from XML.
-	* Version 3.00.06 - Cleaned up messages when Deny file does not exist.
-			    Cleaned up usage of -UserOnly
-			    Create new if user exists and the profiles does not.
-			    Apply certain keys only to Default User.
-			    Fixed Password generation bug.
-			    Fixed bug where account was not enabled when trying to recreate user profile.
-	* Version 3.00.07 - Fixed "Import-StartLayout: Access to the path"
-			    Fixed Active User bug.
-	* Version 3.00.08 - Reset Startmenu layout on Windows 10 1809+.
+	* Version 3.00.04 - Use "Get-CimInstance" when available if not default to "Get-WmiObject". 
+						Also use Regex to detect Manager and Store PC's. 
+						Added AddressFilter to the Firewall to better control remote connections. 
+						Moved control of ScheduledJob to xml; also if ScheduledJob is not available use ScheduledTask.
+						Fixed Issue with locking down Default user.
+						Using SID to find local profile.
+						Disable WiFi by default; use -Wifi to enable Wifi.
+						Updated RemoveFCTID Shortcut.
+	* Version 3.00.05 -	Fixed Bug with AllowClientTLS1 switch. Updated Get-MachineType.  	
+						Added more debugging to Deny files.
+						Added Get-envValueFromString Function to handle PowerShell $env: variables from XML.
+	* Version 3.00.06 -	Cleaned up messages when Deny file does not exist.
+						Cleaned up usage of -UserOnly
+						Create new if user exists and the profiles does not.
+						Apply certain keys only to Default User.
+						Fixed Password generation bug.
+						Fixed bug where account was not enabled when trying to recreate user profile.
+	* Version 3.00.07 -	Fixed "Import-StartLayout: Access to the path"
+						Fixed Active User bug.
+	* Version 3.00.08 -	Reset Startmenu layout on Windows 10 1809+.
 	* Version 3.00.09 - Hide errors for Start Menu 1809 reset.
 	* Version 3.00.10 - Updated name of log file. Added function to install fonts. Import Security Template INI
 	* Version 3.00.11 - Updated info for Taskmenu layout. Clear old StartMenu layout. Fixed Font function error.
@@ -95,12 +97,22 @@
 	* Version 3.00.19 - Start/Task menu import bug.
 	* Version 3.00.20 - Blacklist bug fix. Caching some Installed features calls for speed.
 	* Version 3.00.21 - Service startup and disk timeout bug fix. 
+	* Version 3.00.22 - Remove write-color to fix transcript file output. Force -Wifi option if laptop is detected.
+	* Version 3.00.23 - Added -SkipSystemPermissions to skip hardening system drive.
+	* Version 3.00.24 - Added logic to backup registry changes in CSV. 
+	* Version 3.00.25 - Added switch -SkipServices to skip changing services. Added -TLS13
+	* Version 3.00.26 - Fixed logic with -SkipServices
+	* Version 3.00.27 - Fixed issues with StartMenuXml
+	* Version 3.00.28 - Fixed bug with set-reg function
+	* Version 3.00.29 - Added Support for Cryptography Order.
+	* Version 3.00.30 - Optimized Removing MS Store Appx packages.
 	#>
 #Requires -Version 5.1 -PSEdition Desktop
 #############################################################################
 #region Parameter Config
 #############################################################################
 PARAM (
+	[CmdletBinding()]
 	[string]$Config 			= $null,
     [array]$Profiles  	  		= @("Default"),	
 	[string]$LICache	  		= $null,
@@ -117,6 +129,7 @@ PARAM (
 	[switch]$UserOnly			= $false,
 	[switch]$NoCacheUpdate		= $false,
 	[switch]$AllowClientTLS1	= $false,
+	[switch]$TLS13          	= $false,
 	[switch]$Wifi				= $false,
 	[switch]$NoOEMInfo			= $false,
 	[switch]$OEMInfoAddSerial	= $false,
@@ -124,7 +137,9 @@ PARAM (
 	[switch]$IPv6				= $false,
 	[switch]$OneDrive			= $false,
 	[switch]$SkipMSStore		= $false,
-	[switch]$ReRegisterAppx		= $false
+	[switch]$ReRegisterAppx		= $false,
+	[switch]$SkipServices		= $false,
+	[switch]$SkipSystemPermissions		= $false
 )
 #############################################################################
 #endregion Parameter Config
@@ -140,7 +155,7 @@ If (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 #############################################################################
 #region User Variables
 #############################################################################
-$ScriptVersion = "3.0.21"
+$ScriptVersion = "3.0.30"
 $LogFile = ("\Logs\" + `
 		   ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
 		   $env:computername + "_" + `
@@ -153,6 +168,7 @@ $UsersProfileFolder = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows 
 $ProfileList =  New-Object System.Collections.ArrayList
 $WScriptShell = New-Object -ComObject ("WScript.Shell")
 $RegAddSCHANNEL = 'HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL'
+$Script:RegBackup = New-Object System.Collections.ArrayList
 #############################################################################
 #endregion User Variables
 #############################################################################
@@ -388,8 +404,10 @@ function Set-Reg {
 		[Parameter(Mandatory=$true,Position=1,HelpMessage="Path to Registry Key")][string]$regPath, 
 		[Parameter(Mandatory=$true,Position=2,HelpMessage="Name of Value")][string]$name,
 		[Parameter(Mandatory=$true,Position=3,HelpMessage="Data for Value")]$value,
-		[Parameter(Mandatory=$true,Position=4,HelpMessage="Type of Value")][ValidateSet("String", "ExpandString","Binary","DWord","MultiString","Qword","Unknown",IgnoreCase =$true)][string]$type 
+		[Parameter(Mandatory=$true,Position=4,HelpMessage="Type of Value")][ValidateSet("String", "ExpandString","Binary","DWord","MultiString","Qword","Unknown",IgnoreCase =$true)][string]$type ,
+		[Parameter(Mandatory=$false,Position=5,HelpMessage="Comment value")]$comment
 	) 
+	$key=$null
 	#Source: https://github.com/nichite/chill-out-windows-10/blob/master/chill-out-windows-10.ps1
 	# String: Specifies a null-terminated string. Equivalent to REG_SZ.
 	# ExpandString: Specifies a null-terminated string that contains unexpanded references to environment variables that are expanded when the value is retrieved. Equivalent to REG_EXPAND_SZ.
@@ -398,16 +416,58 @@ function Set-Reg {
 	# MultiString: Specifies an array of null-terminated strings terminated by two null characters. Equivalent to REG_MULTI_SZ.
 	# Qword: Specifies a 64-bit binary number. Equivalent to REG_QWORD.
 	# Unknown: Indicates an unsupported registry data type, such as REG_RESOURCE_LIST.
-	
-	If(!(Test-Path $regPath)) {
-        New-Item -Path $regPath -Force | Out-Null
+	Class BackupRegistry{
+		[String]$Path
+		[String]$Name
+		[String]$Value
+		[String]$Type
+		[String]$Comment
 	}
-	
+	$key = $null
+	$regvalue = $null
+	$regname = $null
+	If(Test-Path $regPath) {
+        $key = Get-Item -Path $regPath
+	}Else{
+		New-Item -Path $regPath -Force | Out-Null
+		$key = Get-Item -Path $regPath
+	}
 	If($type -eq "Binary" -and $value.GetType().Name -eq "String" -and $value -match ",") {
 		$value = [byte[]]($value -split ",")
 	}
-
-    New-ItemProperty -Path $regPath -Name $name -Value $value -PropertyType $type -Force | Out-Null
+	If ($key.Property.Equals($Name)){
+		If($key.GetValue($Name) -eq $Value) {
+			Write-Verbose ("`Same:" + $regPath + "\" + $name + " = " + $value)
+		}Else {
+			$BackupReg = [BackupRegistry]::new()
+			$BackupReg.Path = $regPath
+			$BackupReg.Name = $name
+			$BackupReg.Value = $value
+			$BackupReg.Type = $type
+			$BackupReg.Comment = $comment
+			If($null -eq $value){
+				Write-Verbose ("`Creating:" + $regPath + "\" + $name + " = " + $value)
+			}Else {
+				Write-Verbose ("`Updating:" + $regPath + "\" + $name + " = " + $value)
+			}
+			$Script:RegBackup.Add($BackupReg) | out-null
+			New-ItemProperty -Path $regPath -Name $name -Value $value -PropertyType $type -Force | Out-Null
+		}
+	}Else{
+		$BackupReg = [BackupRegistry]::new()
+		$BackupReg.Path = $regPath
+		$BackupReg.Name = $name
+		$BackupReg.Value = $value
+		$BackupReg.Type = $type
+		$BackupReg.Comment = $comment
+		If($null -eq $value){
+			Write-Verbose ("`Creating:" + $regPath + "\" + $name + " = " + $value)
+		}Else {
+			Write-Verbose ("`Updating:" + $regPath + "\" + $name + " = " + $value)
+		}
+		$Script:RegBackup.Add($BackupReg) | out-null
+		New-ItemProperty -Path $regPath -Name $name -Value $value -PropertyType $type -Force | Out-Null
+	}
 }
 Function Set-Owner {
     <#
@@ -1130,10 +1190,12 @@ If ((Get-MachineType).type -eq "VM") {
 If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
 	If (Get-CimInstance -Class win32_systemenclosure | Where-Object { $_.chassistypes -eq 9 -or $_.chassistypes -eq 10 -or $_.chassistypes -eq 14}) {
 		$isLaptop = $true
+		$Wifi = $true
 	}
 } Else {
 	If (Get-WmiObject -Class win32_systemenclosure | Where-Object { $_.chassistypes -eq 9 -or $_.chassistypes -eq 10 -or $_.chassistypes -eq 14}) {
 		$isLaptop = $true
+		$Wifi = $true
 	}
 } 
 #endregion Test for Laptop
@@ -1215,7 +1277,7 @@ If (-Not $NoCacheUpdate) {
 If (-Not $UserOnly) {
 	write-host ("Hardening Permissions: " + ($env:systemdrive + "\"))
 	$acl = Get-Acl ($env:systemdrive + "\")
-	If ($acl.Access | Where-Object { $_.IdentityReference -eq "NT AUTHORITY\Authenticated Users" }) {
+	If ((-Not ($acl.Access | Where-Object { $_.IdentityReference -eq "NT AUTHORITY\Authenticated Users" })) -and $SkipSystemPermissions -eq $false) {
 		$usersid = New-Object System.Security.Principal.Ntaccount ("NT AUTHORITY\Authenticated Users")
 		$acl.PurgeAccessRules($usersid) | Out-Null
 		$acl | Set-Acl ($env:systemdrive + "\") | Out-Null
@@ -1396,21 +1458,25 @@ If (-Not $UserOnly) {
 		If (-Not $StartLayoutXML) {
 			If ($Store) {
 				$StartLayoutXML = ($ConfigFile.Config.WindowsSettings.StartMenuXml.ChildNodes | Where-Object {$_.store -eq "true"} | Select-Object -First 1).'#text'
-			}else {
-				$StartLayoutXML = ($ConfigFile.Config.WindowsSettings.StartMenuXml.ChildNodes | Where-Object {$_.store -eq "false"} | Select-Object -First 1).'#text'
+			}elseIf ($LockedDown) {
+				$StartLayoutXML = ($ConfigFile.Config.WindowsSettings.StartMenuXml.ChildNodes | Where-Object {$_.LockedDown -eq "true"} | Select-Object -First 1).'#text'
+			}elseIf ($Manager) {
+				$StartLayoutXML = ($ConfigFile.Config.WindowsSettings.StartMenuXml.ChildNodes | Where-Object {$_.Manager -eq "true"} | Select-Object -First 1).'#text'
 			}
 		}
-		If (Test-Path ($LICache + "\" + $StartLayoutXML)) {
-			write-host ("Setting Taskbar and Start Menu: " + ($LICache + "\" + $StartLayoutXML))
-			Import-StartLayout -LayoutPath ($LICache + "\" + $StartLayoutXML) -MountPath ($env:systemdrive + "\") | Out-Null
-			If (-Not (Test-Path -Path ($env:systemroot + "\OEM\"))) {
-				New-item -ItemType Directory -Force -Path ($env:systemroot + "\OEM\") 
+		If ($StartLayoutXML){
+			If (Test-Path ($LICache + "\" + $StartLayoutXML)) {
+				write-host ("Setting Taskbar and Start Menu: " + ($LICache + "\" + $StartLayoutXML))
+				Import-StartLayout -LayoutPath ($LICache + "\" + $StartLayoutXML) -MountPath ($env:systemdrive + "\") | Out-Null
+				If (-Not (Test-Path -Path ($env:systemroot + "\OEM\"))) {
+					New-item -ItemType Directory -Force -Path ($env:systemroot + "\OEM\") 
+				}
+				If (-Not (Test-Path -Path ($env:systemdrive + "\Recovery\AutoApply\"))) {
+					New-item -ItemType Directory -Force -Path ($env:systemdrive + "\Recovery\AutoApply\") 
+				}
+				Copy-Item -Path ($LICache + "\" + $StartLayoutXML) -Destination 'C:\Windows\OEM\TaskbarLayoutModification.xml' -Force -Confirm:$false
+				Copy-Item -Path ($LICache + "\" + $StartLayoutXML) -Destination 'C:\Recovery\AutoApply\TaskbarLayoutModification.xml' -Force -Confirm:$false
 			}
-			If (-Not (Test-Path -Path ($env:systemdrive + "\Recovery\AutoApply\"))) {
-				New-item -ItemType Directory -Force -Path ($env:systemdrive + "\Recovery\AutoApply\") 
-			}
-			Copy-Item -Path ($LICache + "\" + $StartLayoutXML) -Destination 'C:\Windows\OEM\TaskbarLayoutModification.xml' -Force -Confirm:$false
-			Copy-Item -Path ($LICache + "\" + $StartLayoutXML) -Destination 'C:\Recovery\AutoApply\TaskbarLayoutModification.xml' -Force -Confirm:$false
 		}
 	}
 }
@@ -1426,9 +1492,10 @@ Write-Host ("-"*[console]::BufferWidth)
 $UserProgress = 1
 ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 	Write-Progress -ID 0 -Activity 'Hardening User Profiles' -CurrentOperation $CurrentProfile -PercentComplete (($UserProgress / $ProfileList.count) * 100)
-	# write-host ("Working with user: " + $CurrentProfile) -foregroundcolor "Magenta"
-	Write-Color "Working with user: ",
-				$CurrentProfile -Color White,Magenta
+	# Write-Color "Working with user: ",
+	# 			$CurrentProfile -Color White,Magenta
+	Write-host -NoNewline -Object "Working with user: "	-ForegroundColor White
+	Write-host -Object $CurrentProfile -ForegroundColor Magenta
 	$HKEY = ("HKU\H_" + $CurrentProfile)
 	If (-Not (Test-Path $HKEY)) {
 		#region Load User Regsitry
@@ -1586,30 +1653,30 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				If ($IsVM) {
 					If ($ConfigFile.Config.WindowsSettings.VM.ScreenSave.Active -and $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Secure -and $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut -and $ConfigFile.Config.WindowsSettings.VM.ScreenSave.ScreenSaver) {
 						Write-Host "Setup Logon Screen Saver:"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Active "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Active "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Secure "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Secure "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.ScreenSaver "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.ScreenSaver "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "WallpaperStyle" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.WallpaperStyle "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Active "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Active "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Secure "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Secure "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.ScreenSaver "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.ScreenSaver "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "WallpaperStyle" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.WallpaperStyle "STRING" "Setup Logon Screen Saver"
 						
 					}
 				}Else{
 					If ($ConfigFile.Config.WindowsSettings.ScreenSave.Active -and $ConfigFile.Config.WindowsSettings.ScreenSave.Secure -and $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut -and $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver) {
 						Write-Host "Setup Logon Screen Saver:"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.ScreenSave.Active "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.ScreenSave.Active "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.ScreenSave.Secure "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.ScreenSave.Secure "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver "STRING"
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "WallpaperStyle" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.WallpaperStyle "STRING"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.ScreenSave.Active "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.ScreenSave.Active "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.ScreenSave.Secure "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.ScreenSave.Secure "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Windows\Control Panel\Desktop") "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver "STRING" "Setup Logon Screen Saver"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Control Panel\Desktop") "WallpaperStyle" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.WallpaperStyle "STRING" "Setup Logon Screen Saver"
 					}
 				}
 			}
@@ -1619,81 +1686,109 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				write-host ("`tUpdating Registry Settings:")
 				Foreach ($key in ($ConfigFile.Config.UserSettings.UserRegistry.Item | Where-Object {$_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
 					If ($key.Default -eq 'true' -and $key.Store -eq 'false' -and $CurrentProfile.ToUpper() -eq "DEFAULT") {		
-						Write-Color -Text "Default User:  ",
-											$key.Comment -Color Blue,DarkGray -StartTab 2
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
+						# Write-Color -Text "Default User:  ",
+						# 					$key.Comment -Color Blue,DarkGray -StartTab 2
+						write-host -NoNewLine -Object "`t`tDefault User:  " -ForegroundColor Blue
+						write-host -Object ( $key.Comment) -ForegroundColor DarkGray
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 					} ElseIf ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {		
-						Write-Color -Text "LockedDown:  ",
-											$key.Comment -Color Blue,DarkGray -StartTab 2
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
+						# Write-Color -Text "LockedDown:  ",
+						# 					$key.Comment -Color Blue,DarkGray -StartTab 2
+						write-host -NoNewLine -Object "`t`tLockedDown:  " -ForegroundColor Blue
+						write-host -Object ( $key.Comment) -ForegroundColor DarkGray
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 					} ElseIf ($Store -and $key.Store -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
-						Write-Color -Text "Store:       ",
-											$key.Comment -Color Red,DarkGray -StartTab 2
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
+						# Write-Color -Text "Store:       ",
+						# 					$key.Comment -Color Red,DarkGray -StartTab 2
+						write-host -NoNewLine -Object "`t`tStore:       " -ForegroundColor Blue
+						write-host -Object ( $key.Comment) -ForegroundColor DarkGray
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 					} ElseIf ($Manager -and $key.Manager -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
-						Write-Color -Text "Manager:     ",
-											$key.Comment -Color Yellow,DarkGray -StartTab 2
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
+						# Write-Color -Text "Manager:     ",
+						# 					$key.Comment -Color Yellow,DarkGray -StartTab 2
+						write-host -NoNewLine -Object "`t`tManager:     " -ForegroundColor Yellow
+						write-host -Object ( $key.Comment) -ForegroundColor DarkGray
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 					} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false' -and $key.Default -eq 'false' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {
-						Write-Color -Text "All:         ",
-									$key.Comment -Color DarkGreen,DarkGray -StartTab 2
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type	
+						# Write-Color -Text "All:         ",
+						# 			$key.Comment -Color DarkGreen,DarkGray -StartTab 2
+						write-host -NoNewLine -Object "`t`tAll:         " -ForegroundColor DarkGreen
+						write-host -Object ( $key.Comment) -ForegroundColor DarkGray
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 					}
 				}			
 				If ($IsVM) {
 					Foreach ($key in ($ConfigFile.Config.UserSettings.VM.UserRegistry.Item | Where-Object { $_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
 						If ($key.Default -eq 'true' -and $key.Store -eq 'false' -and $CurrentProfile.ToUpper() -eq "DEFAULT") {		
-							Write-Color -Text "Default User:  ",
-												$key.Comment -Color Blue,DarkGray -StartTab 2
-							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
+							# Write-Color -Text "Default User:  ",
+							# 					$key.Comment -Color Blue,DarkGray -StartTab 2
+							write-host -NoNewLine -Object "`t`tDefault User:  " -ForegroundColor Blue
+							write-host -Object ( $key.Comment) -ForegroundColor DarkGray
+							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 						} ElseIf ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {		
-							Write-Color -Text "LockedDown:  ",
-												$key.Comment -Color Blue,DarkGray -StartTab 2
-							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
+							# Write-Color -Text "LockedDown:  ",
+							# 					$key.Comment -Color Blue,DarkGray -StartTab 2
+							write-host -NoNewLine -Object "`t`tLockedDown:  " -ForegroundColor Blue
+							write-host -Object ( $key.Comment) -ForegroundColor DarkGray				
+							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 						} ElseIf ($Store -and $key.Store -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
-							Write-Color -Text "Store:       ",
-												$key.Comment -Color Red,DarkGray -StartTab 2
-							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
+							# Write-Color -Text "Store:       ",
+							# 					$key.Comment -Color Red,DarkGray -StartTab 2
+							write-host -NoNewLine -Object "`t`tStore:       " -ForegroundColor Blue
+							write-host -Object ( $key.Comment) -ForegroundColor DarkGray
+							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 						} ElseIf ($Manager -and $key.Manager -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
-							Write-Color -Text "Manager:     ",
-												$key.Comment -Color Yellow,DarkGray -StartTab 2
-							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type
+							# Write-Color -Text "Manager:     ",
+							# 					$key.Comment -Color Yellow,DarkGray -StartTab 2
+							write-host -NoNewLine -Object "`t`tManager:     " -ForegroundColor Yellow
+							write-host -Object ( $key.Comment) -ForegroundColor DarkGray
+							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 						} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false' -and $key.Default -eq 'false' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {
-							Write-Color -Text "All:         ",
-										$key.Comment -Color DarkGreen,DarkGray -StartTab 2
-							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type	
+							# Write-Color -Text "All:         ",
+							# 			$key.Comment -Color DarkGreen,DarkGray -StartTab 2
+							write-host -NoNewLine -Object "`t`tAll:         " -ForegroundColor DarkGreen
+							write-host -Object ( $key.Comment) -ForegroundColor DarkGray
+							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 						}
 					}
 				}
 				#Remove Items
 				Foreach ($key in ($ConfigFile.Config.UserSettings.UserRegistry.Remove | Where-Object {$_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
 					If ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false') {				
-						Write-Color -Text "LockedDown:  ",
-											$key.Comment -Color Blue,DarkGray -StartTab 2
+						# Write-Color -Text "LockedDown:  ",
+						# 					$key.Comment -Color Blue,DarkGray -StartTab 2
+						write-host -NoNewLine -Object "`t`tLockedDown:  " -ForegroundColor Blue
+						write-host -Object ( $key.Comment) -ForegroundColor DarkGray
 						If ($key.Value) {
 							Remove-ItemProperty -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Name $key.Value -Confirm:$False  -erroraction 'silentlycontinue'
 						} else {
 							Remove-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key)  -Confirm:$False  -erroraction 'silentlycontinue'
 						}
 					} ElseIf ($Store -and $key.Store -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
-						Write-Color -Text "Store:       ",
-											$key.Comment -Color Red,DarkGray -StartTab 2
+						# Write-Color -Text "Store:       ",
+						# 					$key.Comment -Color Red,DarkGray -StartTab 2
+						write-host -NoNewLine -Object "`t`tStore:       " -ForegroundColor Red
+						write-host -Object ( $key.Comment) -ForegroundColor DarkGray
 						If ($key.Value) {
 							Remove-ItemProperty -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Name $key.Value -Confirm:$False  -erroraction 'silentlycontinue'
 						} else {
 							Remove-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key)  -Confirm:$False  -erroraction 'silentlycontinue'
 						}
 					} ElseIf ($Manager -and $key.Manager -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
-						Write-Color -Text "Manager:     ",
-											$key.Comment -Color Yellow,DarkGray -StartTab 2
+						# Write-Color -Text "Manager:     ",
+						# 					$key.Comment -Color Yellow,DarkGray -StartTab 2
+						write-host -NoNewLine -Object "`t`tManager:     " -ForegroundColor Yellow
+						write-host -Object ( $key.Comment) -ForegroundColor DarkGray
 						If ($key.Value) {
 							Remove-ItemProperty -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Name $key.Value -Confirm:$False  -erroraction 'silentlycontinue'
 						} else {
 							Remove-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key)  -Confirm:$False  -erroraction 'silentlycontinue'
 						}
 					} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false') {
-						Write-Color -Text "All:         ",
-									$key.Comment -Color DarkGreen,DarkGray -StartTab 2
+						# Write-Color -Text "All:         ",
+						# 			$key.Comment -Color DarkGreen,DarkGray -StartTab 2
+						write-host -NoNewLine -Object "`t`tAll:         " -ForegroundColor DarkGreen
+						write-host -Object ( $key.Comment) -ForegroundColor DarkGray
 						If ($key.Value) {
 							Remove-ItemProperty -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Name $key.Value -Confirm:$False  -erroraction 'silentlycontinue'
 						} else {
@@ -1704,26 +1799,34 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				#Add Keys
 				Foreach ($key in ($ConfigFile.Config.UserSettings.UserRegistry.Add | Where-Object {$_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
 					If ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false') {				
-						Write-Color -Text "LockedDown:  ",
-											$key.Comment -Color Blue,DarkGray -StartTab 2
+						# Write-Color -Text "LockedDown:  ",
+						# 					$key.Comment -Color Blue,DarkGray -StartTab 2
+						write-host -NoNewLine -Object "`t`tLockedDown:  " -ForegroundColor Blue
+						write-host -Object ( $key.Comment) -ForegroundColor DarkGray
 						If ($key.key -and -Not (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key))) {
 							New-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Force | Out-Null
 						}
 					} ElseIf ($Store -and $key.Store -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
-						Write-Color -Text "Store:       ",
-											$key.Comment -Color Red,DarkGray -StartTab 2
+						# Write-Color -Text "Store:       ",
+						# 					$key.Comment -Color Red,DarkGray -StartTab 2
+						write-host -NoNewLine -Object "`t`tStore:       " -ForegroundColor Red
+						write-host -Object ( $key.Comment) -ForegroundColor DarkGray
 						If ($key.key -and -Not (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key))) {
 							New-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Force | Out-Null
 						}
 					} ElseIf ($Manager -and $key.Manager -eq 'true' -and $CurrentProfile.ToUpper() -ne "DEFAULT") {				
-						Write-Color -Text "Manager:     ",
-											$key.Comment -Color Yellow,DarkGray -StartTab 2
+						# Write-Color -Text "Manager:     ",
+						# 					$key.Comment -Color Yellow,DarkGray -StartTab 2
+						write-host -NoNewLine -Object "`t`tManager:     " -ForegroundColor Yellow
+						write-host -Object ( $key.Comment) -ForegroundColor DarkGray
 						If ($key.key -and -Not (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key))) {
 							New-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Force | Out-Null
 						}
 					} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false') {
-						Write-Color -Text "All:         ",
-									$key.Comment -Color DarkGreen,DarkGray -StartTab 2
+						# Write-Color -Text "All:         ",
+						# 			$key.Comment -Color DarkGreen,DarkGray -StartTab 2
+						write-host -NoNewLine -Object "`t`tAll:         " -ForegroundColor DarkGreen
+						write-host -Object ( $key.Comment) -ForegroundColor DarkGray
 						If ($key.key -and -Not (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key))) {
 							New-Item -Path ($HKEY.replace("HKU\","HKU:\") + "\" + $key.Key) -Force | Out-Null
 						}
@@ -1739,13 +1842,13 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				#endregion OneDrive
 				#region Windows Explorer, Force Enable Basic Settings
 					#Show This PC
-					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel") "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 0 "DWORD"
-					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\ClassicStartMenu") "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 0 "DWORD"
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel") "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 0 "DWORD" 'Show This PC'
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\ClassicStartMenu") "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 0 "DWORD" 'Show This PC'
 					#Show Frequent Access
-					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer") "ShowFrequent" 1 "DWORD"
-					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer") "ShowRecent" 1 "DWORD"
-					# Change Explorer home screen back to ""Quick Access"
-					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "LaunchTo" 2 "DWORD"	
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer") "ShowFrequent" 1 "DWORD" "Show Frequent Access"
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer") "ShowRecent" 1 "DWORD" "Show Frequent Access"
+					# Change Explorer home screen back to "Quick Access"
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") "LaunchTo" 2 "DWORD" 'Explorer home screen back to "Quick Access"'
 				#endregion Windows Explorer, Force Enable Basic Settings
 				#region Internet Explorer
 					write-host ("`tSetting up Internet Explorer:")
@@ -1753,24 +1856,24 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 					[scriptblock]$IEScriptBlock = {
 						#MigrateProxy
 						If ($ConfigFile.Config.IE.AutoDetect) {
-							Set-Reg $HKEYIS "AutoDetect" $ConfigFile.Config.IE.AutoDetect "DWORD" 
+							Set-Reg $HKEYIS "AutoDetect" $ConfigFile.Config.IE.AutoDetect "DWORD" 'MigrateProxy'
 						}
 						#ProxyEnable
 						If ($ConfigFile.Config.IE.ProxyEnable) {
-							Set-Reg $HKEYIS "ProxyEnable" $ConfigFile.Config.IE.ProxyEnable "DWORD" 
+							Set-Reg $HKEYIS "ProxyEnable" $ConfigFile.Config.IE.ProxyEnable "DWORD" 'ProxyEnable'
 						}
 						#CacheScripts
 						If ($ConfigFile.Config.IE.EnableAutoProxyResultCache) {
-							Set-Reg $HKEYIS "EnableAutoProxyResultCache" $ConfigFile.Config.IE.EnableAutoProxyResultCache "DWORD" 
+							Set-Reg $HKEYIS "EnableAutoProxyResultCache" $ConfigFile.Config.IE.EnableAutoProxyResultCache "DWORD" 'CacheScripts'
 						}
 						#Set SSL Caching
 						If ($ConfigFile.Config.IE.DisableCachingOfSSLPages) {
-							Set-Reg $HKEYIS "DisableCachingOfSSLPages" $ConfigFile.Config.IE.DisableCachingOfSSLPages "DWORD" 
-							Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings" "DisableCachingOfSSLPages" $ConfigFile.Config.IE.DisableCachingOfSSLPages "DWORD"
+							Set-Reg $HKEYIS "DisableCachingOfSSLPages" $ConfigFile.Config.IE.DisableCachingOfSSLPages "DWORD" 'Set SSL Caching'
+							Set-Reg "HKLM:\Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings" "DisableCachingOfSSLPages" $ConfigFile.Config.IE.DisableCachingOfSSLPages "DWORD" 'Set SSL Caching'
 						}
 						#Enable changing Automatic Configuration settings
 						If ($ConfigFile.Config.IE.EnableUserChangingProxySettings) {
-							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Control Panel") "Autoconfig" $ConfigFile.Config.IE.EnableUserChangingProxySettings "DWORD"
+							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Internet Explorer\Control Panel") "Autoconfig" $ConfigFile.Config.IE.EnableUserChangingProxySettings "DWORD" 'Enable changing Automatic Configuration settings'
 						}
 						#AutoConfigProxy
 						If ($ConfigFile.Config.IE.AutoConfigProxy) {
@@ -1780,68 +1883,68 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 								$temp = (70,0,0,0,3,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
 							} 
 							$temp[8] = $ConfigFile.Config.IE.AutoConfigProxy
-							Set-Reg ($HKEYIS + "\Connections") "DefaultConnectionSettings" $temp  "Binary"		
+							Set-Reg ($HKEYIS + "\Connections") "DefaultConnectionSettings" $temp  "Binary" 'Enable Auto Config of Proxy'
 						}
 						#PopupsUseNewWindow
 						If ($ConfigFile.Config.IE.PopupsUseNewWindow) {
-							Set-Reg ($HKEYIE + "\TabbedBrowsing") "PopupsUseNewWindow" $ConfigFile.Config.IE.PopupsUseNewWindow "DWORD"
+							Set-Reg ($HKEYIE + "\TabbedBrowsing") "PopupsUseNewWindow" $ConfigFile.Config.IE.PopupsUseNewWindow "DWORD" 'PopupsUseNewWindow'
 						}
 						#PhishingFilter
 						If ($ConfigFile.Config.IE.PhishingFilter) {
-							Set-Reg ($HKEYIE + "\PhishingFilter") "Enabled" $ConfigFile.Config.IE.PhishingFilter "DWORD"
+							Set-Reg ($HKEYIE + "\PhishingFilter") "Enabled" $ConfigFile.Config.IE.PhishingFilter "DWORD" 'PhishingFilter'
 						}
 						#Enable AutoImageResize
 						If ($ConfigFile.Config.IE.AutoImageResize) {
-							Set-Reg ($HKEYIE + "\Main") "Enable AutoImageResize" $ConfigFile.Config.IE.AutoImageResize "String"
+							Set-Reg ($HKEYIE + "\Main") "Enable AutoImageResize" $ConfigFile.Config.IE.AutoImageResize "String" 'AutoImageResize'
 						}		
 						#Homepage
 						If ($ConfigFile.Config.Company.HomePage) {
-							Set-Reg ($HKEYIE + "\Main") "Start Page" $ConfigFile.Config.Company.HomePage "String"
+							Set-Reg ($HKEYIE + "\Main") "Start Page" $ConfigFile.Config.Company.HomePage "String" 'Homepage'
 						}		
 						#PageSetup header
 						If ($ConfigFile.Config.IE.Header) {
-							Set-Reg ($HKEYIE + "\PageSetup") "header" $ConfigFile.Config.IE.Header "String"
+							Set-Reg ($HKEYIE + "\PageSetup") "header" $ConfigFile.Config.IE.Header "String" 'PageSetup header'
 						} else {
 							Set-Reg ($HKEYIE + "\PageSetup") "header" "" "String"
 						}		
 						#PageSetup footer
 						If ($ConfigFile.Config.IE.footer) {
-							Set-Reg ($HKEYIE + "\PageSetup") "footer" $ConfigFile.Config.IE.footer "String"
+							Set-Reg ($HKEYIE + "\PageSetup") "footer" $ConfigFile.Config.IE.footer "String" 'PageSetup footer'
 						} else {
 							Set-Reg ($HKEYIE + "\PageSetup") "footer" "" "String"
 						}		
 						#PageSetup margin_bottom
 						If ($ConfigFile.Config.IE.margin_bottom) {
-							Set-Reg ($HKEYIE + "\PageSetup") "margin_bottom" $ConfigFile.Config.IE.margin_bottom "String"
+							Set-Reg ($HKEYIE + "\PageSetup") "margin_bottom" $ConfigFile.Config.IE.margin_bottom "String" 'PageSetup margin_bottom'
 						} else {
 							Set-Reg ($HKEYIE + "\PageSetup") "margin_bottom" "" "String"
 						}		
 						#PageSetup margin_top
 						If ($ConfigFile.Config.IE.margin_top) {
-							Set-Reg ($HKEYIE + "\PageSetup") "margin_top" $ConfigFile.Config.IE.margin_top "String"
+							Set-Reg ($HKEYIE + "\PageSetup") "margin_top" $ConfigFile.Config.IE.margin_top "String" 'PageSetup margin_top'
 						} else {
 							Set-Reg ($HKEYIE + "\PageSetup") "margin_top" "" "String"
 						}		
 						#PageSetup margin_left
 						If ($ConfigFile.Config.IE.margin_left) {
-							Set-Reg ($HKEYIE + "\PageSetup") "margin_left" $ConfigFile.Config.IE.margin_left "String"
+							Set-Reg ($HKEYIE + "\PageSetup") "margin_left" $ConfigFile.Config.IE.margin_left "String" 'PageSetup margin_left'
 						} else {
 							Set-Reg ($HKEYIE + "\PageSetup") "margin_left" "" "String"
 						}		
 						#PageSetup margin_right
 						If ($ConfigFile.Config.IE.margin_right) {
-							Set-Reg ($HKEYIE + "\PageSetup") "margin_right" $ConfigFile.Config.IE.margin_right "String"
+							Set-Reg ($HKEYIE + "\PageSetup") "margin_right" $ConfigFile.Config.IE.margin_right "String" 'PageSetup margin_right'
 						} else {
 							Set-Reg ($HKEYIE + "\PageSetup") "margin_right" "" "String"
 						}	
 						#CacheLimit in MB; will convirt to KB
 						If ($ConfigFile.Config.IE.Cache_Size) {
-							Set-Reg ($HKEYIS + "\5.0\Cache\Content\CacheLimit") "CacheLimit" ([int]([int]$ConfigFile.Config.IE.Cache_Size * 1024)) "DWORD"
-							Set-Reg ($HKEYIS + "\Cache\Content\CacheLimit") "CacheLimit" ([int]([int]$ConfigFile.Config.IE.Cache_Size * 1024)) "DWORD"
+							Set-Reg ($HKEYIS + "\5.0\Cache\Content\CacheLimit") "CacheLimit" ([int]([int]$ConfigFile.Config.IE.Cache_Size * 1024)) "DWORD" 'CacheLimit'
+							Set-Reg ($HKEYIS + "\Cache\Content\CacheLimit") "CacheLimit" ([int]([int]$ConfigFile.Config.IE.Cache_Size * 1024)) "DWORD" 'CacheLimit'
 						}
 						#Cache Persistents
 						If ($ConfigFile.Config.IE.Cache_Persistent) {
-							Set-Reg ($HKEYIS + "\Cache") "CacheLimit" $ConfigFile.Config.IE.Cache_Persistent "DWORD"
+							Set-Reg ($HKEYIS + "\Cache") "CacheLimit" $ConfigFile.Config.IE.Cache_Persistent "DWORD" 'Cache Persistents'
 						}
 						#region Zones Setup
 						If ($ConfigFile.Config.IE.ZoneMaps.ZoneMap.Count -gt 0) {
@@ -1862,14 +1965,20 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 									4 {$IEZone = "Restricted Sites Zone"}
 								}
 								# write-host ("`t`tAdding Site: " + $item.Site + " to Zone: " + $IEZone + " for Protocol: " + $item.Protocol)
-								write-color -Text   "Adding Site: ",
-													$item.Site,
-													" to Zone: ",
-													$IEZone,
-													" for Protocol: ",
-													$item.Protocol -ForegroundColor  White,Red,White,Magenta,White,Cyan -StartTab 2
-								Set-Reg ($HKEYIS + "\ZoneMap\Domains\" +  $item.Site) $item.Protocol $item.Zone "DWORD"
-								Set-Reg ($HKEYIS + "\ZoneMap\EscDomains\" +  $item.Site) $item.Protocol $item.Zone "DWORD"
+								# write-color -Text   "Adding Site: ",
+								# 					$item.Site,
+								# 					" to Zone: ",
+								# 					$IEZone,
+								# 					" for Protocol: ",
+								# 					$item.Protocol -ForegroundColor  White,Red,White,Magenta,White,Cyan -StartTab 2
+								write-host -NoNewLine -Object "`t`tAdding Site: " -ForegroundColor White
+								write-host -NoNewLine -Object $item.Site -ForegroundColor Red
+								write-host -NoNewLine -Object " to Zone: " -ForegroundColor White
+								write-host -NoNewLine -Object $IEZone -ForegroundColor Magenta
+								write-host -NoNewLine -Object " for Protocol: " -ForegroundColor White
+								write-host -Object  $item.Protocol -ForegroundColor Cyan
+								Set-Reg ($HKEYIS + "\ZoneMap\Domains\" +  $item.Site) $item.Protocol $item.Zone "DWORD" 'region Zones Setup'
+								Set-Reg ($HKEYIS + "\ZoneMap\EscDomains\" +  $item.Site) $item.Protocol $item.Zone "DWORD" 'region Zones Setup'
 							}
 						}
 						#endregion Zones Setup
@@ -1889,27 +1998,27 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 					write-host ("`tSetting up Windows Media Player")
 					#DesktopShortcut
 					If ($ConfigFile.Config.Windows_Media_Player.DesktopShortcut) {
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\MediaPlayer\Setup\UserOptions") "DesktopShortcut" $ConfigFile.Config.Windows_Media_Player.DesktopShortcut "String" 
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\MediaPlayer\Setup\UserOptions") "DesktopShortcut" $ConfigFile.Config.Windows_Media_Player.DesktopShortcut "String" 'Windows Media Player DesktopShortcut'
 					}		
 					#QuickLaunchShortcut
 					If ($ConfigFile.Config.Windows_Media_Player.QuickLaunchShortcut) {
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\MediaPlayer\Setup\UserOptions") "QuickLaunchShortcut" $ConfigFile.Config.Windows_Media_Player.QuickLaunchShortcut "DWORD" 
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\MediaPlayer\Setup\UserOptions") "QuickLaunchShortcut" $ConfigFile.Config.Windows_Media_Player.QuickLaunchShortcut "DWORD" 'Windows Media Player QuickLaunchShortcut'
 					}		
 					#AcceptedPrivacyStatement
 					If ($ConfigFile.Config.Windows_Media_Player.AcceptedPrivacyStatement) {
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\MediaPlayer\Preferences") "AcceptedPrivacyStatement" $ConfigFile.Config.Windows_Media_Player.AcceptedPrivacyStatement "DWORD" 
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\MediaPlayer\Preferences") "AcceptedPrivacyStatement" $ConfigFile.Config.Windows_Media_Player.AcceptedPrivacyStatement "DWORD" 'Windows Media Player AcceptedPrivacyStatement'
 					}		
 					#FirstRun
 					If ($ConfigFile.Config.Windows_Media_Player.FirstRun) {
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\MediaPlayer\Preferences") "FirstRun" $ConfigFile.Config.Windows_Media_Player.FirstRun "DWORD" 
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\MediaPlayer\Preferences") "FirstRun" $ConfigFile.Config.Windows_Media_Player.FirstRun "DWORD" 'Windows Media Player FirstRun'
 					}		
 					#DisableMRU
 					If ($ConfigFile.Config.Windows_Media_Player.DisableMRU) {
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\MediaPlayer\Preferences") "DisableMRU" $ConfigFile.Config.Windows_Media_Player.DisableMRU "DWORD" 
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\MediaPlayer\Preferences") "DisableMRU" $ConfigFile.Config.Windows_Media_Player.DisableMRU "DWORD" 'Windows Media Player DisableMRU'
 					}		
 					#AutoCopyCD
 					If ($ConfigFile.Config.Windows_Media_Player.AutoCopyCD) {
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\MediaPlayer\Preferences") "AutoCopyCD" $ConfigFile.Config.Windows_Media_Player.AutoCopyCD "DWORD" 
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\MediaPlayer\Preferences") "AutoCopyCD" $ConfigFile.Config.Windows_Media_Player.AutoCopyCD "DWORD" 'Windows Media Player AutoCopyCD'
 					}		
 				#endregion Windows Media Player
 				#region Chrome Setup
@@ -1936,32 +2045,85 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 				#endregion Chrome Setup
 			#endregion Set Non-Store
 			#region Set LockedDown
-				#Chrome
+				#region Chrome
 				#Disables all extensions
 				If ($ConfigFile.Config.Chrome.DisablesExtensions -eq "True") {
 					If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\ExtensionInstallBlacklist")) {
 						Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\ExtensionInstallBlacklist") -Recurse | out-null
 					}
-					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\ExtensionInstallBlacklist") 1 "*" "String"
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\ExtensionInstallBlacklist") 1 "*" "String" 'Chrome Disables all extensions'
 				}
 				#Sets Startup page
 				If ($ConfigFile.Config.Company.HomePage){
 					If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\RestoreOnStartupURLs")) {
 						Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\RestoreOnStartupURLs") -Recurse | out-null
 					}
-					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\RestoreOnStartupURLs") 1 $ConfigFile.Config.Company.HomePage "String"
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\RestoreOnStartupURLs") 1 $ConfigFile.Config.Company.HomePage "String" 'Chrome Sets Startup page'
 				}			
-				#$ChromeURLBlackList Stops local browsing
+				#Chrome URLBlackList Stops local browsing
 				If ($ConfigFile.Config.Chrome.BlackListURLs.URL.Count -ge 1) {
 					If (Test-Path($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\URLBlacklist")) {
 						Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\URLBlacklist") -Recurse
 					}
 					$i = 1
 					ForEach ( $item in $ConfigFile.Config.Chrome.BlackListURLs.URL) {
-						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\URLBlacklist") $i $item "String"
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\URLBlacklist") $i $item "String" 'Chrome URLBlackList Stops local browsing'
 						$i++
 					}	
-				}	 
+				}
+				#Auth Whitelist
+				If ($ConfigFile.Config.Chrome.DelegateWhiteList.URL.Count -ge 1) {
+					If (Test-Path($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\AuthNegotiateDelegateAllowlist")) {
+						Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\AuthNegotiateDelegateAllowlist") -Recurse
+					}
+					If (Test-Path($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\AuthServerAllowlist")) {
+						Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome\AuthServerAllowlist") -Recurse
+					}
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "AuthNegotiateDelegateAllowlist" (($ConfigFile.Config.Chrome.DelegateWhiteList.URL) -join ",") "String" 'Chrome SSON DelegateWhiteList'
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Google\Chrome") "AuthServerAllowlist" (($ConfigFile.Config.Chrome.DelegateWhiteList.URL) -join ",") "String" 'Chrome SSON DelegateWhiteList'
+
+				}
+				#endregion Chrome
+				#region Edge
+				#Disables all extensions
+				If ($ConfigFile.Config.Edge.DisablesExtensions -eq "True") {
+					If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge\ExtensionInstallBlacklist")) {
+						Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge\ExtensionInstallBlacklist") -Recurse | out-null
+					}
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge\ExtensionInstallBlacklist") 1 "*" "String" 'Edge Disables all extensions'
+				}
+				#Sets Startup page
+				If ($ConfigFile.Config.Company.HomePage){
+					If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge\RestoreOnStartupURLs")) {
+						Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge\RestoreOnStartupURLs") -Recurse | out-null
+					}
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge\RestoreOnStartupURLs") 1 $ConfigFile.Config.Company.HomePage "String" 'Edge Sets Startup page'
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge") "HomepageLocation" $ConfigFile.Config.Company.HomePage "String" 'Edge Sets Startup page'
+				}			
+				#Edge URLBlackList 
+				If ($ConfigFile.Config.Chrome.BlackListURLs.URL.Count -ge 1) {
+					If (Test-Path($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge\URLBlacklist")) {
+						Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge\URLBlacklist") -Recurse
+					}
+					$i = 1
+					ForEach ( $item in $ConfigFile.Config.Chrome.BlackListURLs.URL) {
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge\URLBlacklist") $i $item "String" 'Edge URLBlackList Stops local browsing'
+						$i++
+					}	
+				}
+				#Auth Whitelist
+				If ($ConfigFile.Config.Edge.DelegateWhiteList.URL.Count -ge 1) {
+					If (Test-Path($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge\AuthNegotiateDelegateAllowlist")) {
+						Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge\AuthNegotiateDelegateAllowlist") -Recurse
+					}
+					If (Test-Path($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge\AuthServerAllowlist")) {
+						Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge\AuthServerAllowlist") -Recurse
+					}
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge") "AuthNegotiateDelegateAllowlist" (($ConfigFile.Config.Chrome.DelegateWhiteList.URL) -join ",") "String" 'Chrome SSON DelegateWhiteList'
+					Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Policies\Microsoft\Edge") "AuthServerAllowlist" (($ConfigFile.Config.Chrome.DelegateWhiteList.URL) -join ",") "String" 'Chrome SSON DelegateWhiteList'
+
+				}					
+				#endregion Edge				 
 			#endregion Set LockedDown
 			#region Set Store 
 				If (($Store) -and ($CurrentProfile.ToUpper() -ne "DEFAULT" )) {
@@ -1995,9 +2157,11 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 						$i=1
 						ForEach ( $Exe in $ConfigFile.Config.WindowsSettings.BlackListPrograms.Block) {
 							# write-host ("`t`tBlackListing: " + $Exe)
-							Write-Color -Text "BlackListing: ",
-												$Exe -Color White,Red -StartTab 2
-							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun") $i $Exe "String"
+							# Write-Color -Text "BlackListing: ",
+							# 					$Exe -Color White,Red -StartTab 2
+							write-host -NoNewLine -Object "`t`tBlackListing: " -ForegroundColor White
+							write-host -Object $Exe -ForegroundColor Red
+							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun") $i $Exe "String" 'Deny Programs to run'
 							$i++
 						}
 					}
@@ -2007,8 +2171,10 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 			#region Set Active User 
 				If (($ActiveUser.ToUpper() -eq $CurrentProfile.ToUpper()) -and ($CurrentProfile.ToUpper() -ne "DEFAULT" )) {
 					If (Get-LocalUser $CurrentProfile) {
-						Write-Color -Text "Enabling User: ",
-									$CurrentProfile -Color White,Green -StartTab 2
+						# Write-Color -Text "Enabling User: ",
+						# 			$CurrentProfile -Color White,Green -StartTab 2
+						write-host -NoNewLine -Object "`t`tEnabling User: " -ForegroundColor White
+						write-host -Object $CurrentProfile -ForegroundColor Green
 						Enable-LocalUser $CurrentProfile -Confirm:$false
 					}
 					If ($Manager) {
@@ -2208,28 +2374,36 @@ If (-Not $UserOnly) {
 			If (Get-Command Get-WindowsOptionalFeature -errorAction SilentlyContinue) {
 				If (($GWPFC | Where-Object {$_.FeatureName -eq $Feature}).state -eq "Enabled") {
 					# Write-Host ("`t" + $Feature) -ForegroundColor gray
-					Write-Color -Text "Disabling Windows Optional Feature: ",
-										$Feature -Color DarkYellow,White -StartTab 1
+					# Write-Color -Text "Disabling Windows Optional Feature: ",
+					# 					$Feature -Color DarkYellow,White -StartTab 1
+					write-host -NoNewLine -Object "`tDisabling Windows Optional Feature: " -ForegroundColor DarkYellow
+					write-host -Object $Feature -ForegroundColor White
 					Disable-WindowsOptionalFeature -Online -FeatureName $Feature -NoRestart | out-null
 				} else {
 					If ($GWPFC | Where-Object {$_.FeatureName -eq $Feature}) {
 						# Write-Host ("`tWindows Optional Feature: " + $Feature + " Already disabled.") -ForegroundColor green
-						Write-Color -Text "Disabled Windows Optional Feature: ",
-											$Feature -Color DarkGreen,White -StartTab 1
+						# Write-Color -Text "Disabled Windows Optional Feature: ",
+						# 					$Feature -Color DarkGreen,White -StartTab 1
+						write-host -NoNewLine -Object "`tDisabled Windows Optional Feature: " -ForegroundColor DarkGreen
+						write-host -Object $Feature -ForegroundColor White
 					}
 				}
 			}
 			If (Get-Command Get-WindowsCapability -errorAction SilentlyContinue) {
 				If (($GWCC | Where-Object {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"}).state) {
 					# Write-Host ("`t" + $Feature) -ForegroundColor gray
-					Write-Color -Text "Disabling Windows Capability: ",
-										$Feature -Color DarkYellow,White -StartTab 1
+					# Write-Color -Text "Disabling Windows Capability: ",
+					# 					$Feature -Color DarkYellow,White -StartTab 1
+					write-host -NoNewLine -Object "`tDisabling Windows Capability: " -ForegroundColor DarkYellow
+					write-host -Object $Feature -ForegroundColor White
 					$GWCC | Where-Object {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"} | Remove-WindowsCapability -online | out-null
 				} else {
 					If (($GWCC | Where-Object {$_.name -like ("*" + $Feature + "*")}).Name) {
 						# Write-Host ("`tWindows Capability: " + $Feature + " Already disabled.") -ForegroundColor green
-						Write-Color -Text "Disabled Windows Capability: ",
-										$Feature -Color DarkGreen,White -StartTab 1
+						# Write-Color -Text "Disabled Windows Capability: ",
+						# 				$Feature -Color DarkGreen,White -StartTab 1
+						write-host -NoNewLine -Object "`tDisabled Windows Capability: " -ForegroundColor DarkGreen
+						write-host -Object $Feature -ForegroundColor White
 					}
 				}
 			}
@@ -2248,17 +2422,21 @@ If (-Not $UserOnly) {
 		}	
 		ForEach ($Account in $ConfigFile.Config.WindowsSettings.HideAccounts.User) {
 			# Write-Host ("`tHiding: " + $Account) -foregroundcolor "gray"
-			Write-Color "Hiding: ",
-						$Account -Color White,Gray -StartTab 1
-			Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" $Account 0 "DWORD"
+			# Write-Color "Hiding: ",
+			# 			$Account -Color White,Gray -StartTab 1
+			write-host -NoNewLine -Object "`tHiding: " -ForegroundColor White
+			write-host -Object $Account -ForegroundColor Gray
+			Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" $Account 0 "DWORD" 'Hiding Accounts'
 		}
 		If ($CreateUsers) {
 			ForEach ( $i in $UserRange) {	
 				If ($i) {
 					# Write-Host ("`tHiding: " + ($ConfigFile.Config.Company.UserBaseName + $i)) -foregroundcolor "gray"
-					Write-Color "Hiding: ",
-						($ConfigFile.Config.Company.UserBaseName + $i) -Color White,Gray -StartTab 1
-					Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" ($ConfigFile.Config.Company.UserBaseName + $i) 0 "DWORD"
+					# Write-Color "Hiding: ",
+					# 	($ConfigFile.Config.Company.UserBaseName + $i) -Color White,Gray -StartTab 1
+					write-host -NoNewLine -Object "`tHiding: " -ForegroundColor White
+					write-host -Object ($ConfigFile.Config.Company.UserBaseName + $i) -ForegroundColor Gray
+					Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" ($ConfigFile.Config.Company.UserBaseName + $i) 0 "DWORD" 'Hiding Accounts'
 				}
 			}
 		}
@@ -2271,21 +2449,23 @@ If (-Not $UserOnly) {
 		write-host ("Updating Computer Registry Settings:")
 		Foreach ($key in ($ConfigFile.Config.WindowsSettings.ComputerRegistry.Item | Where-Object {$_.MinimumVersion -ge ([environment]::OSVersion.Version.Major)})) {
 			If ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false') {					
-				Write-Color -Text "LockedDown:  ",
-									$key.Comment -Color Blue,DarkGray -StartTab 1
-				Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type
+				# Write-Color -Text "LockedDown:  ",
+				# 					$key.Comment -Color Blue,DarkGray -StartTab 1
+				write-host -NoNewLine -Object "`tLockedDown:  " -ForegroundColor Blue
+				write-host -Object $key.Comment -ForegroundColor DarkGray
+				Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 			} ElseIf ($Store -and $key.Store -eq 'true') {				
 				Write-Color -Text "Store:       ",
 									$key.Comment -Color Red,DarkGray -StartTab 1
-				Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type
+				Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 			} ElseIf ($Manager -and $key.Manager -eq 'true') {				
 				Write-Color -Text "Manager:     ",
 									$key.Comment -Color Yellow,DarkGray -StartTab 1
-				Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type
+				Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 			} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false') {
 				Write-Color -Text "All:         ",
 							$key.Comment -Color DarkGreen,DarkGray -StartTab 1
-				Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type	
+				Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 			}
 		}			
 		If ($IsVM) {
@@ -2293,19 +2473,19 @@ If (-Not $UserOnly) {
 				If ($LockedDown -and $key.LockedDown -eq 'true' -and $key.Store -eq 'false') {				
 					Write-Color -Text "LockedDown:  ",
 										$key.Comment -Color Blue,DarkGray -StartTab 1
-					Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type
+					Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 				} ElseIf ($Store -and $key.Store -eq 'true') {				
 					Write-Color -Text "Store:       ",
 										$key.Comment -Color Red,DarkGray -StartTab 1
-					Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type
+					Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 				} ElseIf ($Manager -and $key.Manager -eq 'true') {				
 					Write-Color -Text "Manager:     ",
 										$key.Comment -Color Yellow,DarkGray -StartTab 1
-					Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type
+					Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 				} ElseIf ( $key.Store -eq 'false'-and $key.LockedDown -eq 'false' -and $key.Manager -eq 'false') {
 					Write-Color -Text "All:         ",
 								$key.Comment -Color DarkGreen,DarkGray -StartTab 1
-					Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type	
+					Set-Reg ("HKLM:\" + $key.Key) $key.Value $key.Data $key.Type $key.Comment
 				}
 			}
 		}
@@ -2382,14 +2562,14 @@ If (-Not $UserOnly) {
 		# }
 		If (Test-Path ("HKCR:\CLSID\" + $Item)) {
 			Set-KeyOwnership "HKCR:\" ("CLSID\" + $Item)
-			Set-Reg ("HKCR:\CLSID\" + $Item) "System.IsPinnedToNameSpaceTree"  0 "DWORD"
+			Set-Reg ("HKCR:\CLSID\" + $Item) "System.IsPinnedToNameSpaceTree"  0 "DWORD" 'Remove from This PC'
 			If ([Environment]::Is64BitOperatingSystem) {
 				# If(!(Test-Path ("HKCR:\WOW6432Node\CLSID\" + $Item))) {
 				# 	New-Item -Path ("HKCR:\WOW6432Node\CLSID\" + $Item) -Force | Out-Null
 				# }
 				If (Test-Path ("HKCR:\WOW6432Node\CLSID\" + $Item)) {
 					Set-KeyOwnership "HKCR:\" ("WOW6432Node\CLSID\" + $Item)
-					Set-Reg ("HKCR:\WOW6432Node\CLSID\" + $Item) "System.IsPinnedToNameSpaceTree"  0 "DWORD"
+					Set-Reg ("HKCR:\WOW6432Node\CLSID\" + $Item) "System.IsPinnedToNameSpaceTree"  0 "DWORD" 'Remove from This PC'
 				}
 			}
 		}		
@@ -2473,29 +2653,32 @@ If (-Not $UserOnly) {
 		# </Item>
 	Write-Host "Setting up Caching of Logons"
 	If ($IsLaptop) {
-		Set-Reg -regPath "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon" -name "CachedLogonsCount" -type "String" -value $ConfigFile.Config.WindowsSettings.LaptopCachedLogonsCount
+		Set-Reg -regPath "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon" -name "CachedLogonsCount" -type "String" -value $ConfigFile.Config.WindowsSettings.LaptopCachedLogonsCount 'Setting up Caching of Logons'
 	}Else{
-		Set-Reg -regPath "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon" -name "CachedLogonsCount" -type "String" -value $ConfigFile.Config.WindowsSettings.CachedLogonsCount
+		Set-Reg -regPath "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon" -name "CachedLogonsCount" -type "String" -value $ConfigFile.Config.WindowsSettings.CachedLogonsCount 'Setting up Caching of Logons'
 	}
 	#endregion Caching of logon
 	#region Disable Updates Are Available Popup In Windows 10
 	If (-Not $UserOnly -and ($ConfigFile.Config.WindowsSettings.DisableWindowsUpdatePopup -eq "true" -or $ConfigFile.Config.WindowsSettings.DisableWindowsUpdatePopup -eq "yes")) {
 		$file = ($env:windir + "\System32\musnotification.exe")
-		#set-own
-		$Acl = Get-Acl (Get-envValueFromString -Path $file)
-		$Group = New-Object System.Security.Principal.NTAccount("Builtin", "Administrators")
-		$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\Users"), "ReadAndExecute", "Deny")
-		$ACL.SetOwner($Group)
-		$Acl.Setaccessrule($Ar)
-		Set-Acl (Get-envValueFromString -Path $file) $Acl
-
-		$file = ($env:windir + "\System32\musnotificationux.exe")
-		$Acl = Get-Acl (Get-envValueFromString -Path $file)
-		$Group = New-Object System.Security.Principal.NTAccount("Builtin", "Administrators")
-		$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\Users"), "ReadAndExecute", "Deny")
-		$ACL.SetOwner($Group)
-		$Acl.Setaccessrule($Ar)
-		Set-Acl (Get-envValueFromString -Path $file) $Acl
+		If (Test-Path -Path $file){
+			#set-own
+			$Acl = Get-Acl (Get-envValueFromString -Path $file)
+			$Group = New-Object System.Security.Principal.NTAccount("Builtin", "Administrators")
+			$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\Users"), "ReadAndExecute", "Deny")
+			$ACL.SetOwner($Group)
+			$Acl.Setaccessrule($Ar)
+			Set-Acl (Get-envValueFromString -Path $file) $Acl
+		}
+		If (Test-Path -Path $file){
+			$file = ($env:windir + "\System32\musnotificationux.exe")
+			$Acl = Get-Acl (Get-envValueFromString -Path $file)
+			$Group = New-Object System.Security.Principal.NTAccount("Builtin", "Administrators")
+			$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule(($env:computer + "\Users"), "ReadAndExecute", "Deny")
+			$ACL.SetOwner($Group)
+			$Acl.Setaccessrule($Ar)
+			Set-Acl (Get-envValueFromString -Path $file) $Acl
+		}
 	}
 #endregion Disable Updates Are Available Popup In Windows 10
 }
@@ -2512,7 +2695,7 @@ If (-Not $UserOnly) {
 			Set-Reg ("HKLM:\SOFTWARE\Policies\Adobe\Acrobat Reader\" + $CARV + "\" + $item.Key) $item.Value $item.Data $item.Type
 			#Wow6432Node
 			If ([Environment]::Is64BitOperatingSystem) {
-				Set-Reg ("HKLM:\SOFTWARE\Policies\Adobe\Acrobat Reader\" + $CARV + "\" + $item.Key).replace("\Software\","\Software\Wow6432Node\") $item.Value $item.Data $item.Type			
+				Set-Reg ("HKLM:\SOFTWARE\Policies\Adobe\Acrobat Reader\" + $CARV + "\" + $item.Key).replace("\Software\","\Software\Wow6432Node\") $item.Value $item.Data $item.Type 'Setting up Adobe Policies'
 			}
 		}
 	}
@@ -2523,7 +2706,7 @@ If (-Not $UserOnly) {
 #============================================================================
 #region Main Local Machine Services
 #============================================================================
-If (-Not $UserOnly) {
+If ($UserOnly -eq $false -and $SkipServices -eq $false) {
 	Write-Host "Setting up Services: "
 	# Source: https://github.com/W4RH4WK/Debloat-Windows-10/blob/master/scripts/disable-services.ps1
 	#Services to Disable
@@ -2693,6 +2876,10 @@ If (-Not $UserOnly) {
 #============================================================================
 If (-Not $UserOnly) {
 	Write-Host "Setting up SSL : "
+	If ($ConfigFile.Config.WindowsSettings.Schannel.CipherOrderGPO) {
+		Write-Color -Text "Setting up Cipher GPO Order:" -Color White -StartTab 1
+		Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Cryptography\Configuration\SSL\00010002" "Functions" $ConfigFile.Config.WindowsSettings.Schannel.CipherOrderGPO "String" "GPO Cipher Order"
+	}
 	#http://www.vistax64.com/powershell/21794-creating-registry-keys-createsubkey-method.html
 	#Set Ciphers
 	#Need to go old school to set registry as powershell cannot handle keys with "/" in them. 
@@ -2702,7 +2889,7 @@ If (-Not $UserOnly) {
 			Write-Color -Text "Enabling Cipher: ",
 								$Cipher.'#text' -Color White,DarkYellow -StartTab 1
 			reg add $('"' + $RegAddSCHANNEL + '\Ciphers\' + ($Cipher.'#text') + '"') /v Enabled /d 4294967295 /t REG_DWORD /f
-			#Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\" + $Cipher.'#text' ) "Enabled" 4294967295 "DWORD"
+			#Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\" + $Cipher.'#text' ) "Enabled" 1 "DWORD"
 		} else {
 			# Write-Host ("`t Disabling Cipher: " + $Cipher.'#text') -foregroundcolor Green
 			Write-Color -Text "Disabling Cipher: ",
@@ -2712,21 +2899,21 @@ If (-Not $UserOnly) {
 		}
 	}
 	#Set Hashes
-	Foreach ($Hashe in $ConfigFile.Config.WindowsSettings.Schannel.Hashe) {
-		If ($Hashe.Status -eq "Enable" -or $Hashe.Status -eq "Enabled" -or $Hashe.Status -eq "on") {
-			# Write-Host ("`t Enabling Hashe: " + $Hashe.'#text') -foregroundcolor Yellow
-			Write-Color -Text "Enabling Hashe: ",
-								$Hashe.'#text' -Color White,DarkYellow -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\" + $Hashe.'#text' ) "Enabled" 4294967295 "DWORD"
+	Foreach ($Hash in $ConfigFile.Config.WindowsSettings.Schannel.Hash) {
+		If ($Hash.Status -eq "Enable" -or $Hash.Status -eq "Enabled" -or $Hash.Status -eq "on") {
+			# Write-Host ("`t Enabling Hash: " + $Hash.'#text') -foregroundcolor Yellow
+			Write-Color -Text "Enabling Hash: ",
+								$Hash.'#text' -Color White,DarkYellow -StartTab 1
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\" + $Hash.'#text' ) "Enabled" 4294967295 "DWORD" 'Hashes'
 		} else {
-			# Write-Host ("`t Disabling Hashe: " + $Hashe.'#text') -foregroundcolor Green
-			Write-Color -Text "Disabling Hashe: ",
-								$Hashe.'#text' -Color White,DarkGreen -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\" + $Hashe.'#text' ) "Enabled" 0 "DWORD"
+			# Write-Host ("`t Disabling Hash: " + $Hash.'#text') -foregroundcolor Green
+			Write-Color -Text "Disabling Hash: ",
+								$Hash.'#text' -Color White,DarkGreen -StartTab 1
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\" + $Hash.'#text' ) "Enabled" 0 "DWORD" 'Hashes'
 		}
 	}
 	If ($AllowClientTLS1) {
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\SHA") "Enabled" 4294967295 "DWORD"
+		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\SHA") "Enabled" 4294967295 "DWORD" "Re-Enabling SHA" 
 		Write-Warning "Re-Enabling SHA" 
 	}
 	# Set KeyExchangeAlgorithms
@@ -2735,15 +2922,15 @@ If (-Not $UserOnly) {
 			# Write-Host ("`t Enabling KeyExchangeAlgorithm: " + $KeyExchangeAlgorithm.'#text') -foregroundcolor Yellow
 			Write-Color -Text "Enabling KeyExchangeAlgorithm: ",
 								$KeyExchangeAlgorithm.'#text' -Color White,DarkYellow -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text' ) "Enabled" 4294967295 "DWORD"
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text' ) "Enabled" 1 "DWORD" 'KeyExchangeAlgorithms'
 		} else {
 			# Write-Host ("`t Disabling KeyExchangeAlgorithm: " + $KeyExchangeAlgorithm.'#text') -foregroundcolor Green
 			Write-Color -Text "Disabling KeyExchangeAlgorithm: ",
 								$KeyExchangeAlgorithm.'#text' -Color White,DarkGreen -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text' ) "Enabled" 0 "DWORD"
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text' ) "Enabled" 0 "DWORD" 'KeyExchangeAlgorithms'
 		}
 		If ($KeyExchangeAlgorithm.'#text' -eq "Diffie-Hellman" -and $KeyExchangeAlgorithm.ServerMinKeyBitLength) {
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\Diffie-Hellman") "ServerMinKeyBitLength" $KeyExchangeAlgorithm.ServerMinKeyBitLength "DWORD"
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\Diffie-Hellman") "ServerMinKeyBitLength" $KeyExchangeAlgorithm.ServerMinKeyBitLength "DWORD" 'Set Diffie-Hellman'
 		}
 	}
 	#Set Protocols
@@ -2755,16 +2942,16 @@ If (-Not $UserOnly) {
 								"Server ",
 								"Protocol: ",
 								$Protocol.'#text' -Color White,DarkCyan,White,DarkYellow -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "Enabled" 4294967295 "DWORD"
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "DisabledByDefault" 0 "DWORD"
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "Enabled" 1 "DWORD" 'SSL Server Protocols'
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "DisabledByDefault" 0 "DWORD" 'SSL Server Protocols'
 		} else {
 			# Write-Host ("`t Disabling Server Protocol: " + $Protocol.'#text') -foregroundcolor Green
 			Write-Color -Text "Disabling ",
 								"Server ",
 								"Protocol: ",
 								$Protocol.'#text' -Color White,DarkCyan,White,DarkGreen -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Server" ) "Enabled" 0 "DWORD"
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "DisabledByDefault" 1 "DWORD"
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Server" ) "Enabled" 0 "DWORD" 'SSL Server Protocols'
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "DisabledByDefault" 1 "DWORD" 'SSL Server Protocols'
 		}
 		#Client
 		If ($Protocol.Client -eq "Enable" -or $Protocol.Client -eq "Enabled" -or $Protocol.Client -eq "on") {
@@ -2773,23 +2960,29 @@ If (-Not $UserOnly) {
 								"Client ",
 								"Protocol: ",
 								$Protocol.'#text' -Color White,DarkGray,White,DarkYellow -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Client") "Enabled" 4294967295 "DWORD"
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Client") "DisabledByDefault" 0 "DWORD"
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Client") "Enabled" 1 "DWORD" 'SSL Client Protocols'
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Client") "DisabledByDefault" 0 "DWORD" 'SSL Client Protocols'
 		} else {
 			# Write-Host ("`t Disabling Protocol: " + $Protocol.'#text') -foregroundcolor Green
 			Write-Color -Text "Disabling ",
 								"Client ",
 								"Protocol: ",
 								$Protocol.'#text' -Color White,DarkGray,White,DarkGreen -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Client") "Enabled" 0 "DWORD"
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Client") "DisabledByDefault" 1 "DWORD"
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Client") "Enabled" 0 "DWORD" 'SSL Client Protocols'
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Client") "DisabledByDefault" 1 "DWORD" 'SSL Client Protocols'
 		}
 	}
+	If ($TLS13) {
+		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Client") "Enabled" 1 "DWORD" "Set TLS 1.3 Client"
+		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Client") "DisabledByDefault" 0 "DWORD" "Set TLS 1.3 Client"
+		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Server") "Enabled" 1 "DWORD" "Set TLS 1.3 Server"
+		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Server") "DisabledByDefault" 0 "DWORD" "Set TLS 1.3 Server"
+	}
 	If ($AllowClientTLS1) {
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Client") "Enabled" 4294967295 "DWORD"
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Client") "DisabledByDefault" 0 "DWORD"
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.1\Client") "Enabled" 4294967295 "DWORD"
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.1\Client") "DisabledByDefault" 0 "DWORD"
+		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Client") "Enabled" 1 "DWORD" "Set TLS 1.0"
+		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Client") "DisabledByDefault" 0 "DWORD" "Set TLS 1.0"
+		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.1\Client") "Enabled" 1 "DWORD" "Set TLS 1.0"
+		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.1\Client") "DisabledByDefault" 0 "DWORD" "Set TLS 1.0"
 		Write-Warning "Re-Enabling Client TLS 1.0" 
 	}
 	#.Net TLS Settings
@@ -2797,28 +2990,28 @@ If (-Not $UserOnly) {
 		Write-Host "Setting up .Net for TLS 1.2"
 		#https://jorgequestforknowledge.wordpress.com/2017/03/01/hardening-disabling-weak-ciphers-hashes-and-protocols-on-adfs-wap-aad-connect/
 		#https://docs.microsoft.com/en-us/dotnet/framework/network-programming/tls
-		Set-Reg ("HKLM:\SOFTWARE\Microsoft\.NETFramework\v2.0.50727") "SchUseStrongCrypto" 1 "DWORD"
-		Set-Reg ("HKLM:\SOFTWARE\Microsoft\.NETFramework\v2.0.50727") "SystemDefaultTlsVersions" 1 "DWORD"
+		Set-Reg ("HKLM:\SOFTWARE\Microsoft\.NETFramework\v2.0.50727") "SchUseStrongCrypto" 1 "DWORD" '.Net TLS Settings'
+		Set-Reg ("HKLM:\SOFTWARE\Microsoft\.NETFramework\v2.0.50727") "SystemDefaultTlsVersions" 1 "DWORD" '.Net TLS Settings'
 		If ([Environment]::Is64BitOperatingSystem) {
-			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v2.0.50727") "SchUseStrongCrypto" 1 "DWORD"
-			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v2.0.50727") "SystemDefaultTlsVersions" 1 "DWORD"
+			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v2.0.50727") "SchUseStrongCrypto" 1 "DWORD" '.Net TLS Settings'
+			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v2.0.50727") "SystemDefaultTlsVersions" 1 "DWORD" '.Net TLS Settings'
 		}
-		Set-Reg ("HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319") "SchUseStrongCrypto" 1 "DWORD"
-		Set-Reg ("HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319") "SystemDefaultTlsVersions" 1 "DWORD"
+		Set-Reg ("HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319") "SchUseStrongCrypto" 1 "DWORD" '.Net TLS Settings'
+		Set-Reg ("HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319") "SystemDefaultTlsVersions" 1 "DWORD" '.Net TLS Settings'
 		If ([Environment]::Is64BitOperatingSystem) {
-			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319") "SchUseStrongCrypto" 1 "DWORD"
-			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319") "SystemDefaultTlsVersions" 1 "DWORD"
+			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319") "SchUseStrongCrypto" 1 "DWORD" '.Net TLS Settings'
+			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319") "SystemDefaultTlsVersions" 1 "DWORD" '.Net TLS Settings'
 		}
 	}
 	If ($ConfigFile.Config.WindowsSettings.Schannel.WinHttp) {
 		#https://support.microsoft.com/en-us/help/3140245/update-to-enable-tls-1-1-and-tls-1-2-as-a-default-secure-protocols-in
 		Set-Reg ("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp") "DefaultSecureProtocols" $ConfigFile.Config.WindowsSettings.Schannel.WinHttp "DWORD"
 		If ([Environment]::Is64BitOperatingSystem) {
-			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp") "DefaultSecureProtocols" $ConfigFile.Config.WindowsSettings.Schannel.WinHttp "DWORD"
+			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp") "DefaultSecureProtocols" $ConfigFile.Config.WindowsSettings.Schannel.WinHttp "DWORD"  '.Net TLS Settings'
 		}
 		Set-Reg ("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp") "SecureProtocols" $ConfigFile.Config.WindowsSettings.Schannel.WinHttp "DWORD"
 		If ([Environment]::Is64BitOperatingSystem) {
-			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp") "SecureProtocols" $ConfigFile.Config.WindowsSettings.Schannel.WinHttp "DWORD"
+			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp") "SecureProtocols" $ConfigFile.Config.WindowsSettings.Schannel.WinHttp "DWORD"  '.Net TLS Settings'
 		}
 	}
 }
@@ -2871,7 +3064,7 @@ If (-Not $UserOnly) {
 	} else {
 		Write-Warning ("Please make sure the following folder exists: " +  ($LICache + "\" + $ConfigFile.Config.Company.WallPaperFolder + "\" + $BackgroundFolder + "\Backgrounds") )
 	}
-	Set-Reg ("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\Background") "OEMBackground" 1 "DWORD"
+	Set-Reg ("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\Background") "OEMBackground" 1 "DWORD" "Setting up Background"
 	#region Clear Lock Screen Cache
 	If (Test-Path ($env:programdata + "\Microsoft\Windows\SystemData")) {
 		#Add Administrators with full control
@@ -2935,7 +3128,7 @@ If (-Not $UserOnly) {
 If (-Not $UserOnly -and $ConfigFile.config.WindowsSettings.NtpServer) {
 	Write-Host "Setting up Time: "
 	#Disable Clients being NTP Servers
-	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpServer" "Enabled" 0 "DWORD"
+	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpServer" "Enabled" 0 "DWORD" "Setting up Time"
 	If ($Store) {
 		net stop w32time | out-null
 		W32tm /config /syncfromflags:manual /manualpeerlist:($ConfigFile.config.WindowsSettings.NtpServer) | out-null
@@ -3086,10 +3279,10 @@ If (-Not $UserOnly) {
 If (-Not $UserOnly) {
 	If ($ConfigFile.Config.WindowsSettings.EnableRDP -eq "true" -or $ConfigFile.Config.WindowsSettings.EnableRDP -eq "yes") {
 		Write-Host "Enabling RDP"
-		Set-Reg "HKLM:\SYSTEM\CurrentControlSet\control\Terminal Server" "fDenyTSConnections " 0 "DWORD"
+		Set-Reg "HKLM:\SYSTEM\CurrentControlSet\control\Terminal Server" "fDenyTSConnections " 0 "DWORD" 'RDP'
 	} else {
 		Write-Host "Disabling RDP"
-		Set-Reg "HKLM:\SYSTEM\CurrentControlSet\control\Terminal Server" "fDenyTSConnections " 1 "DWORD"
+		Set-Reg "HKLM:\SYSTEM\CurrentControlSet\control\Terminal Server" "fDenyTSConnections " 1 "DWORD" 'RDP'
 	}
 }
 #============================================================================
@@ -3102,18 +3295,18 @@ If (-Not $UserOnly) {
 	If ($IsVM) {
 		If ($ConfigFile.Config.WindowsSettings.VM.ScreenSave.Active -and $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Secure -and $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut -and $ConfigFile.Config.WindowsSettings.VM.ScreenSave.ScreenSaver) {
 			Write-Host "Setup Logon Screen Saver:"
-			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Active "STRING"
-			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Secure "STRING"
-			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut "STRING"
-			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.ScreenSaver "STRING"
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Active "STRING" 'Machine Setup Screen Saver'
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.Secure "STRING" 'Machine Setup Screen Saver'
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.TimeOut "STRING" 'Machine Setup Screen Saver'
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.VM.ScreenSave.ScreenSaver "STRING" 'Machine Setup Screen Saver'
 		}
 	}Else{
 		If ($ConfigFile.Config.WindowsSettings.ScreenSave.Active -and $ConfigFile.Config.WindowsSettings.ScreenSave.Secure -and $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut -and $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver) {
 			Write-Host "Setup Logon Screen Saver:"
-			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.ScreenSave.Active "STRING"
-			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.ScreenSave.Secure "STRING"
-			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut "STRING"
-			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver "STRING"
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaveActive" $ConfigFile.Config.WindowsSettings.ScreenSave.Active "STRING" 'Machine Setup Screen Saver'
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaverIsSecure" $ConfigFile.Config.WindowsSettings.ScreenSave.Secure "STRING" 'Machine Setup Screen Saver'
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "ScreenSaveTimeOut" $ConfigFile.Config.WindowsSettings.ScreenSave.TimeOut "STRING" 'Machine Setup Screen Saver'
+			Set-Reg "HKU:\.DEFAULT\Control Panel\Desktop" "SCRNSAVE.EXE" $ConfigFile.Config.WindowsSettings.ScreenSave.ScreenSaver "STRING" 'Machine Setup Screen Saver'
 		}
 	}
 }
@@ -3130,39 +3323,32 @@ If (-Not $UserOnly -and -Not $SkipMSStore) {
 		Write-Host "Remove Microsoft Store Apps:"
 		#region Remove Appx Packages
 		If (Get-Command Get-AppxPackage -errorAction SilentlyContinue) {
-			$AllInstalled = Get-AppxPackage -AllUsers | Where-Object {$_.NonRemovable -ne $True} | ForEach-Object {$_.Name}		
+			$AllInstalled = Get-AppxPackage -AllUsers | Where-Object {$_.NonRemovable -ne $True} 	
 			#Turn off the progress bar
 			$ProgressPreference = 'silentlyContinue'
 			[array]$WhiteList = $ConfigFile.Config.WindowsSettings.MicrosoftStore.WhiteList
 			ForEach($Appx in $AllInstalled){
 				$error.Clear()
-				If (-Not ([string]::IsNullOrEmpty($Appx))) {
-					If ($Appx -match '(\{|\()?[A-Za-z0-9]{4}([A-Za-z0-9]{4}\-?){4}[A-Za-z0-9]{12}(\}|\()?' ) {
-						$AppxClean = $Appx
-					} else {
-						$AppxClean = [String]($Appx -replace '\d+' -replace '\.\.')
-					}
-					If (-Not ($WhiteList.Contains($AppxClean))){
+				If ($null -ne $Appx) {
+					If (-Not ($WhiteList.Contains(($Appx.name -replace '\.\d+')))){
 						Try{			
-							Get-AppxPackage -Name $Appx | Remove-AppxPackage
+							$Appx | Remove-AppxPackage
 						}
 						Catch{
 							$ErrorMessage = $_.Exception.Message
 							$FailedItem = $_.Exception.ItemName
-							Write-Host "There was an error removing Appx: $Appx"
+							Write-Host ("There was an error removing Appx:" +  $Appx.Name)
 							Write-Host $ErrorMessage
 							Write-Host $FailedItem
 						}
 						If(!$error){
-							# Write-Host "Removed Appx: $Appx" -ForegroundColor Green
 							Write-Color -Text "Removed App: ",
-										$Appx -Color White,DarkGreen -StartTab 1
+										$Appx.Name -Color White,DarkGreen -StartTab 1
 						}
 					}
 					Else{
-						# Write-Host "Appx Package is whitelisted: $Appx" -ForegroundColor DarkBlue
 						Write-Color -Text "Whitelisted App: ",
-										$Appx -Color White,DarkCyan -StartTab 1
+										$Appx.Name -Color White,DarkCyan -StartTab 1
 					}
 				}
 			}
@@ -3172,31 +3358,31 @@ If (-Not $UserOnly -and -Not $SkipMSStore) {
 		#endregion
 		#region Remove Provisioned Appx Packages
 		If (Get-Command Get-ProvisionedAppxPackage -errorAction SilentlyContinue) {
-			$AllProvisioned = Get-ProvisionedAppxPackage -Online | Where-Object {$_.NonRemovable -ne $True}| ForEach-Object {$_.DisplayName}
+			$AllProvisioned = Get-ProvisionedAppxPackage -Online
+			[array]$WhiteList = $ConfigFile.Config.WindowsSettings.MicrosoftStore.WhiteList
 			ForEach($Appx in $AllProvisioned){
 				$error.Clear()
-				If(-Not ([array]$ConfigFile.Config.WindowsSettings.MicrosoftStore.WhiteList).Contains([system.String]::Join(".", ($Appx.split(".") |  ForEach-Object {if (($_ -as [int] -eq $null )) {$_ }})))){
-					Try{
-						Get-ProvisionedAppxPackage -Online | Where-Object {$_.DisplayName -eq $Appx} | Remove-ProvisionedAppxPackage -Online | Out-Null
+				If ($null -ne $Appx) {
+					If (-Not ($WhiteList.Contains(($Appx.DisplayName -replace '\.\d+')))){
+						Try{			
+							$Appx | Remove-ProvisionedAppxPackage -Online | Out-Null
+						}
+						Catch{
+							$ErrorMessage = $_.Exception.Message
+							$FailedItem = $_.Exception.ItemName
+							Write-Host ("There was an error removing Provisioned Appx: " + $Appx.DisplayName)
+							Write-Host $ErrorMessage
+							Write-Host $FailedItem
+						}
+						If(!$error){
+							Write-Color -Text "Removed App: ",
+										$Appx.DisplayName -Color White,DarkGreen -StartTab 1
+						}
 					}
-					 
-					Catch{
-						$ErrorMessage = $_.Exception.Message
-						$FailedItem = $_.Exception.ItemName
-						Write-Host "There was an error removing Provisioned Appx: $Appx"
-						Write-Host $ErrorMessage
-						Write-Host $FailedItem
+					Else{
+						Write-Color -Text "Whitelisted App: ",
+										$Appx.DisplayName -Color White,DarkCyan -StartTab 1
 					}
-					If(!$error){
-						# Write-Host "Removed Provisioned Appx: $Appx" -ForegroundColor Green
-						Write-Color -Text "Removed App: ",
-										$Appx -Color White,DarkGreen -StartTab 1
-					}
-				}
-				Else{
-					#Write-Host "Appx Package is whitelisted: $Appx" -ForegroundColor DarkBlue
-					Write-Color -Text "Whitelisted App: ",
-										$Appx -Color White,DarkCyan -StartTab 1
 				}
 			}
 		}
@@ -3245,7 +3431,7 @@ If (-Not $UserOnly -and ($ConfigFile.Config.WindowsSettings.RemoveOneDrive -eq "
 	If (Test-Path ("HKCR:\CLSID\{018D5C66-4533-4307-9B53-224DE2ED1FE6}")) {
 		Set-Reg "HKCR:\CLSID\{018D5C66-4533-4307-9B53-224DE2ED1FE6}" "System.IsPinnedToNameSpaceTree" 0 "DWORD"
 		If ([Environment]::Is64BitOperatingSystem) {
-			Set-Reg "HKCR:\WOW6432Node\CLSID\{018D5C66-4533-4307-9B53-224DE2ED1FE6}" "System.IsPinnedToNameSpaceTree" 0 "DWORD"
+			Set-Reg "HKCR:\WOW6432Node\CLSID\{018D5C66-4533-4307-9B53-224DE2ED1FE6}" "System.IsPinnedToNameSpaceTree" 0 "DWORD" 'OneDrive from This PC'
 		}
 	}
 	If(Test-Path ($HKLWE + "\MyComputer\NameSpace\{018D5C66-4533-4307-9B53-224DE2ED1FE6}")) {
@@ -3263,18 +3449,18 @@ If (-Not $UserOnly) {
 		#$Bios_Info = Get-CimInstance -ClassName Win32_BIOS
 		Write-Host "Setup System OEM Info:"
 		If (-Not $IsVM) {
-			Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Manufacturer" ((Get-CimInstance -ClassName Win32_ComputerSystem).Manufacturer) "String"
+			Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Manufacturer" ((Get-CimInstance -ClassName Win32_ComputerSystem).Manufacturer) "String" 'OEM Info'
 			If ($OEMInfoAddSerial -or $ConfigFile.Config.Company.OEMInfoAddSerial -eq "true" -or $ConfigFile.Config.Company.OEMInfoAddSerial -eq "yes") {
-				Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Model" ((Get-CimInstance -ClassName Win32_ComputerSystem).model + " (Serial Number: " + (Get-CimInstance -ClassName Win32_BIOS).SerialNumber + ")") "String"
+				Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Model" ((Get-CimInstance -ClassName Win32_ComputerSystem).model + " (Serial Number: " + (Get-CimInstance -ClassName Win32_BIOS).SerialNumber + ")") "String" 'OEM Info'
 			}else{
-				Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Model" ((Get-CimInstance -ClassName Win32_ComputerSystem).model) "String"
+				Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Model" ((Get-CimInstance -ClassName Win32_ComputerSystem).model) "String" 'OEM Info'
 			}
 		}
 		If (-Not (Test-Path ($env:windir + "\system32\oobe\info\"))) {
 			New-Item -ItemType directory -Path ($env:windir + "\system32\oobe\info\") | out-null
 		}
 		Copy-Item  ($LICache + "\" + $ConfigFile.Config.Company.WallPaperFolder + "\" + $ConfigFile.Config.Company.OEMLogo) -Destination ($env:windir + "\system32\oobe\info\" + $ConfigFile.Config.Company.OEMLogo ) -Recurse -Force
-		Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Logo" ($env:windir + "\system32\oobe\info\" + $ConfigFile.Config.Company.OEMLogo ) "String"
+		Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation" "Logo" ($env:windir + "\system32\oobe\info\" + $ConfigFile.Config.Company.OEMLogo ) "String" 'OEM Info'
 	}
 }
 #============================================================================
@@ -3376,9 +3562,9 @@ If ($Store -and -Not $UserOnly) {
 		(get-item "HKLM:SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities").property| ForEach-Object { Remove-ItemProperty -Name $_ -Path "HKLM:SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities"}
 	}
 	#Set Community
-	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities" $ConfigFile.Config.Company.SNMP 4 "DWORD"
+	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities" $ConfigFile.Config.Company.SNMP 4 "DWORD" 'SNMP Community'
 	#Sets All info
-	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\RFC1156Agent" "sysServices" 79 "DWORD"
+	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\RFC1156Agent" "sysServices" 79 "DWORD" 'SNMP Community'
 	#Allows All hosts
 	If (Test-Path -Path "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\PermittedManagers") {
 		(get-item "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\PermittedManagers").property| ForEach-Object { Remove-ItemProperty -Name $_ -Path "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\PermittedManagers"}
@@ -3432,71 +3618,75 @@ If (-Not $UserOnly) {
 	Write-Host ("VMWare Horzion Settings: ") -foregroundcolor darkgray
 	If ([Environment]::Is64BitOperatingSystem) {
 		If ($ConfigFile.Config.VMWare_Horizon.AllowCmdLineCredentials) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "AllowCmdLineCredentials" $ConfigFile.Config.VMWare_Horizon.AllowCmdLineCredentials "DWord"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "AllowCmdLineCredentials" $ConfigFile.Config.VMWare_Horizon.AllowCmdLineCredentials "DWord" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.CertCheckMode) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "CertCheckMode" $ConfigFile.Config.VMWare_Horizon.CertCheckMode "DWord"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "CertCheckMode" $ConfigFile.Config.VMWare_Horizon.CertCheckMode "DWord" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "LogInAsCurrentUser" $ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser "String"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "LogInAsCurrentUser" $ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser "String" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser_Display) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "LogInAsCurrentUser_Display" $ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser_Display "String" 
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "LogInAsCurrentUser_Display" $ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser_Display "String"  'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.SSLCipherList) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "SSLCipherList" $ConfigFile.Config.VMWare_Horizon.SSLCipherList "String"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "SSLCipherList" $ConfigFile.Config.VMWare_Horizon.SSLCipherList "String" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.EnableTicketSSLAuth) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "EnableTicketSSLAuth" $ConfigFile.Config.VMWare_Horizon.EnableTicketSSLAuth "DWORD" 
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\") + "\Security") "EnableTicketSSLAuth" $ConfigFile.Config.VMWare_Horizon.EnableTicketSSLAuth "DWORD"  'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.AutoUpdateAllowed) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "AutoUpdateAllowed" $ConfigFile.Config.VMWare_Horizon.AutoUpdateAllowed "String"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "AutoUpdateAllowed" $ConfigFile.Config.VMWare_Horizon.AutoUpdateAllowed "String" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.AllowDataSharing) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "AllowDataSharing" $ConfigFile.Config.VMWare_Horizon.AllowDataSharing "String"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "AllowDataSharing" $ConfigFile.Config.VMWare_Horizon.AllowDataSharing "String" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.IpProtocolUsage) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "IpProtocolUsage" $ConfigFile.Config.VMWare_Horizon.IpProtocolUsage "String"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "IpProtocolUsage" $ConfigFile.Config.VMWare_Horizon.IpProtocolUsage "String" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.NetBIOSDomain) {	
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "DomainName" $ConfigFile.Config.VMWare_Horizon.NetBIOSDomain "String"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "DomainName" $ConfigFile.Config.VMWare_Horizon.NetBIOSDomain "String" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.Server) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "ServerURL" $ConfigFile.Config.VMWare_Horizon.Server "String"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey.replace("\Software\","\Software\Wow6432Node\")) "ServerURL" $ConfigFile.Config.VMWare_Horizon.Server "String" 'Machine VMWare Horzion Settings'
 		}
 	} else {
 		If ($ConfigFile.Config.VMWare_Horizon.AllowCmdLineCredentials) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "AllowCmdLineCredentials" $ConfigFile.Config.VMWare_Horizon.AllowCmdLineCredentials "DWord"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "AllowCmdLineCredentials" $ConfigFile.Config.VMWare_Horizon.AllowCmdLineCredentials "DWord" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.CertCheckMode) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "CertCheckMode" $ConfigFile.Config.VMWare_Horizon.CertCheckMode "DWord"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "CertCheckMode" $ConfigFile.Config.VMWare_Horizon.CertCheckMode "DWord" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "LogInAsCurrentUser"$ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser "String"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "LogInAsCurrentUser"$ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser "String" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser_Display) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "LogInAsCurrentUser_Display" $ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser_Display "String"
+			If ($store) {
+				Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "LogInAsCurrentUser_Display" "false" "String" 'Machine VMWare Horzion Settings'
+			}Else{
+				Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "LogInAsCurrentUser_Display" $ConfigFile.Config.VMWare_Horizon.LogInAsCurrentUser_Display "String" 'Machine VMWare Horzion Settings'
+			}
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.SSLCipherList) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "SSLCipherList" $ConfigFile.Config.VMWare_Horizon.SSLCipherList "String"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "SSLCipherList" $ConfigFile.Config.VMWare_Horizon.SSLCipherList "String" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.EnableTicketSSLAuth){
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "EnableTicketSSLAuth" $ConfigFile.Config.VMWare_Horizon.EnableTicketSSLAuth "DWORD"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey + "\Security") "EnableTicketSSLAuth" $ConfigFile.Config.VMWare_Horizon.EnableTicketSSLAuth "DWORD" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.AutoUpdateAllowed) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "AutoUpdateAllowed" "false" "String"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "AutoUpdateAllowed" "false" "String" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.AllowDataSharing) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "AllowDataSharing" $ConfigFile.Config.VMWare_Horizon.AllowDataSharing "String"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "AllowDataSharing" $ConfigFile.Config.VMWare_Horizon.AllowDataSharing "String" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.IpProtocolUsage){
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "IpProtocolUsage" $ConfigFile.Config.VMWare_Horizon.IpProtocolUsage "String"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "IpProtocolUsage" $ConfigFile.Config.VMWare_Horizon.IpProtocolUsage "String" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.NetBIOSDomain){
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "DomainName" $ConfigFile.Config.VMWare_Horizon.NetBIOSDomain "String"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "DomainName" $ConfigFile.Config.VMWare_Horizon.NetBIOSDomain "String" 'Machine VMWare Horzion Settings'
 		}
 		If ($ConfigFile.Config.VMWare_Horizon.Server) {
-			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "ServerURL" $VMware_Horizon_Server "String"
+			Set-Reg ($ConfigFile.Config.VMWare_Horizon.RegistryKey) "ServerURL" $VMware_Horizon_Server "String" 'Machine VMWare Horzion Settings'
 		}
 	}
 }
@@ -3508,11 +3698,17 @@ If (-Not $UserOnly) {
 #============================================================================
 If (-Not $UserOnly) {
 	If ($configfile.Config.WindowsSettings.ScheduledJobs.Job) {
+		If (Get-Module -ListAvailable | Where-Object {$_.name -eq "PSScheduledJob"}) {
+			Import-Module -Name PSScheduledJob
+		}
 		If (Get-Command Get-ScheduledJob -errorAction SilentlyContinue) {
 			ForEach ($Job in $configfile.Config.WindowsSettings.ScheduledJobs.Job) {
 				#Clean Up Old Job
-				If (get-ScheduledJob | Where-Object {$_.Name -eq $Job.Name}) {
+				If ((get-ScheduledJob -Name $Job.Name -ErrorAction SilentlyContinue) -or (get-ScheduledJob | Where-Object {$_.Name -eq $Job.Name})) {
 					get-ScheduledJob | Where-Object {$_.Name -eq $Job.Name} | Unregister-ScheduledJob -Force
+				}
+				If (Test-Path -Path ($env:SystemRoot + "\System32\Tasks\Microsoft\Windows\PowerShell\ScheduledJobs\" + $Job.Name)) {
+					Remove-Item -Path ($env:SystemRoot + "\System32\Tasks\Microsoft\Windows\PowerShell\ScheduledJobs\" + $Job.Name)
 				}
 				#
 				$ArrayJTrigger = $Job.Trigger -split ";"
@@ -3526,12 +3722,17 @@ If (-Not $UserOnly) {
 					}
 				}
 				$SchJobOptions = New-ScheduledJobOption -RunElevated
-				Register-ScheduledJob -Name $Job.Name -Trigger $HashJTrigger -ScheduledJobOption $SchJobOptions  -ScriptBlock {$Job.'#text'}
+				If ((-Not (get-ScheduledJob -Name $Job.Name)) -and (-Not (get-ScheduledJob | Where-Object {$_.Name -eq $Job.Name}))) {
+					Register-ScheduledJob -Name $Job.Name -Trigger $HashJTrigger -ScheduledJobOption $SchJobOptions  -ScriptBlock {$Job.'#text'}
+				}
 			}
 		} Else {
 			ForEach ($Job in $configfile.Config.WindowsSettings.ScheduledJobs.Job) {
 				If (Get-ScheduledTask | Where-Object { $_.TaskName -eq $Job.Name}) {
 					Get-ScheduledTask | Where-Object { $_.TaskName -eq $Job.Name} | Unregister-ScheduledTask -Confirm:$false
+				}
+				If (Test-Path -Path ($env:SystemRoot + "\System32\Tasks\Microsoft\Windows\PowerShell\ScheduledJobs\" + $Job.Name)) {
+					Remove-Item -Path ($env:SystemRoot + "\System32\Tasks\Microsoft\Windows\PowerShell\ScheduledJobs\" + $Job.Name)
 				}
 				$STT = $null
 				$STTF = $null
@@ -3586,10 +3787,10 @@ If (-Not $UserOnly) {
 write-host " "
 if ($ConfigFile.Config.Company.ScriptVersionValue -and $ConfigFile.Config.Company.ScriptXMLVersionValue -and $ConfigFile.Config.Company.Version -and $ConfigFile.Config.Company.ScriptKey -and $ConfigFile.Config.Company.ScriptDateValue) {
 	write-host ("Recording " + $ConfigFile.Config.Company.ScriptVersionValue + ": " + $ScriptVersion + " in " + $ConfigFile.Config.Company.ScriptVersionValue + " Key.") -foregroundcolor "Green"
-	Set-Reg ("HKLM:\Software\" + $ConfigFile.Config.Company.ScriptKey) $ConfigFile.Config.Company.ScriptVersionValue  $ScriptVersion "String"
+	Set-Reg ("HKLM:\Software\" + $ConfigFile.Config.Company.ScriptKey) $ConfigFile.Config.Company.ScriptVersionValue  $ScriptVersion "String" 'Recording Version'
 	write-host ("Recording " + $ConfigFile.Config.Company.ScriptXMLVersionValue + ": " + $ConfigFile.Config.Company.Version + " in " + $ConfigFile.Config.Company.ScriptXMLVersionValue + " Key.") -foregroundcolor "Green"
-	Set-Reg ("HKLM:\Software\" + $ConfigFile.Config.Company.ScriptKey) $ConfigFile.Config.Company.ScriptXMLVersionValue  $ConfigFile.Config.Company.Version "String"
-	Set-Reg ("HKLM:\Software\" + $ConfigFile.Config.Company.ScriptKey) $ConfigFile.Config.Company.ScriptDateValue  (Get-Date -format yyyyMMdd) "String"
+	Set-Reg ("HKLM:\Software\" + $ConfigFile.Config.Company.ScriptKey) $ConfigFile.Config.Company.ScriptXMLVersionValue  $ConfigFile.Config.Company.Version "String" 'Recording Version'
+	Set-Reg ("HKLM:\Software\" + $ConfigFile.Config.Company.ScriptKey) $ConfigFile.Config.Company.ScriptDateValue  (Get-Date -format yyyyMMdd) "String" 'Recording Version'
 }
 write-host
 #cleanup mapped drives
@@ -3602,6 +3803,9 @@ Write-Host ("Script took: " + (FormatElapsedTime($sw.Elapsed)) + " to run.")
 #============================================================================
 #endregion Main Local Machine Cleanup
 #============================================================================
+If( -Not ($Script:RegBackup)){
+	$Script:RegBackup | Export-Csv -IncludeTypeInformation -Path (($LICache + $LogFile) -replace ".log",".csv")
+}
 If (-Not [string]::IsNullOrEmpty($LICache + $LogFile)) {
 	Stop-Transcript
 }
