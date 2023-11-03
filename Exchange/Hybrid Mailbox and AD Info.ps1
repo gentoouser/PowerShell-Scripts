@@ -23,6 +23,12 @@
     * Version 1.01.03 - Added proxyaddresses/email addresses.
     * Version 1.01.04 - Added DepartmentNumber and extensionAttribute2.
     * Version 1.02.01 - Switch script to cache more and filter from cache.
+    * Version 1.03.00 - Setup script to do Parallel caching of objects.
+    * Version 1.03.01 - Logon to Exchange Online using App ID.
+    * Version 1.03.02 - Logon to Azure using App ID.
+    * Version 1.03.03 - Fixed issues with permissions and caching.
+    * Version 1.03.04 - Fixed issue with disabled users with permission not showing. Also fixed issue with Mailbox size not showing. Clean Mailbox permission when a user with full permission is gone.
+    * Version 1.03.05 - Added parse ADFS for last logon time. Use GraphAPI to get Entra ID last logon Time too.
     
 
 #>
@@ -31,28 +37,46 @@ Param(
 	[CmdletBinding()]
     $csvfile =  ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + `
                 ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
-                $FileDate + ".csv"),
+                (Get-Date -format yyyyMMdd-hhmm) + ".csv"),
     $xlsxfile =  ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + `
                 ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
-                $FileDate + ".xlsx"),
+                (Get-Date -format yyyyMMdd-hhmm) + ".xlsx"),
     $ExcludeUsers=@(
-        ($env:USERDOMAIN + "\Domain Admins"),
-        ($env:USERDOMAIN + "\Enterprise Admins"),
-        ($env:USERDOMAIN + "\Organization Management"),
-        ($env:USERDOMAIN + "\Exchange Servers"),
-        ($env:USERDOMAIN + "\Exchange Domain Servers"),
-        ($env:USERDOMAIN + "\Administrators"),
-        "NT AUTHORITY\SYSTEM",
-        "NT AUTHORITY\SELF"
-    ),
-    $ExchangeServer = "exchange.github.com"
+		($env:USERDOMAIN + "\Domain Admins"),
+		($env:USERDOMAIN + "\Enterprise Admins"),
+		($env:USERDOMAIN + "\Organization Management"),
+		($env:USERDOMAIN + "\Exchange Servers"),
+		($env:USERDOMAIN + "\Exchange Domain Servers"),
+		($env:USERDOMAIN + "\Exchange Services"),
+		($env:USERDOMAIN + "\Exchange Trusted Subsystem"),
+		($env:USERDOMAIN + "\Administrators"),
+		($env:USERDOMAIN + "\Public Folder Management"),
+		($env:USERDOMAIN + "\Delegated Setup"),
+		($env:USERDOMAIN + "\Managed Availability Servers"),
+		"NT AUTHORITY\SYSTEM",
+		"NT AUTHORITY\SELF",
+		"NT AUTHORITY\NETWORK SERVICE"
+	),
+    $ExchangeServer                      = "",
+	[string]$AzureTenant                 = "",
+    [string]$AZClientID                  = "",
+    [string]$AZCertThumbprint            = "",
+	[String]$AZOrg                       =	"onmicrosoft.com",
+	[switch]$RemoveDisabledPerms         =	$False,
+	[array]$ADFSServers=@(
+		"ADFSPD01"
+		"ADFSPD02"
+	)
 )
 #endregion Parameters
 #region Variables 
-$ScriptVersion = "1.2.01"
-$output = @()
+$ScriptVersion = "1.3.05"
+$output = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
 $FileDate = (Get-Date -format yyyyMMdd-hhmm)
 $sw = [Diagnostics.Stopwatch]::StartNew()
+$CacheRefresh = 4
+$Jobs = @()
+
 #endregion Variables 
 
 Function CleanDistinguishedName{
@@ -150,7 +174,12 @@ Class ADExchangeOutput {
 	${Mobile Phone}
 	${extensionAttribute2 CIFX Company}
 	${Azure Licenses}
+	${Azure Licenses Details}
 	${Azure Last Sync Time}
+	${Azure Last Sign-On}
+	${Azure Last Sign-On Days}
+	${Azure Non-Interactive Last Sign-On}
+	${Azure Non-Interactive Last Sign-On Days}
 	${Group Membership}
 	${Manager} 
 	${Home Directory} 
@@ -164,6 +193,14 @@ Class ADExchangeOutput {
 	${Days Since Creation} 
 	${Last Password Change} 
 	${Days from last password change} 
+	${ADFS Last Logon} 
+	${ADFS Last Logon Days} 
+	${ADFS Last Logon IP} 
+	${ADFS Relying Party} 
+	${ADFS Auth Protocol} 
+	${ADFS Network Location} 
+	${ADFS ADFS Server} 
+	${ADFS User Agent String} 
 	${RDS CAL Expiration Date}
 	${Email} 
 	${Email Addresses} 
@@ -216,15 +253,20 @@ If ((Get-Module | Where-Object {$_.Name -Match "ActiveDirectory"}).Count -eq 0 )
 } Else {
 	Write-Host ("Active Directory Plug-ins Already Loaded") -ForeGroundColor "Green"
 }
-
+#endregion Import AD modules
+#region Create CSV Path
 If (-Not( Test-Path (Split-Path -Path $csvfile -Parent))) {
 	New-Item -ItemType directory -Path (Split-Path -Path $csvfile -Parent) | Out-Null
 }
-#endregion Import AD modules
+#endregion Create CSV Path
 #region AzureAD
 If (Get-Module -ListAvailable -Name "AzureAD") {
     If (-Not (Get-Module "AzureAD" -ErrorAction SilentlyContinue)) {
-        Import-Module "AzureAD" -DisableNameChecking
+		If ($PSVersionTable.PSVersion.Major -gt 5) {
+			Import-Module "AzureAD" -DisableNameChecking -UseWindowsPowerShell
+		}Else {
+			Import-Module "AzureAD" -DisableNameChecking
+		}
     } Else {
         #write-host "AzureAD PowerShell Module Already Loaded"
     } 
@@ -237,58 +279,26 @@ If (Get-Module -ListAvailable -Name "AzureAD") {
 	}
     Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted 
     Install-Module "AzureAD" -Force -Confirm:$false -Scope:CurrentUser -SkipPublisherCheck -AllowClobber
-    Import-Module "AzureAD" -DisableNameChecking
+	If ($PSVersionTable.PSVersion.Major -gt 5) {
+		Import-Module "AzureAD" -DisableNameChecking -UseWindowsPowerShell
+	}Else {
+		Import-Module "AzureAD" -DisableNameChecking
+	}
     If (-Not (Get-Module "AzureAD" -ErrorAction SilentlyContinue)) {
         write-error ("Please install AzureAD Powershell Modules Error")
         exit
     }
 }
 #endregion AzureAD
-#region Connect to Exchange Online
-If (Get-Module -ListAvailable -Name "ExchangeOnlineManagement") {
-    If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
-        Import-Module "ExchangeOnlineManagement" -DisableNameChecking
-    } Else {
-        #write-host "ExchangeOnlineManagement PowerShell Module Already Loaded"
-    } 
-} Else {
-    Import-Module PackageManagement
-    Import-Module PowerShellGet
-    # Register-PSRepository -Name "PSGallery" –SourceLocation "https://www.powershellgallery.com/api/v2/" -InstallationPolicy Trusted
-    Register-PSRepository -Default -InstallationPolicy Trusted 
-    Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted 
-    Install-Module "ExchangeOnlineManagement" -Force -Confirm:$false -Scope:CurrentUser -SkipPublisherCheck -AllowClobber
-    Import-Module "ExchangeOnlineManagement" -DisableNameChecking
-    If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
-        write-error ("Please install ExchangeOnlineManagement Powershell Modules Error")
-        exit
-    }
-}
-#Connect
-If (-Not (Get-PSSession | Where-Object {$_.name -match "ExchangeOnline" -and $_.Availability -eq "Available"})) {
-    Connect-ExchangeOnline -ShowBanner:$false -UserPrincipalName (([string]([ADSI]"LDAP://<SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)>").UserPrincipalName) ) -ShowProgress $true 
-}
-#endregion Connect to Exchange Online
-#region Load Exchange commands EP prefix
-If ((Get-PSSession | Where-Object { $_.ConfigurationName -Match "Microsoft.Exchange" -and $_.ComputerName -eq $ExchangeServer}).Count -eq 0 ) {
-	Write-Host ("Loading Exchange Plugins") -ForeGroundColor "Green"
-		#$sessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
-		#$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$ExchangeServer/PowerShell/ -Authentication Kerberos -AllowRedirection -SessionOption $sessionOption
-		$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$ExchangeServer/PowerShell/ -Authentication Negotiate -AllowRedirection 
-		Import-PSSession $ERPSession -AllowClobber -DisableNameChecking -Prefix "EP"
-		If ((Get-PSSession | Where-Object { $_.ConfigurationName -Match "Microsoft.Exchange" -and ($_.ComputerName -eq $ExchangeServer -or $_.ComputerName -eq "outlook.office365.com") } )) {
-			$host.ui.RawUI.WindowTitle = "Hybrid Exchange Administrator Online and Local with EP Prefix: $env:USERDNSDOMAIN\$env:username on $ExchangeServer"
-		}Else {
-			$host.ui.RawUI.WindowTitle = "Local Exchange Administrator EP Prefix: $env:USERDNSDOMAIN\$env:username on $ExchangeServer"
-		}
-} Else {
-	Write-Host ("Exchange Plug-ins Already Loaded") -ForeGroundColor "Green"
-}
-#endregion Load Exchange commands EP prefix
+
 
 #region mailbox checking
 
-Connect-AzureAD -AccountId ($env:USERNAME + "@" + $env:USERDNSDOMAIN )
+# If (Get-ChildItem "Cert:\LocalMachine\My\" | Where-Object {$_.Thumbprint -eq $AZCertThumbprint}) {
+# 	(Connect-AzureAD -TenantId $AzureTenant -ApplicationId  $AZClientID -CertificateThumbprint $AZCertThumbprint) | Out-Null
+# }Else{
+# 	(Connect-AzureAD -AccountId ($User + "@" + $Domain )) | Out-Null
+# }
 #Load .Net Assembly for AD
 Add-Type -AssemblyName System.DirectoryServices.AccountManagement
 $ContextType = [System.DirectoryServices.AccountManagement.ContextType]::Domain
@@ -300,54 +310,880 @@ $SearchBase = (Get-ADDomain).DistinguishedName
 #Define variable for a server with AD web services installed
 $ADServer = (Get-ADDomain).PDCEmulator
 
-Write-Host ("Caching Objects please wait . . ." )
-$swc = [Diagnostics.Stopwatch]::StartNew()
-#Get All AD users
-Write-Host "`tAD . . ." -ForegroundColor DarkGray
-$ADUsers = Get-ADUser -server $ADServer -SearchBase $SearchBase -Filter * -Properties * 
-#Get All Azure AD users
-Write-Host "`tAzure AD . . ." -ForegroundColor DarkGray
-$AzureUsers = Get-AzureADUser -All:$true
-#Get All Exchange  Mailboxes
-Write-Host "`tExchange Mailboxes . . ." -ForegroundColor DarkGray
-$EPMailboxes = Get-EPMailbox -ResultSize unlimited
-Write-Host "`tExchange Mailboxes Statistics . . ." -ForegroundColor DarkGray
-$EPMailboxesStats = $EPMailboxes | Get-EPMailboxStatistics
-Write-Host "`tExchange Mailboxes Permissions . . ." -ForegroundColor DarkGray
-$EPMailboxesPerms = $EPMailboxes | Get-EPMailboxPermission
-Write-Host "`tExchange Archive Mailboxes . . ." -ForegroundColor DarkGray
-$EPMailboxesArchive = Get-EPMailbox -ResultSize unlimited -Archive
-Write-Host "`tExchange Archive Mailboxes Statistics . . ." -ForegroundColor DarkGray
-$EPMailboxesArchiveStats = $EPMailboxesArchive | Get-EPMailboxStatistics -Archive
-Write-Host "`tExchange Archive Mailboxes Permission . . ." -ForegroundColor DarkGray
-$EPMailboxesArchivePerms = $EPMailboxesArchive | Get-EPMailboxPermission
-Write-Host "`tExchange Remove Mailboxes . . ." -ForegroundColor DarkGray
-$EPRemoteMailboxes = Get-EPRemoteMailbox -ResultSize unlimited
-$EPRemoteMailboxesArchive = Get-EPRemoteMailbox -ResultSize unlimited -Archive
-#Get All Exchange Online Mailboxes
-Write-Host "`tExchange Online Mailboxes . . ." -ForegroundColor DarkGray
-$EXOMailboxes = Get-Mailbox -ResultSize unlimited
-Write-Host "`tExchange Online Mailboxes Statistics . . ." -ForegroundColor DarkGray
-$EXOMailboxesStats = $EXOMailboxes | Get-MailboxStatistics
-Write-Host "`tExchange Online Mailboxes Permissions . . ." -ForegroundColor DarkGray
-$EXOMailboxesPerms = $EXOMailboxes | Get-MailboxPermission
-Write-Host "`tExchange Online Archive Mailboxes . . ." -ForegroundColor DarkGray
-$EXOMailboxesArchive = Get-Mailbox -ResultSize unlimited -Archive
-Write-Host "`tExchange Online Archive Mailboxes Statistics . . ." -ForegroundColor DarkGray
-$EXOMailboxesArchiveStats = $EXOMailboxesArchive | Get-MailboxStatistics -Archive
-Write-Host "`tExchange Online Archive Mailboxes Permission . . ." -ForegroundColor DarkGray
-$EXOMailboxesArchivePerms = $EXOMailboxesArchive | Get-MailboxPermission
+#region caching objects
+If ($null -eq $HMADITimeStamp -or ($HMADITimeStamp -and (New-TimeSpan -Start $HMADITimeStamp -End (Get-Date)).Hours -ge $CacheRefresh )) {
+	$ADUsers = @()
+	$AzureUsers = @()
+	$EPMailboxes = @()
+	$EPMailboxesArchive = @()
+	$EPRemoteMailboxes = @()
+	$EPRemoteMailboxesArchive  = @()
+	$EXOMailboxes = @()
+	$EXOMailboxesArchive = @()
+	$EPRemoteCASM = @()
+	
+	$EPMailboxesStats = @()
+	$EPMailboxesPerms = @()
+	$EPMailboxesArchiveStats = @()
+	$EPMailboxesArchivePerms = @()
+	$EXOMailboxesStats = @()
+	$EXOMailboxesPerms = @()
+	$EXOMailboxesArchiveStats = @()
+	$EXOMailboxesArchivePerms = @()
+	$EPCASM = @()
+	$ADFSLogs = @()
+	$OutputGraphAPIU = @()
+	$OutputAZUL = @()
+	Write-Host ("Caching Objects please wait . . ." )
+	$swc = [Diagnostics.Stopwatch]::StartNew()
 
-#Get All Exchange CAS Mailbox Settings
-$EPCASM = Get-EPCASMailbox
-$EPRemoteCASM = Get-CASMailbox
+	#region ADFS Event logs
+	Write-Host "`tADFS . . ." -ForegroundColor DarkGray
+	$ADFSScript = {
+		param(
+			$ADFS
+		)
+		Class ADFSEventRecord {
+			${Date-Time}
+			${ADFS Server}
+			${User ID}
+			${Relying Party}
+			${Auth Protocol}
+			${Network Location}
+			${IP Address}
+			${User Agent String}
+		}
+		$XPath = "*[System[Provider[@Name='AD FS Auditing']]]" 
+		$Events= Get-WinEvent -LogName 'Security' -FilterXPath $XPath -ComputerName $ADFS | Where-Object {$_.id -in @(1200,1203)}
+		$ADFSRecord = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
+		$ADFSRecordOut = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
+		$UserID = ""
+		ForEach ($e in $Events) {
 
-$swc.Stop()
+			$exml = [xml]$e.Message.Substring($e.Message.IndexOf("XML: ")+5)
+			$Record = [ADFSEventRecord]::new()
+			$Record."Date-Time" = $e.TimeCreated
+			$Record."ADFS Server" = $ADFS
+			$UserID = $exml.AuditBase.ContextComponents.Component.Where({$_."type" -eq "ResourceAuditComponent"}).UserID 
+			If ($UserID -match '@') {
+				$Record."User ID" = ($UserID -split "@")[0]
+			}ElseIf ($UserID -match '\\'){
+				$Record."User ID" = $Record."User ID" = ($UserID -split '\\')[1]
+			}
+			$Record."Relying Party" = $exml.AuditBase.ContextComponents.Component.Where({$_."type" -eq "ResourceAuditComponent"}).RelyingParty
+			$Record."Auth Protocol" = $exml.AuditBase.ContextComponents.Component.Where({$_."type" -eq "RequestAuditComponent"}).AuthProtocol
+			$Record."Network Location" = $exml.AuditBase.ContextComponents.Component.Where({$_."type" -eq "RequestAuditComponent"}).NetworkLocation
+			$Record."IP Address" = $exml.AuditBase.ContextComponents.Component.Where({$_."type" -eq "RequestAuditComponent"}).IpAddress
+			$Record."User Agent String" = $exml.AuditBase.ContextComponents.Component.Where({$_."type" -eq "RequestAuditComponent"}).UserAgentString
 
-Write-Host ("Caching Objects time: " + (FormatElapsedTime($swc.Elapsed)) + " to run. " + '{0:N0}' -f ($ADUsers.Count / $swc.Elapsed.TotalMinutes) + " Users's per Minute.")
+			$ADFSRecord += $Record
+		}
 
+		$ADFSRUsers = ($ADFSRecord | Select-Object -Unique -Property "User ID" | Sort-Object)."User ID"
+
+		Foreach ($ADFSRUser in $ADFSRUsers) {
+			$ADFSRecordOut += $ADFSRecord.Where({$_."User ID" -eq $ADFSRUser}) | Sort-Object -Descending -Property "Date-Time" | Select-Object -First 1
+		}
+
+		$ADFSRecordOut.GetEnumerator()
+	}
+	Foreach ($ADFS in $ADFSServers) {
+		$Jobs += Start-Job -Name "ADFS Events on $ADFS" -ScriptBlock $ADFSScript -ArgumentList $ADFS
+	}
+	#endregion ADFS Event logs
+
+	#Get All AD users
+	Write-Host "`tAD . . ." -ForegroundColor DarkGray
+	$ADScript = {
+		param(
+			$ADServer,
+			$SearchBase
+		)
+		If ((Get-Module | Where-Object {$_.Name -Match "ActiveDirectory"}).Count -eq 0 ) {
+			#Write-Host ("Loading Active Directory Plugins") -ForeGroundColor "Green"
+			Import-Module "ActiveDirectory"  -ErrorAction SilentlyContinue
+		}
+		Get-ADUser -server $ADServer -SearchBase $SearchBase -Filter * -Properties * 
+	}
+	$Jobs += Start-Job -Name "AD User" -ScriptBlock $ADScript -ArgumentList $ADServer, $SearchBase
+	#region Get All Azure AD users Last Sign-on Graph API
+	Write-Host "`tGraphAPI Entra ID User . . ." -ForegroundColor DarkGray
+	$GraphAPIScript = {
+		param(
+			$User,
+			$Domain,
+			[string]$AzureTenant,
+			[string]$AZClientID,
+			[string]$AZCertThumbprint
+		)
+		#region Microsoft.Graph
+		If($PSVersionTable.PSVersion.Major -eq 5){
+			# Increase the Function Count
+			$Global:MaximumFunctionCount = 8192
+			
+			# Increase the Variable Count
+			$Global:MaximumVariableCount = 8192
+		}
+		If (Get-Module -ListAvailable -Name "MSAL.PS") {
+			If (-Not (Get-Module "MSAL.PS" -ErrorAction SilentlyContinue)) {
+				Import-Module "MSAL.PS" -DisableNameChecking
+			} Else {
+				#write-host "Microsoft.Graph PowerShell Module Already Loaded"
+			} 
+		} Else {
+			Import-Module PackageManagement
+			Import-Module PowerShellGet
+			# Register-PSRepository -Name "PSGallery" –SourceLocation "https://www.powershellgallery.com/api/v2/" -InstallationPolicy Trusted
+			If (-Not (Get-PSRepository -Name "PSGallery")) {
+				Register-PSRepository -Default -InstallationPolicy Trusted 
+			}
+			Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted 
+			Install-Module "MSAL.PS" -Force -Confirm:$false -Scope:CurrentUser -SkipPublisherCheck -AllowClobber
+			Import-Module "MSAL.PS" -DisableNameChecking
+			If (-Not (Get-Module "MSAL.PS" -ErrorAction SilentlyContinue)) {
+				write-error ("Please install MSAL.PS Powershell Modules Error")
+				exit
+			}
+		}
+		#endregion Microsoft.Graph
+
+			If (Get-ChildItem "Cert:\LocalMachine\My\" | Where-Object {$_.Thumbprint -eq $AZCertThumbprint}) {
+			$ClientCertificate = Get-Item "Cert:\LocalMachine\My\$($AZCertThumbprint)"
+			$myAccessToken = Get-MsalToken -ClientId $AZClientID -TenantId $AzureTenant -ClientCertificate $ClientCertificate
+			$AccessToken  = $myAccessToken.AccessToken
+			}
+
+	
+		#Form request headers with the acquired $AccessToken
+		$headers = @{"Content-Type"="application/json";"Authorization"="Bearer $AccessToken"}
+		
+		#This request get users list with signInActivity.
+		$ApiUrl = "https://graph.microsoft.com/v1.0/users?`$select=id,displayName,userPrincipalName,signInActivity,userType,onPremisesSamAccountName,onPremisesLastSyncDateTime,assignedLicenses"
+
+		$ApiUrlUL = "https://graph.microsoft.com/v1.0/users/794a6c20-d35d-4f02-a117-a901cd765019/licenseDetails"
+		$Result = @()
+		Class MSEnUsers {
+			${Entra ID}
+			${Display Name}
+			${User Principal Name}
+			${Sam Account Name}
+			${Entra Last Sync}
+			${Last Sign-In}
+			${Last Non-Interactive Sign-In}
+			${Licenses Part Number}
+			${Licenses}
+			${User Type}	
+		}
+		#Perform pagination if next page link (odata.nextlink) returned.
+		While ($ApiUrl -ne $Null) {
+			$Response =  Invoke-RestMethod -Method GET -Uri $ApiUrl -ContentType "application/json" -Headers $headers
+			if($Response.value) {
+				$Users = $Response.value
+				ForEach($User in $Users)
+				{
+					$Record = [MSEnUsers]::new()
+					$Record."Entra ID" = $User.ID
+					$Record."Display Name" = $User.displayName
+					$Record."User Principal Name" = $User.userPrincipalName
+					$Record."Sam Account Name" = $User.onPremisesSamAccountName
+					$Record."Entra Last Sync" =  if($User.onPremisesLastSyncDateTime) {[DateTime]$User.onPremisesLastSyncDateTime} Else {$null}
+					$Record."Last Sign-In" = if($User.signInActivity.lastSignInDateTime) { [DateTime]$User.signInActivity.lastSignInDateTime } Else {$null}
+					$Record."Last Non-Interactive Sign-In" = if($User.signInActivity.lastNonInteractiveSignInDateTime) { [DateTime]$User.signInActivity.lastNonInteractiveSignInDateTime } Else { $null }
+					if ($User.assignedLicenses.Count -ne 0) {
+						$ULResponse = Invoke-RestMethod -Method GET -Uri ("https://graph.microsoft.com/v1.0/users/" + $User.ID + "/licenseDetails") -ContentType "application/json" -Headers $headers
+						If ($ULResponse.value) {
+							If ($ULResponse.value.skuPartNumber) {
+								$Record."Licenses Part Number" = $ULResponse.value.skuPartNumber -Join ","
+								$Record."Licenses" = $ULResponse.value.servicePlans.Where({$_."provisioningStatus" -eq "Success"}).servicePlanName -join ","
+							}
+						}
+					}
+					$Record."User Type" = $User.userType
+					$Result += $Record
+				}
+			}
+			$ApiUrl=$Response.'@odata.nextlink'
+		}
+
+	}
+	$Jobs += Start-Job -Name "GraphAPI Entra ID User" -ScriptBlock $GraphAPIScript -ArgumentList $env:USERNAME , $env:USERDNSDOMAIN, [string]$AzureTenant, [string]$AZClientID, [string]$AZCertThumbprint
+	#endregion Get All Azure AD users Last Sign-on Graph API
+	#Get All Azure AD users
+	Write-Host "`tAzure AD . . ." -ForegroundColor DarkGray
+	$AzueADScript = {
+		param(
+			$User,
+			$Domain,
+			$AZClientID,
+			$AZCertThumbprint,
+			$AzureTenant
+		)
+		#region AzureAD
+		If (Get-Module -ListAvailable -Name "AzureAD") {
+			If (-Not (Get-Module "AzureAD" -ErrorAction SilentlyContinue)) {
+				If ($PSVersionTable.PSVersion.Major -gt 5) {
+				Import-Module "AzureAD" -DisableNameChecking -UseWindowsPowerShell -SkipEditionCheck
+				}Else {
+					Import-Module "AzureAD" -DisableNameChecking
+				}
+				
+			} Else {
+				#write-host "AzureAD PowerShell Module Already Loaded"
+			} 
+		} Else {
+			Import-Module PackageManagement
+			Import-Module PowerShellGet
+			# Register-PSRepository -Name "PSGallery" –SourceLocation "https://www.powershellgallery.com/api/v2/" -InstallationPolicy Trusted
+			If (-Not (Get-PSRepository -Name "PSGallery")) {
+				Register-PSRepository -Default -InstallationPolicy Trusted 
+			}
+			Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted 
+			Install-Module "AzureAD" -Force -Confirm:$false -Scope:CurrentUser -SkipPublisherCheck -AllowClobber
+			If ($PSVersionTable.PSVersion.Major -gt 5) {
+				Import-Module "AzureAD" -DisableNameChecking -UseWindowsPowerShell -SkipEditionCheck
+			}Else {
+				Import-Module "AzureAD" -DisableNameChecking
+			}
+			If (-Not (Get-Module "AzureAD" -ErrorAction SilentlyContinue)) {
+				write-error ("Please install AzureAD Powershell Modules Error")
+				exit
+			}
+		}
+		#endregion AzureAD
+		If (Get-ChildItem "Cert:\LocalMachine\My\" | Where-Object {$_.Thumbprint -eq $AZCertThumbprint}) {
+			(Connect-AzureAD -TenantId $AzureTenant -ApplicationId  $AZClientID -CertificateThumbprint $AZCertThumbprint) | Out-Null
+		}Else{
+			(Connect-AzureAD -AccountId ($User + "@" + $Domain )) | Out-Null
+		}
+		
+		Get-AzureADUser -All:$true
+	}
+	$Jobs += Start-Job -Name "AzureAD User" -ScriptBlock $AzueADScript -ArgumentList $env:USERNAME , $env:USERDNSDOMAIN, $AZClientID, $AZCertThumbprint, $AzureTenant
+	#Get Licensing info for Azure AD Users
+	Write-Host "`tAzureAD User Licensing . . ." -ForegroundColor DarkGray
+	$AzueADLicensingScript = {
+		param(
+			$User,
+			$Domain,
+			$AZClientID,
+			$AZCertThumbprint,
+			$AzureTenant
+		)
+		$OutputAZUL = [ordered]@{}
+		$AZUL = $null
+		#region AzureAD
+		If (Get-Module -ListAvailable -Name "AzureAD") {
+			If (-Not (Get-Module "AzureAD" -ErrorAction SilentlyContinue)) {
+				If ($PSVersionTable.PSVersion.Major -gt 5) {
+					Import-Module "AzureAD" -DisableNameChecking -UseWindowsPowerShell
+				}Else {
+					Import-Module "AzureAD" -DisableNameChecking
+				}
+			} Else {
+				#write-host "AzureAD PowerShell Module Already Loaded"
+			} 
+		} Else {
+			Import-Module PackageManagement
+			Import-Module PowerShellGet
+			# Register-PSRepository -Name "PSGallery" –SourceLocation "https://www.powershellgallery.com/api/v2/" -InstallationPolicy Trusted
+			If (-Not (Get-PSRepository -Name "PSGallery")) {
+				Register-PSRepository -Default -InstallationPolicy Trusted 
+			}
+			Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted 
+			Install-Module "AzureAD" -Force -Confirm:$false -Scope:CurrentUser -SkipPublisherCheck -AllowClobber
+			If ($PSVersionTable.PSVersion.Major -gt 5) {
+				Import-Module "AzureAD" -DisableNameChecking -UseWindowsPowerShell
+			}Else {
+				Import-Module "AzureAD" -DisableNameChecking
+			}
+			If (-Not (Get-Module "AzureAD" -ErrorAction SilentlyContinue)) {
+				write-error ("Please install AzureAD Powershell Modules Error")
+				exit
+			}
+		}
+		#endregion AzureAD
+		If (Get-ChildItem "Cert:\LocalMachine\My\" | Where-Object {$_.Thumbprint -eq $AZCertThumbprint}) {
+			(Connect-AzureAD -TenantId $AzureTenant -ApplicationId  $AZClientID -CertificateThumbprint $AZCertThumbprint) | Out-Null
+		}Else{
+			(Connect-AzureAD -AccountId ($User + "@" + $Domain )) | Out-Null
+		}
+		Foreach ($AZU in (Get-AzureADUser).Where({$null -ne $_.ObjectId})) {
+			$AZUL = ((Get-AzureADUserLicenseDetail -ObjectId $AZU.ObjectId).SkuPartNumber -join ",")
+			If (-Not [string]::IsNullOrWhiteSpace($AZUL)) {
+				$OutputAZUL.Add($AZU.UserPrincipalName,$AZUL)
+			}
+		}  
+		$OutputAZUL
+	}
+	$Jobs += Start-Job -Name "AzureAD User Licensing" -ScriptBlock $AzueADLicensingScript -ArgumentList $env:USERNAME , $env:USERDNSDOMAIN, $AZClientID, $AZCertThumbprint, $AzureTenant
+	#Get All Exchange  Mailboxes
+	Write-Host "`tExchange Mailboxes . . ." -ForegroundColor DarkGray
+	$EPMailboxesScript = {
+		param(
+			$ExchangeServer
+		)
+		If ((Get-PSSession | Where-Object { $_.ConfigurationName -Match "Microsoft.Exchange" -and $_.ComputerName -eq $ExchangeServer}).Count -eq 0 ) {
+			$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$ExchangeServer/PowerShell/ -Authentication Negotiate -AllowRedirection 
+			Import-PSSession $ERPSession -AllowClobber -DisableNameChecking -Prefix "EP"
+		}
+		Get-EPMailbox -ResultSize unlimited
+	}
+	$Jobs += Start-Job -Name "Local Exchange Mailbox" -ScriptBlock $EPMailboxesScript -ArgumentList $ExchangeServer
+	Write-Host "`tExchange Mailboxes Statistics . . ." -ForegroundColor DarkGray
+	$EPMailboxesStatsScript = {
+		param(
+			$ExchangeServer						
+			)
+			If ((Get-PSSession | Where-Object { $_.ConfigurationName -Match "Microsoft.Exchange" -and $_.ComputerName -eq $ExchangeServer}).Count -eq 0 ) {
+			$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$ExchangeServer/PowerShell/ -Authentication Negotiate -AllowRedirection 
+			Import-PSSession $ERPSession -AllowClobber -DisableNameChecking -Prefix "EP"
+		}
+		Get-EPMailbox -ResultSize unlimited | Get-EPMailboxStatistics
+	}
+	$Jobs += Start-Job -Name "Local Exchange Mailbox Stats" -ScriptBlock $EPMailboxesStatsScript -ArgumentList $ExchangeServer
+	Write-Host "`tExchange Mailboxes Permissions . . ." -ForegroundColor DarkGray
+	$EPMailboxesPermissionsScript = {
+		param(
+			$ExchangeServer
+		)
+		$EPMailboxesPerms = [ordered]@{}
+		If ((Get-PSSession | Where-Object { $_.ConfigurationName -Match "Microsoft.Exchange" -and $_.ComputerName -eq $ExchangeServer}).Count -eq 0 ) {
+			$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$ExchangeServer/PowerShell/ -Authentication Negotiate -AllowRedirection 
+			Import-PSSession $ERPSession -AllowClobber -DisableNameChecking -Prefix "EP"
+		}
+		Foreach ($Mailbox in (Get-EPMailbox -ResultSize unlimited)) {
+			$EPMailboxesPerms.($Mailbox.UserPrincipalName) = $Mailbox |  Get-EPMailboxPermission
+		}
+		$EPMailboxesPerms	
+	}
+	$Jobs += Start-Job -Name "Local Exchange Mailbox Permissions" -ScriptBlock $EPMailboxesPermissionsScript -ArgumentList $ExchangeServer
+	Write-Host "`tExchange Mailboxes Archive . . ." -ForegroundColor DarkGray
+	$EPMailboxesArchiveScript = {
+		param(
+			$ExchangeServer
+		)
+		If ((Get-PSSession | Where-Object { $_.ConfigurationName -Match "Microsoft.Exchange" -and $_.ComputerName -eq $ExchangeServer}).Count -eq 0 ) {
+			$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$ExchangeServer/PowerShell/ -Authentication Negotiate -AllowRedirection 
+			Import-PSSession $ERPSession -AllowClobber -DisableNameChecking -Prefix "EP"
+		}
+		Get-EPMailbox -ResultSize unlimited -Archive
+	}
+	$Jobs += Start-Job -Name "Local Exchange Mailbox Archive" -ScriptBlock $EPMailboxesArchiveScript -ArgumentList $ExchangeServer
+	Write-Host "`tExchange Mailboxes Archive Statistics . . ." -ForegroundColor DarkGray
+	$EPMailboxesArchiveStatsScript = {
+		param(
+			$ExchangeServer
+			)
+			If ((Get-PSSession | Where-Object { $_.ConfigurationName -Match "Microsoft.Exchange" -and $_.ComputerName -eq $ExchangeServer}).Count -eq 0 ) {
+			$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$ExchangeServer/PowerShell/ -Authentication Negotiate -AllowRedirection 
+			Import-PSSession $ERPSession -AllowClobber -DisableNameChecking -Prefix "EP"
+		}
+		Get-EPMailbox -ResultSize unlimited -Archive | Get-EPMailboxStatistics -Archive
+	}
+	$Jobs += Start-Job -Name "Local Exchange Archive Mailbox Stats" -ScriptBlock $EPMailboxesArchiveStatsScript -ArgumentList $ExchangeServer
+	Write-Host "`tExchange Mailboxes Archive Permissions . . ." -ForegroundColor DarkGray
+	$EPMailboxesArchivePermissionsScript = {
+		param(
+			$ExchangeServer
+		)
+		$EPMailboxesArchivePerms = [ordered]@{}
+		If ((Get-PSSession | Where-Object { $_.ConfigurationName -Match "Microsoft.Exchange" -and $_.ComputerName -eq $ExchangeServer}).Count -eq 0 ) {
+			$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$ExchangeServer/PowerShell/ -Authentication Negotiate -AllowRedirection 
+			Import-PSSession $ERPSession -AllowClobber -DisableNameChecking -Prefix "EP"
+		}
+		Foreach ($Mailbox in (Get-EPMailbox -ResultSize unlimited -Archive)) {
+			$EPMailboxesArchivePerms.($Mailbox.UserPrincipalName) = $Mailbox |  Get-EPMailboxPermission 
+		}
+		$EPMailboxesArchivePerms
+	}
+	$Jobs += Start-Job -Name "Local Exchange Archive Mailbox Permissions" -ScriptBlock $EPMailboxesArchivePermissionsScript -ArgumentList $ExchangeServer
+	Write-Host "`tExchange Remote Mailboxes . . ." -ForegroundColor DarkGray
+	$EPRemoteMailboxesScript = {
+		param(
+			$ExchangeServer
+		)
+		If ((Get-PSSession | Where-Object { $_.ConfigurationName -Match "Microsoft.Exchange" -and $_.ComputerName -eq $ExchangeServer}).Count -eq 0 ) {
+			$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$ExchangeServer/PowerShell/ -Authentication Negotiate -AllowRedirection 
+			Import-PSSession $ERPSession -AllowClobber -DisableNameChecking -Prefix "EP"
+		}
+		Get-EPRemoteMailbox -ResultSize unlimited
+	}
+	$Jobs += Start-Job -Name "Local Exchange Remote Mailbox" -ScriptBlock $EPRemoteMailboxesScript -ArgumentList $ExchangeServer
+	$EPRemoteMailboxesArchiveScript = {
+		param(
+			$ExchangeServer
+		)
+		If ((Get-PSSession | Where-Object { $_.ConfigurationName -Match "Microsoft.Exchange" -and $_.ComputerName -eq $ExchangeServer}).Count -eq 0 ) {
+			$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$ExchangeServer/PowerShell/ -Authentication Negotiate -AllowRedirection 
+			Import-PSSession $ERPSession -AllowClobber -DisableNameChecking -Prefix "EP"
+		}
+		Get-EPRemoteMailbox -ResultSize unlimited -Archive
+	}
+	$Jobs += Start-Job -Name "Local Exchange Remote Mailbox Archive" -ScriptBlock $EPRemoteMailboxesArchiveScript -ArgumentList $ExchangeServer
+	#Get Local Exchange CAS Mailbox Settings
+	$EPEPCASMailboxScript = {
+		param(
+			$ExchangeServer
+		)
+		If ((Get-PSSession | Where-Object { $_.ConfigurationName -Match "Microsoft.Exchange" -and $_.ComputerName -eq $ExchangeServer}).Count -eq 0 ) {
+			$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$ExchangeServer/PowerShell/ -Authentication Negotiate -AllowRedirection 
+			Import-PSSession $ERPSession -AllowClobber -DisableNameChecking -Prefix "EP"
+		}
+		Get-EPCASMailbox
+	}
+	$Jobs += Start-Job -Name "Local Exchange CAS Mailbox Settings" -ScriptBlock $EPEPCASMailboxScript -ArgumentList $ExchangeServer
+	#Get All Exchange Online Mailboxes
+	Write-Host "`tExchange Online Mailboxes . . ." -ForegroundColor DarkGray
+	$EXOMailboxesScript = {
+		param(
+			$CUPN,
+			$AZClientID,
+			$AZCertThumbprint,
+			$AZOrg
+		)
+		If (Get-Module -ListAvailable -Name "ExchangeOnlineManagement") {
+			If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+				Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+			} 
+		} Else {
+			Import-Module PackageManagement
+			Import-Module PowerShellGet
+			# Register-PSRepository -Name "PSGallery" –SourceLocation "https://www.powershellgallery.com/api/v2/" -InstallationPolicy Trusted
+			Register-PSRepository -Default -InstallationPolicy Trusted 
+			Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted 
+			Install-Module "ExchangeOnlineManagement" -Force -Confirm:$false -Scope:CurrentUser -SkipPublisherCheck -AllowClobber
+			Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+			If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+				write-error ("Please install ExchangeOnlineManagement Powershell Modules Error")
+				exit
+			}
+		}
+		#Connect
+		If (-Not (Get-PSSession | Where-Object {$_.name -match "ExchangeOnline" -and $_.Availability -eq "Available"})) {
+			If (Get-ChildItem "Cert:\LocalMachine\My\" | Where-Object {$_.Thumbprint -eq $AZCertThumbprint}) {
+				Connect-ExchangeOnline -CertificateThumbPrint $AZCertThumbprint -AppID $AZClientID -Organization $AZOrg -ShowProgress:$false -ShowBanner:$false
+			}Else{
+				Connect-ExchangeOnline -ShowBanner:$false -UserPrincipalName $CUPN -ShowProgress:$false -ShowBanner:$false
+			}
+		}
+		Get-EXOMailbox -ResultSize unlimited -PropertySets All
+	}
+	$Jobs += Start-Job -Name "Online Exchange Mailbox" -ScriptBlock $EXOMailboxesScript -ArgumentList ([string]([ADSI]"LDAP://<SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)>").UserPrincipalName,$AZClientID,$AZCertThumbprint,$AZOrg)
+	Write-Host "`tExchange Online Mailboxes Statistics . . ." -ForegroundColor DarkGray
+	$EXOMailboxesStatsScript = {
+		param(
+			$CUPN,
+			$AZClientID,
+			$AZCertThumbprint,
+			$AZOrg
+		)
+		If (Get-Module -ListAvailable -Name "ExchangeOnlineManagement") {
+			If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+				Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+			} 
+		} Else {
+			Import-Module PackageManagement
+			Import-Module PowerShellGet
+			# Register-PSRepository -Name "PSGallery" –SourceLocation "https://www.powershellgallery.com/api/v2/" -InstallationPolicy Trusted
+			Register-PSRepository -Default -InstallationPolicy Trusted 
+			Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted 
+			Install-Module "ExchangeOnlineManagement" -Force -Confirm:$false -Scope:CurrentUser -SkipPublisherCheck -AllowClobber
+			Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+			If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+				write-error ("Please install ExchangeOnlineManagement Powershell Modules Error")
+				exit
+			}
+		}
+		#Connect
+		If (-Not (Get-PSSession | Where-Object {$_.name -match "ExchangeOnline" -and $_.Availability -eq "Available"})) {
+			If (Get-ChildItem "Cert:\LocalMachine\My\" | Where-Object {$_.Thumbprint -eq $AZCertThumbprint}) {
+				Connect-ExchangeOnline -CertificateThumbPrint $AZCertThumbprint -AppID $AZClientID -Organization $AZOrg -ShowProgress:$false -ShowBanner:$false
+			}Else{
+				Connect-ExchangeOnline -ShowBanner:$false -UserPrincipalName $CUPN -ShowProgress:$false -ShowBanner:$false
+			}
+		}
+		Get-EXOMailbox -ResultSize unlimited | Get-EXOMailboxStatistics
+	}
+	$Jobs += Start-Job -Name "Online Exchange Mailbox Stats" -ScriptBlock $EXOMailboxesStatsScript -ArgumentList ([string]([ADSI]"LDAP://<SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)>").UserPrincipalName,$AZClientID,$AZCertThumbprint,$AZOrg)
+
+	Write-Host "`tExchange Online Mailboxes Permissions . . ." -ForegroundColor DarkGray
+	$EXOMailboxesPermissionsScript = {
+		param(
+			$CUPN,
+			$AZClientID,
+			$AZCertThumbprint,
+			$AZOrg
+		)
+		$EXOMailboxesPerms = [ordered]@{}
+		If (Get-Module -ListAvailable -Name "ExchangeOnlineManagement") {
+			If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+				Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+			} 
+		} Else {
+			Import-Module PackageManagement
+			Import-Module PowerShellGet
+			# Register-PSRepository -Name "PSGallery" –SourceLocation "https://www.powershellgallery.com/api/v2/" -InstallationPolicy Trusted
+			Register-PSRepository -Default -InstallationPolicy Trusted 
+			Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted 
+			Install-Module "ExchangeOnlineManagement" -Force -Confirm:$false -Scope:CurrentUser -SkipPublisherCheck -AllowClobber
+			Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+			If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+				write-error ("Please install ExchangeOnlineManagement Powershell Modules Error")
+				exit
+			}
+		}
+		#Connect
+		If (-Not (Get-PSSession | Where-Object {$_.name -match "ExchangeOnline" -and $_.Availability -eq "Available"})) {
+			If (Get-ChildItem "Cert:\LocalMachine\My\" | Where-Object {$_.Thumbprint -eq $AZCertThumbprint}) {
+				Connect-ExchangeOnline -CertificateThumbPrint $AZCertThumbprint -AppID $AZClientID -Organization $AZOrg -ShowProgress:$false -ShowBanner:$false
+			}Else{
+				Connect-ExchangeOnline -ShowBanner:$false -UserPrincipalName $CUPN -ShowProgress:$false -ShowBanner:$false
+			}
+		}
+		Foreach ($Mailbox in (Get-EXOMailbox -ResultSize unlimited -PropertySets All)) {
+			$EXOMailboxesPerms.($Mailbox.UserPrincipalName) = $Mailbox |  Get-EXOMailboxPermission -ResultSize Unlimited
+		}
+		$EXOMailboxesPerms
+	}
+	$Jobs += Start-Job -Name "Online Exchange Mailbox Permission" -ScriptBlock $EXOMailboxesPermissionsScript -ArgumentList ([string]([ADSI]"LDAP://<SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)>").UserPrincipalName,$AZClientID,$AZCertThumbprint,$AZOrg)	
+
+	Write-Host "`tExchange Online Mailboxes Archive . . ." -ForegroundColor DarkGray
+	$EXOMailboxesArchiveScript = {
+		param(
+			$CUPN,
+			$AZClientID,
+			$AZCertThumbprint,
+			$AZOrg
+		)
+		If (Get-Module -ListAvailable -Name "ExchangeOnlineManagement") {
+			If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+				Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+			} 
+		} Else {
+			Import-Module PackageManagement
+			Import-Module PowerShellGet
+			# Register-PSRepository -Name "PSGallery" –SourceLocation "https://www.powershellgallery.com/api/v2/" -InstallationPolicy Trusted
+			Register-PSRepository -Default -InstallationPolicy Trusted 
+			Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted 
+			Install-Module "ExchangeOnlineManagement" -Force -Confirm:$false -Scope:CurrentUser -SkipPublisherCheck -AllowClobber
+			Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+			If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+				write-error ("Please install ExchangeOnlineManagement Powershell Modules Error")
+				exit
+			}
+		}
+		#Connect
+		If (-Not (Get-PSSession | Where-Object {$_.name -match "ExchangeOnline" -and $_.Availability -eq "Available"})) {
+			If (Get-ChildItem "Cert:\LocalMachine\My\" | Where-Object {$_.Thumbprint -eq $AZCertThumbprint}) {
+				Connect-ExchangeOnline -CertificateThumbPrint $AZCertThumbprint -AppID $AZClientID -Organization $AZOrg -ShowProgress:$false -ShowBanner:$false
+			}Else{
+				Connect-ExchangeOnline -ShowBanner:$false -UserPrincipalName $CUPN -ShowProgress:$false -ShowBanner:$false
+			}
+		}
+		Get-EXOMailbox -ResultSize unlimited -Archive -PropertySets All
+	}
+	$Jobs += Start-Job -Name "Online Exchange Mailbox Archive" -ScriptBlock $EXOMailboxesArchiveScript -ArgumentList ([string]([ADSI]"LDAP://<SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)>").UserPrincipalName,$AZClientID,$AZCertThumbprint,$AZOrg)
+	Write-Host "`tExchange Online Mailboxes Archive Statistics . . ." -ForegroundColor DarkGray
+	$EXOMailboxesArchiveStatsScript = {
+		param(
+			$CUPN,
+			$AZClientID,
+			$AZCertThumbprint,
+			$AZOrg
+			)
+			If (Get-Module -ListAvailable -Name "ExchangeOnlineManagement") {
+			If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+				Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+			} 
+		} Else {
+			Import-Module PackageManagement
+			Import-Module PowerShellGet
+			# Register-PSRepository -Name "PSGallery" –SourceLocation "https://www.powershellgallery.com/api/v2/" -InstallationPolicy Trusted
+			Register-PSRepository -Default -InstallationPolicy Trusted 
+			Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted 
+			Install-Module "ExchangeOnlineManagement" -Force -Confirm:$false -Scope:CurrentUser -SkipPublisherCheck -AllowClobber
+			Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+			If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+				write-error ("Please install ExchangeOnlineManagement Powershell Modules Error")
+				exit
+			}
+		}
+		#Connect
+		If (-Not (Get-PSSession | Where-Object {$_.name -match "ExchangeOnline" -and $_.Availability -eq "Available"})) {
+			If (Get-ChildItem "Cert:\LocalMachine\My\" | Where-Object {$_.Thumbprint -eq $AZCertThumbprint}) {
+				Connect-ExchangeOnline -CertificateThumbPrint $AZCertThumbprint -AppID $AZClientID -Organization $AZOrg -ShowProgress:$false -ShowBanner:$false
+			}Else{
+				Connect-ExchangeOnline -ShowBanner:$false -UserPrincipalName $CUPN -ShowProgress:$false -ShowBanner:$false
+			}
+		}
+		Get-EXOMailbox -ResultSize unlimited -Archive | Get-EXOMailboxStatistics -Archive
+	}
+	$Jobs += Start-Job -Name "Online Exchange Mailbox Archive Stats" -ScriptBlock $EXOMailboxesArchiveStatsScript -ArgumentList ([string]([ADSI]"LDAP://<SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)>").UserPrincipalName,$AZClientID,$AZCertThumbprint,$AZOrg)
+	Write-Host "`tExchange Online Mailboxes Archive Permissions . . ." -ForegroundColor DarkGray
+	$EXOMailboxesArchivePermissionsScript = {
+		param(
+			$CUPN,
+			$AZClientID,
+			$AZCertThumbprint,
+			$AZOrg
+			)
+		$EXOMailboxesArchivePerms = [ordered]@{}
+		If (Get-Module -ListAvailable -Name "ExchangeOnlineManagement") {
+			If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+				Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+			} 
+		} Else {
+			Import-Module PackageManagement
+			Import-Module PowerShellGet
+			# Register-PSRepository -Name "PSGallery" –SourceLocation "https://www.powershellgallery.com/api/v2/" -InstallationPolicy Trusted
+			Register-PSRepository -Default -InstallationPolicy Trusted 
+			Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted 
+			Install-Module "ExchangeOnlineManagement" -Force -Confirm:$false -Scope:CurrentUser -SkipPublisherCheck -AllowClobber
+			Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+			If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+				write-error ("Please install ExchangeOnlineManagement Powershell Modules Error")
+				exit
+			}
+		}
+		#Connect
+		If (-Not (Get-PSSession | Where-Object {$_.name -match "ExchangeOnline" -and $_.Availability -eq "Available"})) {
+			If (Get-ChildItem "Cert:\LocalMachine\My\" | Where-Object {$_.Thumbprint -eq $AZCertThumbprint}) {
+				Connect-ExchangeOnline -CertificateThumbPrint $AZCertThumbprint -AppID $AZClientID -Organization $AZOrg -ShowProgress:$false -ShowBanner:$false
+			}Else{
+				Connect-ExchangeOnline -ShowBanner:$false -UserPrincipalName $CUPN -ShowProgress:$false -ShowBanner:$false
+			}
+		}
+
+		Foreach ($Mailbox in (Get-EXOMailbox -ResultSize unlimited -Archive -PropertySets All)) {
+			$EXOMailboxesArchivePerms.($Mailbox.UserPrincipalName) = $Mailbox |  Get-EXOMailboxPermission -ResultSize Unlimited
+		}
+		$EXOMailboxesArchivePerms
+	}
+	$Jobs += Start-Job -Name "Online Exchange Mailbox Archive Permission" -ScriptBlock $EXOMailboxesArchivePermissionsScript -ArgumentList ([string]([ADSI]"LDAP://<SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)>").UserPrincipalName,$AZClientID,$AZCertThumbprint,$AZOrg)		
+	#Get Online Exchange CAS Mailbox Settings
+	$EXOCASMailboxScript = {
+		param(
+			$CUPN,
+			$AZClientID,
+			$AZCertThumbprint,
+			$AZOrg
+		)
+		If (Get-Module -ListAvailable -Name "ExchangeOnlineManagement") {
+			If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+				Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+			} 
+		} Else {
+			Import-Module PackageManagement
+			Import-Module PowerShellGet
+			# Register-PSRepository -Name "PSGallery" –SourceLocation "https://www.powershellgallery.com/api/v2/" -InstallationPolicy Trusted
+			Register-PSRepository -Default -InstallationPolicy Trusted 
+			Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted 
+			Install-Module "ExchangeOnlineManagement" -Force -Confirm:$false -Scope:CurrentUser -SkipPublisherCheck -AllowClobber
+			Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+			If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+				write-error ("Please install ExchangeOnlineManagement Powershell Modules Error")
+				exit
+			}
+		}
+		#Connect
+		If (-Not (Get-PSSession | Where-Object {$_.name -match "ExchangeOnline" -and $_.Availability -eq "Available"})) {
+			If (Get-ChildItem "Cert:\LocalMachine\My\" | Where-Object {$_.Thumbprint -eq $AZCertThumbprint}) {
+				Connect-ExchangeOnline -CertificateThumbPrint $AZCertThumbprint -AppID $AZClientID -Organization $AZOrg -ShowProgress:$false -ShowBanner:$false
+			}Else{
+				Connect-ExchangeOnline -ShowBanner:$false -UserPrincipalName $CUPN -ShowProgress:$false -ShowBanner:$false
+			}
+		}
+		Get-EXOCasMailbox -PropertySets All
+	}
+	$Jobs += Start-Job -Name "Online Exchange CAS Mailbox Settings" -ScriptBlock $EXOCASMailboxScript -ArgumentList ([string]([ADSI]"LDAP://<SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)>").UserPrincipalName,$AZClientID,$AZCertThumbprint,$AZOrg)
+
+	Write-host ("`tStart Monitoring Jobs . . .") -ForegroundColor DarkYellow
+	#Main Loop to monitor jobs
+	do {
+		Foreach ($cjob in (Get-Job -State Completed)) {
+			switch -Wildcard ($cjob.Name) {
+				"AD User" { 
+					$ADUsers = Receive-Job -Id ($cjob.Id) 
+					If ($null -ne $ADUsers) {
+						Remove-Job -Id ($cjob.Id)
+						Write-Host "`t`tImporting AD User Results . . ." -ForegroundColor DarkGray
+					}
+				}
+				"AzureAD User" { 
+					$AzureUsers = Receive-Job -Id ($cjob.Id)
+					If ($null -ne $AzureUsers) {
+						Remove-Job -Id ($cjob.Id)
+						Write-Host "`t`tImporting AzureAD User Results . . ." -ForegroundColor DarkGray
+					} 
+				}
+				"Local Exchange Mailbox" { 
+					$EPMailboxes = Receive-Job -Id ($cjob.Id)
+					If ($null -ne $EPMailboxes) {
+						Remove-Job -Id ($cjob.Id)
+						Write-Host "`t`tImporting Local Exchange Mailbox Results . . ." -ForegroundColor DarkGray
+					} 
+				}
+				"Local Exchange Mailbox Archive" { 
+					$EPMailboxesArchive = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EPMailboxesArchive) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Local Exchange Mailbox Archive Results . . ." -ForegroundColor DarkGray
+					}
+				}
+				"Local Exchange Remote Mailbox" { 
+					$EPRemoteMailboxes = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EPRemoteMailboxes) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Local Exchange Remote Mailbox Results . . ." -ForegroundColor DarkGray
+					}
+				}
+				"Local Exchange Remote Mailbox Archive" { 
+					$EPRemoteMailboxesArchive = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EPRemoteMailboxesArchive) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Local Exchange Remote Mailbox Archive Results . . ." -ForegroundColor DarkGray
+					} 
+				}
+				"Local Exchange Mailbox Stats" { 
+					$EPMailboxesStats = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EPMailboxesStats) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Local Exchange Mailbox Stats Results . . ." -ForegroundColor DarkGray
+					} 
+				}
+				"Local Exchange Mailbox Permissions" { 
+					$EPMailboxesPerms = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EPMailboxesPerms) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Local Exchange Mailbox Permissions Results . . ." -ForegroundColor DarkGray
+					} 	
+				}
+				"Local Exchange Archive Mailbox Stats" { 
+					$EPMailboxesArchiveStats = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EPMailboxesArchiveStats) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Local Exchange Archive Mailbox Stats Results . . ." -ForegroundColor DarkGray
+					} 
+				}
+				"Local Exchange Archive Mailbox Permissions" { 
+					$EPMailboxesArchivePerms = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EPMailboxesArchivePerms) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Local Exchange Archive Mailbox Permissions Results . . ." -ForegroundColor DarkGray
+					} 
+				}
+				"Local Exchange CAS Mailbox Settings" { 
+					$EPCASM = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EPCASM) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Local Exchange CAS Mailbox Settings Results . . ." -ForegroundColor DarkGray
+					}
+				}
+				"Online Exchange Mailbox" { 
+					$EXOMailboxes = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EXOMailboxes) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Online Exchange Mailbox Results . . ." -ForegroundColor DarkGray
+					} 
+				}
+				"Online Exchange Mailbox Archive" { 
+					$EXOMailboxesArchive = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EXOMailboxesArchive) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Online Exchange Mailbox Archive Results . . ." -ForegroundColor DarkGray
+					} 
+				}
+				"Online Exchange Mailbox Stats" { 
+					$EXOMailboxesStats = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EXOMailboxesStats) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Online Exchange Mailbox Stats Results . . ." -ForegroundColor DarkGray
+					} 
+				}
+				"Online Exchange Mailbox Permission" { 
+					$EXOMailboxesPerms = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EXOMailboxesPerms) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Online Exchange Mailbox Permission Results . . ." -ForegroundColor DarkGray
+					} 
+				}
+				"Online Exchange Mailbox Archive Stats" { 
+					$EXOMailboxesArchiveStats = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EXOMailboxesArchiveStats) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Online Exchange Mailbox Archive Stats Results . . ." -ForegroundColor DarkGray
+					} 
+				}
+				"Online Exchange Mailbox Archive Permission" { 
+					$EXOMailboxesArchivePerms = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EXOMailboxesArchivePerms) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Online Exchange Mailbox Archive Permission Results . . ." -ForegroundColor DarkGray
+					} 
+				}
+				"Online Exchange CAS Mailbox Settings" { 
+					$EPRemoteCASM = Receive-Job -Id ($cjob.id)
+					If ($null -ne $EPRemoteCASM) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting Online Exchange CAS Mailbox Settings Results . . ." -ForegroundColor DarkGray
+					} 
+				}
+				"AzureAD User Licensing" {
+					$OutputAZUL = Receive-Job -Id ($cjob.id)
+					If ($null -ne $OutputAZUL) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting AzureAD User Licensing Results . . ." -ForegroundColor DarkGray	
+					} 
+									
+				}
+				"ADFS Events on *" {
+					$ADFSLogsTemp = Receive-Job -Id ($cjob.id)
+					If ($null -ne $ADFSLogsTemp) {
+						$ADFSLogs += $ADFSLogsTemp
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`t$($cjob.Name) Results . . ." -ForegroundColor DarkGray	
+					} 
+				}
+				"GraphAPI Entra ID User" {
+					$OutputGraphAPIU = Receive-Job -Id ($cjob.id)
+					If ($null -ne $OutputGraphAPIU) {
+						Remove-Job -Id ($cjob.id)
+						Write-Host "`t`tImporting GraphAPI Entra ID Results . . ." -ForegroundColor DarkGray	
+					} 					
+				}
+				Default {}
+			}
+		}
+		If (Get-Job -State Failed) {
+			Write-Error "Following jobs having failed:"
+			Get-Job -State Failed
+			throw "Stopping script"
+		}
+		If ((get-job).count -gt 0 -and $Jobs.count -gt 0) {
+			$intJobs = ($Jobs.count - (get-job).count)
+			If ($intJobs -lt 0) {
+				$intJobs = 0
+			}
+			If ((($intJobs / $Jobs.count)*100) -lt 0){
+				$intJobsComplete = 0
+			}Else{
+				$intJobsComplete =(($intJobs / $Jobs.count)*100)
+			}
+
+			Write-Progress -Activity ("Monitoring Jobs " + ($MyInvocation.MyCommand.Name -replace ".ps1","") ) -Status ("Caching Objects " + "[" + $intJobs + "/" + $Jobs.count + "]") -percentComplete $intJobsComplete -Id 1
+		}
+		Start-sleep -Milliseconds 500
+	}while(Get-Job -State Running)
+	Write-Progress -Id 1 -Completed -Activity ("Monitoring Jobs " + ($MyInvocation.MyCommand.Name -replace ".ps1","") )
+	$swc.Stop()
+	$HMADITimeStamp = get-date
+	Write-Host ("Caching Objects time: " + (FormatElapsedTime($swc.Elapsed)) + " to run. " + '{0:N0}' -f ($ADUsers.Count / $swc.Elapsed.TotalMinutes) + " Users's per Minute.")
+}Else{
+	Write-host ("Using Cached Objects from: " + $HMADITimeStamp + " that is " + (New-TimeSpan -Start $HMADITimeStamp -End (Get-Date)).Hours + " hours old.")
+}
+#endregion caching objects
 $swp = [Diagnostics.Stopwatch]::StartNew()
-Write-host "Processing Users Please Wait . .."
+Write-host "Processing Users Please Wait ..."
 Write-Progress -Activity ("Creating " + ($MyInvocation.MyCommand.Name -replace ".ps1","") + " output") -Status ("Processing " + "[" + $output.Count + "/" + $ADUsers.count + "]") -percentComplete 0 -Id 0 
 #Main loop
 Foreach ($ADUser in $ADUsers) { 
@@ -355,16 +1191,15 @@ Foreach ($ADUser in $ADUsers) {
 	#Update progress Source: https://stackoverflow.com/questions/67981500/making-an-powershell-progress-bar-more-efficient 
 	$Script:WindowWidthChanged = $Script:WindowWidth -ne $Host.UI.RawUI.WindowSize.Width
 	if ($Script:WindowWidthChanged) { $Script:WindowWidth = $Host.UI.RawUI.WindowSize.Width }
-	$ProgressCompleted = [math]::floor($output.Count * $Script:WindowWidth / $ADUsers.count)
-	if ($Script:WindowWidthChanged -or $ProgressCompleted -ne $Script:LastProgressCompleted) {
-		Write-Progress -Activity ("Creating " + ($MyInvocation.MyCommand.Name -replace ".ps1","") + " output") -Status ("Processing " + $ADUser.name + "[" + $output.Count + "/" + $ADUsers.count + "]") -percentComplete (($output.Count / $ADUsers.count)  * 100) -Id 0
+	$ProgressCompleted = [math]::floor($Script:output.Count * $Script:WindowWidth / $ADUsers.count)
+	if ($Script:WindowWidthChanged -or $ProgressCompleted -ne $LastProgressCompleted) {
+		Write-Progress -Activity ("Creating " + ($MyInvocation.MyCommand.Name -replace ".ps1","") + " output") -Status ("Processing " + $ADUser.name + "[" + $Script:output.Count + "/" + $Script:ADUsers.count + "]") -percentComplete (($Script:output.Count / $Script:ADUsers.count)  * 100) -Id 0
 	}
-	$Script:LastProgressCompleted = $ProgressCompleted
+	$LastProgressCompleted = $ProgressCompleted
 	#Clear Loop var
 	$TotalItemSize = 0
 	$TotalDeletedItemSize = 0
-
-	$AzureADUser = $AzureUsers.Where({$_.UserPrincipalName -eq $ADUser.UserPrincipalName})
+	$CUPN = $ADUser.UserPrincipalName
 	$Record = [ADExchangeOutput]::new()
 	$Record."Logon Name" = $ADUser.sAMAccountName
 	$Record."Display Name" = $ADUser.DisplayName
@@ -387,10 +1222,43 @@ Foreach ($ADUser in $ADUsers) {
 	$Record."Phone" = $ADUser.telephoneNumber
 	$Record."Mobile Phone" = $ADUser.mobile
 	$Record."extensionAttribute2 CIFX Company" = $ADUser.extensionAttribute2
-	If($AzureADUser){
-		$Record."Azure Licenses" = ((Get-AzureADUserLicenseDetail -ObjectId $AzureADUser.ObjectId | Select-Object SkuPartNumber).SkuPartNumber -join ",")
+	$GraphAPIUser = $OutputGraphAPIU.Where({$_."User Principal Name" -eq $CUPN})
+	$AzureADUser = $AzureUsers.Where({$_.UserPrincipalName -eq $CUPN})
+
+	If(!([string]::IsNullOrWhiteSpace($GraphAPIUser."Entra Last Sync"))){
+		$Record."Azure Last Sync Time" = $GraphAPIUser."Entra Last Sync"
+	}ElseIf(!([string]::IsNullOrWhiteSpace($AzureADUser.LastDirSyncTime))){
 		$Record."Azure Last Sync Time" = $AzureADUser.LastDirSyncTime
 	}
+	If(!([string]::IsNullOrWhiteSpace($GraphAPIUser."Licenses Part Number"))){
+		$Record."Azure Licenses" = $GraphAPIUser."Licenses Part Number"
+	}
+	If(!([string]::IsNullOrWhiteSpace($GraphAPIUser."Licenses"))){
+		$Record."Azure Licenses Details" = $GraphAPIUser."Licenses"
+	}Else{
+		If ((!([string]::IsNullOrWhiteSpace($CUPN)))){
+			If ($outputAZUL.Count -gt 0) {
+				Try{
+					If ($OutputAZUL.ContainsKey($CUPN)){	
+						$Record."Azure Licenses" = $OutputAZUL.$CUPN
+					}	
+				}Catch{
+					If ($OutputAZUL[0].ContainsKey($CUPN)){	
+						$Record."Azure Licenses" = $OutputAZUL[0].$CUPN
+					}	
+				}
+			}
+		}
+	}
+	If(!([string]::IsNullOrWhiteSpace($GraphAPIUser."Last Sign-In"))){
+		$Record."Azure Last Sign-On" = $GraphAPIUser."Last Sign-In"
+		$Record."Azure Last Sign-On Days" = ($((Get-Date) - ($GraphAPIUser."Last Sign-In")).Days)
+	}
+	If(!([string]::IsNullOrWhiteSpace($GraphAPIUser."Last Non-Interactive Sign-In"))){
+		$Record."Azure Non-Interactive Last Sign-On" = $GraphAPIUser."Last Non-Interactive Sign-In"
+		$Record."Azure Non-Interactive Last Sign-On Days" = ($((Get-Date) - ($GraphAPIUser."Last Non-Interactive Sign-In")).Days)
+	}	
+
 	$Record."Group Membership" = (($ADUser.MemberOf | CleanDistinguishedName) -join ",")
 	$Record."Email" = $ADUser.Mail
 	$Record."Email Addresses" = (($ADUser.proxyAddresses).Where({$_ -match "smtp"})) -replace "smtp:" -join ", "
@@ -435,6 +1303,21 @@ Foreach ($ADUser in $ADUsers) {
 	$Record."Days Since Creation" = ($((Get-Date) - ([DateTime]($ADUser.whencreated))).Days)
 	$Record."Last Password Change" = ([DateTime]::FromFileTime($ADUser.pwdLastSet))
 	$Record."Days from last password change" = ($((Get-Date) - ([DateTime]::FromFileTime($ADUser.pwdLastSet))).Days)
+
+	#region ADFS 
+	$ADFSLog = $ADFSLogs.Where({$_."User ID" -eq ($ADUser.sAMAccountName)}) | Sort-Object -Property "Date-Time" -Descending | Select-Object -First 1
+	If(-Not [string]::IsNullOrWhiteSpace($ADFSLog."Date-Time")){
+		$Record."ADFS Last Logon" = $ADFSLog."Date-Time"
+		$Record."ADFS Last Logon Days" = ($((Get-Date)- ([DateTime]($ADFSLog."Date-Time"))).Days)
+	}
+	$Record."ADFS Last Logon IP" = $ADFSLog."IP Address"
+	$Record."ADFS Relying Party" = $ADFSLog."Relying Party"
+	$Record."ADFS Auth Protocol" = $ADFSLog."Auth Protocol"
+	$Record."ADFS Network Location" = $ADFSLog."Network Location"
+	$Record."ADFS ADFS Server" = $ADFSLog."ADFS Server"
+	$Record."ADFS User Agent String" = $ADFSLog."User Agent String"
+	
+	#endregion ADFS 
 	$Record."RDS CAL Expiration Date" = ($ADUser.msTSExpireDate)
 	$Record."Distinguished Name" = ($ADUser.distinguishedName)
 
@@ -442,7 +1325,7 @@ Foreach ($ADUser in $ADUsers) {
 	#region Mailbox
 	If($ADUser.msExchMailboxGuid){
 		$Record."Mailbox Creation Date" = $ADUser.msExchWhenMailboxCreated
-		$LM = $EPMailboxes.Where({ $_.UserPrincipalName -eq $ADUser.UserPrincipalName})
+		$LM = $EPMailboxes.Where({ $_.UserPrincipalName -eq $CUPN})
 		If ($LM) {
 			$Record."Mailbox Location" = "Local"
 			$Record."Mailbox Server" = $LM.ServerName
@@ -453,9 +1336,9 @@ Foreach ($ADUser in $ADUsers) {
 			$Record."Mailbox Prohibit Send Quota" = MailboxGB($LM.ProhibitSendQuota)
 			$Record."Mailbox Prohibit Send Receive Quota" = MailboxGB($LM.ProhibitSendReceiveQuota)
 
-			#$LMS =  Get-EPMailboxStatistics -Identity $ADUser.UserPrincipalName -ErrorAction SilentlyContinue
-			$LMS =  $EPMailboxesStats.Where({$_.Identity -eq $ADUser.UserPrincipalName})
-			If($LMS){
+			#$LMS =  Get-EPMailboxStatistics -Identity $CUPN -ErrorAction SilentlyContinue
+			$LMS =  $EPMailboxesStats.Where({$_.MailboxGuid -eq $ad.msExchMailboxGuid})
+			If($LMS.MailboxGuid){
 				$Record."Mailbox Storage Limit Status" = $LMS.StorageLimitStatus
 				$TotalItemSize = MailboxGB($LMS.TotalItemSize)
 				$TotalDeletedItemSize = MailboxGB($LMS.TotalDeletedItemSize) 
@@ -467,7 +1350,7 @@ Foreach ($ADUser in $ADUsers) {
 				$Record."Mailbox Last Logon Time" = $LMS.LastLogonTime
 				$Record."Mailbox Last Logoff Time" = $LMS.LastLogoffTime
 			}
-			$LMCAS = $EPCASM.Where({ $_.SamAccountName.ToLower() -eq $ADUser.SamAccountName.ToLower()})
+			$LMCAS = $EPCASM.Where({ If($_.SamAccountName) {$_.SamAccountName.ToLower() -eq $ADUser.SamAccountName.ToLower()}})
 			If ($LMCAS) {
 				$Record."OWA Enabled" = $LMCAS.OWAEnabled
 				$Record."Mapi Enabled" = $LMCAS.ActiveSyncEnabled
@@ -477,8 +1360,8 @@ Foreach ($ADUser in $ADUsers) {
 			}
 
 		}Else {
-			$RM = $EXOMailboxes.Where({ $_.UserPrincipalName -eq $ADUser.UserPrincipalName})
-			$LRM = $EPRemoteMailboxes.Where({ $_.UserPrincipalName -eq $ADUser.UserPrincipalName})
+			$RM = $EXOMailboxes.Where({ $_.UserPrincipalName -eq $CUPN})
+			$LRM = $EPRemoteMailboxes.Where({ $_.UserPrincipalName -eq $CUPN})
 			If ($RM) {
 				If ($RM -and $LRM) {
 					If ($RM.ExchangeGuid -eq $LRM.ExchangeGuid) {
@@ -487,7 +1370,7 @@ Foreach ($ADUser in $ADUsers) {
 						$Record."Mailbox Location" = "Hybrid Remote Broken"
 						If (($LRM.ExchangeGuid -eq '00000000-0000-0000-0000-000000000000' -or $null -eq $LRM.ExchangeGuid)) {
 							write-host ("`t Creating Remote Mailbox: " + $ADUser.ExchangeGuid) -ForeGroundColor red
-							Enable-EPRemoteMailbox -Identity $ADUser.Alias -RemoteRoutingAddress ( $ADUser.Alias + "@github.mail.onmicrosoft.com")
+							Enable-EPRemoteMailbox -Identity $ADUser.Alias -RemoteRoutingAddress ( $ADUser.Alias + "@" + $AZOrg)
 							If (($LRM.ArchiveGuid -eq '00000000-0000-0000-0000-000000000000' -or $null -eq $LRM.ArchiveGuid) -and ($ADUser.ArchiveGuid -eq '00000000-0000-0000-0000-000000000000' -or $null -eq $ADUser.ArchiveGuid)) {
 								write-host ("`t Setting ExchangeGUID: " + $ADUser.ExchangeGuid) -foregroundcolor yellow
 								Set-EPRemoteMailbox -Identity $RM.Alias -ExchangeGUID $RM.ExchangeGuid
@@ -507,9 +1390,9 @@ Foreach ($ADUser in $ADUsers) {
 				$Record."Mailbox Issue Warning Quota" = MailboxGB($RM.IssueWarningQuota) 
 				$Record."Mailbox Prohibit Send Quota" = MailboxGB($RM.ProhibitSendQuota) 
 				$Record."Mailbox Prohibit Send Receive Quota" = MailboxGB($RM.ProhibitSendReceiveQuota) 
-				#$RMS =  Get-MailboxStatistics -Identity $ADUser.UserPrincipalName -ErrorAction SilentlyContinue
-				$RMS =  $EXOMailboxesStats.Where({$_.Identity -eq $ADUser.UserPrincipalName})
-				If($RMS){
+				#$RMS =  Get-MailboxStatistics -Identity $CUPN -ErrorAction SilentlyContinue
+				$RMS =  $EXOMailboxesStats.Where({$_.MailboxGuid -eq $ad.msExchMailboxGuid})
+				If($RMS.MailboxGuid){
 					$Record."Mailbox Storage Limit Status" = $RMS.StorageLimitStatus
 					$TotalItemSize = MailboxGB($RMS.TotalItemSize)
 					$TotalDeletedItemSize = MailboxGB($RMS.TotalDeletedItemSize) 
@@ -521,8 +1404,9 @@ Foreach ($ADUser in $ADUsers) {
 					$Record."Mailbox Last Logon Time" = $RMS.LastLogonTime
 					$Record."Mailbox Last Logoff Time" = $RMS.LastLogoffTime
 				}
-				$RMCAS = $EPRemoteCASM.Where({ $_.SamAccountName.ToLower() -eq $ADUser.SamAccountName.ToLower()})
-				If ($LMCAS) {
+				$RMCAS = $EPRemoteCASM.Where({ $_.guid -eq (New-Object -TypeName System.Guid -ArgumentList @(,$ADUser.msExchMailboxGuid)).ToString()})
+				# $RMCAS = $EPRemoteCASM.Where({ $_.SamAccountName.ToLower() -eq $ADUser.SamAccountName.ToLower()})
+				If ($RMCAS) {
 					$Record."OWA Enabled" = $RMCAS.OWAEnabled
 					$Record."Mapi Enabled" = $RMCAS.ActiveSyncEnabled
 					$Record."Active Sync Enabled" = $RMCAS.MapiEnabled
@@ -536,39 +1420,82 @@ Foreach ($ADUser in $ADUsers) {
 		$FixedDAMP = @{}
 		#region Mailbox Permission
 		If ($Record."Mailbox Location" -eq "Local" -and $LM) {
-			# $DAMP = Get-EPMailboxPermission  -Identity $ADUser.UserPrincipalName | Where-Object {($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false} | Sort-Object -Unique -Property User
-			$DAMP = ($EPMailboxesPerms.Where({$_.Identity -eq $ADUser.UserPrincipalName})).Where({($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false}) | Sort-Object -Unique -Property User
+			Try {
+				$DAMP = ($EPMailboxesPerms.($CUPN).Where({($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false})) | Sort-Object -Unique -Property User
+			}Catch{
+				$DAMP = ($EPMailboxesPerms[1].($CUPN).Where({($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false})) | Sort-Object -Unique -Property User
+			}
 		}
 		If($Record."Mailbox Location" -eq "Cloud Only" -or $Record."Mailbox Location" -match "Hybrid Remote" -and $RM){
-			# $DAMP =  Get-MailboxPermission -Identity $ADUser.UserPrincipalName | Where-Object {($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false} | Sort-Object -Unique -Property User		
-			$DAMP =  ($EXOMailboxesPerms.Where({$_.Identity -eq $ADUser.UserPrincipalName})).Where({($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false}) | Sort-Object -Unique -Property User		
+			Try {
+				$DAMP =  ($EXOMailboxesPerms.($CUPN).Where({($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false})) | Sort-Object -Unique -Property User		
+			}Catch{
+				$DAMP =  ($EXOMailboxesPerms[1].($CUPN).Where({($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false})) | Sort-Object -Unique -Property User		
+			}
 		}
-		#Will remove disabled users with permissions
+		#Will show disabled users with permissions
 		If ($DAMP.count -gt 0 ) {
 			ForEach( $ACE in $DAMP) {
-				[switch]$ADValid=$false
 				If (($env:USERDOMAIN).ToLower() -eq (split-path -Path $ACE.User -Parent).ToLower()) {
 					Try{
 						$DomainObject = [DirectoryServices.AccountManagement.Principal]::FindByIdentity($ContextType,$IdentityType,(split-path -Path $ACE.User -Leaf))
 						Foreach ($DO in $DomainObject) {
 							If ($DO.StructuralObjectClass -eq  "user") {
 								If ($DO.Enabled -and $DO.SamAccountName.ToLower() -eq (split-path -Path $ACE.User -Leaf).ToLower()) {
-									$ADValid=$true
+									$FixedDAMP.add($ACE.User,$ACE.AccessRights)
+								}Else{
+									If ($RemoveDisabledPerms -and $ADUser.description -notmatch "Leave") {
+										If ($Record."Mailbox Location" -eq "Cloud Only") {
+											If (Get-Module -ListAvailable -Name "ExchangeOnlineManagement") {
+												If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+													Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+												} 
+											} Else {
+												Import-Module PackageManagement
+												Import-Module PowerShellGet
+												Register-PSRepository -Default -InstallationPolicy Trusted 
+												Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted 
+												Install-Module "ExchangeOnlineManagement" -Force -Confirm:$false -Scope:CurrentUser -SkipPublisherCheck -AllowClobber
+												Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+												If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+													write-error ("Please install ExchangeOnlineManagement Powershell Modules Error")
+													exit
+												}
+											}
+											#Connect
+											If (-Not (Get-PSSession | Where-Object {$_.name -match "ExchangeOnline" -and $_.Availability -eq "Available"})) {
+												If (Get-ChildItem "Cert:\LocalMachine\My\" | Where-Object {$_.Thumbprint -eq $AZCertThumbprint}) {
+													Connect-ExchangeOnline -CertificateThumbPrint $AZCertThumbprint -AppID $AZClientID -Organization $AZOrg -ShowProgress:$false -ShowBanner:$false
+												}Else{
+													Connect-ExchangeOnline -ShowBanner:$false -UserPrincipalName $CUPN -ShowProgress:$false -ShowBanner:$false
+												}
+											}
+											#Remove Permissions
+											$RM | Remove-MailboxPermission -Confirm:$false -User $ACE.User -AccessRights $ACE.AccessRights
+											$FixedDAMP.add(($ACE.User + " - Disabled - Removed"),$ACE.AccessRights)
+										}Else{
+											If ((Get-PSSession | Where-Object { $_.ConfigurationName -Match "Microsoft.Exchange" -and $_.ComputerName -eq $ExchangeServer}).Count -eq 0 ) {
+												$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$ExchangeServer/PowerShell/ -Authentication Negotiate -AllowRedirection 
+												Import-PSSession $ERPSession -AllowClobber -DisableNameChecking -Prefix "EP"
+											}
+											#Remove Permissions
+											$LM | Remove-EPMailboxPermission -Confirm:$false -User $ACE.User -AccessRights $ACE.AccessRights
+											$FixedDAMP.add(($ACE.User + " - Disabled - Removed"),$ACE.AccessRights)
+										}
+
+									}Else{
+										$FixedDAMP.add(($ACE.User + " - Disabled"),$ACE.AccessRights)
+									}
 								}
 							}elseif ($DO.StructuralObjectClass -eq  "group") {
-								$ADValid=$true
+								$FixedDAMP.add($ACE.User,$ACE.AccessRights)
 							}
 						}
 					}Catch{
 
 					}
 				}else {
-					$ADValid=$true
-				}
-				If ($ADValid) {
-					If (-Not $FixedDAMP.ContainsKey($ACE.User)) {
-						$FixedDAMP.add($ACE.User,$ACE.AccessRights)
-					}
+					$FixedDAMP.add($ACE.User,$ACE.AccessRights)
 				}
 			}
 		
@@ -598,7 +1525,7 @@ Foreach ($ADUser in $ADUsers) {
 	#region Mailbox Archive
 	If($ADUser.msExchArchiveGUID){		
 		$Record."Mailbox Archive Creation Date" = $ADUser.msExchWhenMailboxCreated
-		$LM = $EPMailboxesArchive.Where({ $_.UserPrincipalName -eq $ADUser.UserPrincipalName})
+		$LM = $EPMailboxesArchive.Where({ $_.UserPrincipalName -eq $CUPN})
 		If ($LM) {
 			$Record."Mailbox Archive Location" = "Local"
 			$Record."Mailbox Archive Server" = $LM.ServerName
@@ -609,9 +1536,8 @@ Foreach ($ADUser in $ADUsers) {
 			$Record."Mailbox Archive Prohibit Send Quota" = MailboxGB($LM.ProhibitSendQuota)
 			$Record."Mailbox Archive Prohibit Send Receive Quota" = MailboxGB($LM.ProhibitSendReceiveQuota)
 
-			# $LMS =  Get-EPMailboxStatistics -Archive -Identity $ADUser.UserPrincipalName -ErrorAction SilentlyContinue
-			$LMS =  $EPMailboxesArchiveStats.Where({$_.Identity -eq $ADUser.UserPrincipalName})
-			If($LMS){
+			$LMS =  $EPMailboxesArchiveStats.Where({$_.MailboxGuid -eq $LM.ArchiveGuid})
+			If($LMS.MailboxGuid){
 				$Record."Mailbox Archive Storage Limit Status" = $LMS.StorageLimitStatus
 				$TotalItemSize = MailboxGB($LMS.TotalItemSize)
 				$TotalDeletedItemSize = MailboxGB($LMS.TotalDeletedItemSize) 
@@ -625,8 +1551,8 @@ Foreach ($ADUser in $ADUsers) {
 				$Record."Mailbox Archive Last Logoff Time" = $LMS.LastLogoffTime
 			}
 		}Else {
-			$RM = $EXOMailboxesArchive.Where({ $_.UserPrincipalName -eq $ADUser.UserPrincipalName})
-			$LRM = $EPRemoteMailboxesArchive.Where({ $_.UserPrincipalName -eq $ADUser.UserPrincipalName})
+			$RM = $EXOMailboxesArchive.Where({ $_.UserPrincipalName -eq $CUPN})
+			$LRM = $EPRemoteMailboxesArchive.Where({ $_.UserPrincipalName -eq $CUPN})
 			If ($RM) {
 				If ($RM -and $LRM) {
 					If ($RM.ExchangeGuid -eq $LRM.ExchangeGuid) {
@@ -641,12 +1567,13 @@ Foreach ($ADUser in $ADUsers) {
 				$Record."Mailbox Archive Database" = $RM.Database
 				$Record."Mailbox Archive GUID" = $RM.ExchangeGuid
 				$Record."Mailbox Archive Use Database Quota Defaults" = $RM.UseDatabaseQuotaDefaults
+
 				$Record."Mailbox Archive Issue Warning Quota" = MailboxGB($RM.IssueWarningQuota) 
 				$Record."Mailbox Archive Prohibit Send Quota" = MailboxGB($RM.ProhibitSendQuota) 
 				$Record."Mailbox Archive Prohibit Send Receive Quota" = MailboxGB($RM.ProhibitSendReceiveQuota) 
-				# $RMS =  Get-MailboxStatistics -Archive -Identity $ADUser.UserPrincipalName -ErrorAction SilentlyContinue
-				$RMS = $EXOMailboxesArchiveStats.Where({$_.Identity -eq $ADUser.UserPrincipalName})
-				If($RMS){
+
+				$RMS = $EXOMailboxesArchiveStats.Where({$_.MailboxGUID -eq $RM.ArchiveGuid})
+				If($RMS.MailboxGuid){
 					$Record."Mailbox Archive Storage Limit Status" = $RMS.StorageLimitStatus
 					$TotalItemSize = MailboxGB($RMS.TotalItemSize)
 					$TotalDeletedItemSize = MailboxGB($RMS.TotalDeletedItemSize) 
@@ -665,39 +1592,83 @@ Foreach ($ADUser in $ADUsers) {
 		$FixedDAMP = @{}
 		#region Mailbox Permission
 		If ($Record."Mailbox Archive Location" -eq "Local") {
-			# $DAMP = $LM | Get-EPMailboxPermission | Where-Object {($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false} | Sort-Object -Unique -Property User
-			$DAMP = ($EPMailboxesArchivePerms.Where({$_.Identity -eq $LM.Identity})).Where({($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false}) | Sort-Object -Unique -Property User
+			Try {
+				$DAMP = ($EPMailboxesArchivePerms.($LM.Identity).Where({($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false})) | Sort-Object -Unique -Property User
+			}Catch{
+				$DAMP = ($EPMailboxesArchivePerms[1].($LM.Identity).Where({($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false})) | Sort-Object -Unique -Property User
+			}
 		}
-		If($Record."Mailbox Archive Location" -eq "Cloud Only" -or $Record."Mailbox Location" -match "Hybrid Remote"){
-			# $DAMP = $RM | Get-MailboxPermission | Where-Object {($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false} | Sort-Object -Unique -Property User		
-			$DAMP = ($EXOMailboxesArchivePerms.Where({$_.Identity -eq $RM.Identity})).Where({($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false}) | Sort-Object -Unique -Property User		
+		If($Record."Mailbox Archive Location" -eq "Cloud Only" -or $Record."Mailbox Location" -match "Hybrid Remote"){	
+			Try {
+				$DAMP = ($EXOMailboxesArchivePerms.($RM.Identity).Where({($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false})) | Sort-Object -Unique -Property User
+			}Catch{
+				$DAMP = ($EXOMailboxesArchivePerms[1].($RM.Identity).Where({($_.AccessRights -eq "FullAccess") -and ($_.User -notin $ExcludeUsers) -and ($_.User -notmatch "S-1-5-*" ) -and $_.IsInherited -eq $false})) | Sort-Object -Unique -Property User
+			}
 		}
-		#Will remove disabled users with permissions
+		#Will show disabled users with permissions
 		If ($DAMP.count -gt 0 ) {
 			ForEach( $ACE in $DAMP) {
-				[switch]$ADValid=$false
 				If (($env:USERDOMAIN).ToLower() -eq (split-path -Path $ACE.User -Parent).ToLower()) {
 					Try{
 						$DomainObject = [DirectoryServices.AccountManagement.Principal]::FindByIdentity($ContextType,$IdentityType,(split-path -Path $ACE.User -Leaf))
 						Foreach ($DO in $DomainObject) {
 							If ($DO.StructuralObjectClass -eq  "user") {
 								If ($DO.Enabled -and $DO.SamAccountName.ToLower() -eq (split-path -Path $ACE.User -Leaf).ToLower()) {
-									$ADValid=$true
+									$FixedDAMP.add($ACE.User,$ACE.AccessRights)
+								}Else{
+									If ($RemoveDisabledPerms -and $ADUser.description -notmatch "Leave") {
+										If ($Record."Mailbox Location" -eq "Cloud Only") {
+											If (Get-Module -ListAvailable -Name "ExchangeOnlineManagement") {
+												If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+													Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+												} 
+											} Else {
+												Import-Module PackageManagement
+												Import-Module PowerShellGet
+												Register-PSRepository -Default -InstallationPolicy Trusted 
+												Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted 
+												Install-Module "ExchangeOnlineManagement" -Force -Confirm:$false -Scope:CurrentUser -SkipPublisherCheck -AllowClobber
+												Import-Module "ExchangeOnlineManagement" -DisableNameChecking
+												If (-Not (Get-Module "ExchangeOnlineManagement" -ErrorAction SilentlyContinue)) {
+													write-error ("Please install ExchangeOnlineManagement Powershell Modules Error")
+													exit
+												}
+											}
+											#Connect
+											If (-Not (Get-PSSession | Where-Object {$_.name -match "ExchangeOnline" -and $_.Availability -eq "Available"})) {
+												If (Get-ChildItem "Cert:\LocalMachine\My\" | Where-Object {$_.Thumbprint -eq $AZCertThumbprint}) {
+													Connect-ExchangeOnline -CertificateThumbPrint $AZCertThumbprint -AppID $AZClientID -Organization $AZOrg -ShowProgress:$false -ShowBanner:$false
+												}Else{
+													Connect-ExchangeOnline -ShowBanner:$false -UserPrincipalName $CUPN -ShowProgress:$false -ShowBanner:$false
+												}
+											}
+
+											#Remove Permissions
+											$RM | Remove-MailboxPermission -Confirm:$false -User $ACE.User -AccessRights $ACE.AccessRights
+											$FixedDAMP.add(($ACE.User + " - Disabled - Removed"),$ACE.AccessRights)
+										}Else{
+											If ((Get-PSSession | Where-Object { $_.ConfigurationName -Match "Microsoft.Exchange" -and $_.ComputerName -eq $ExchangeServer}).Count -eq 0 ) {
+												$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$ExchangeServer/PowerShell/ -Authentication Negotiate -AllowRedirection 
+												Import-PSSession $ERPSession -AllowClobber -DisableNameChecking -Prefix "EP"
+											}
+											#Remove Permissions
+											$LM | Remove-EPMailboxPermission -Confirm:$false -User $ACE.User -AccessRights $ACE.AccessRights
+											$FixedDAMP.add(($ACE.User + " - Disabled - Removed"),$ACE.AccessRights)
+										}
+
+									}Else{
+										$FixedDAMP.add(($ACE.User + " - Disabled"),$ACE.AccessRights)
+									}
 								}
 							}elseif ($DO.StructuralObjectClass -eq  "group") {
-								$ADValid=$true
+								$FixedDAMP.add($ACE.User,$ACE.AccessRights)
 							}
 						}
 					} Catch {
 
 					}
 				}else {
-					$ADValid=$true
-				}
-				If ($ADValid) {
-					If (-Not $FixedDAMP.ContainsKey($ACE.User)) {
-						$FixedDAMP.add($ACE.User,$ACE.AccessRights)
-					}
+					$FixedDAMP.add($ACE.User,$ACE.AccessRights)
 				}
 			}
 		
@@ -724,7 +1695,6 @@ Foreach ($ADUser in $ADUsers) {
 	}
 	#endregion Mailbox Archive
 	#endregion E-Mail Information
-
 	$output += $Record
 }
 
@@ -746,7 +1716,7 @@ If (-Not (Get-Module "ImportExcel" -ErrorAction SilentlyContinue)) {
 }   
 #endregion Load ImportExcel
 #region Excel convert
-$excel = $output | Export-Excel -Path $xlsxfile -ClearSheet -WorksheetName ("Hybrid_Info_" + $FileDate) -AutoFilter -AutoSize -FreezeTopRowFirstColumn -PassThru
+$excel = $output | Export-Excel -Path $xlsxfile -ClearSheet -WorksheetName ("Hybrid_Info_" + $FileDate) -AutoFilter -FreezeTopRowFirstColumn -PassThru
 $ws = $excel.Workbook.Worksheets[("Hybrid_Info_" + $FileDate)]
 $LastRow = $ws.Dimension.End.Row
 $LastColumn = $ws.Dimension.End.column
@@ -790,6 +1760,7 @@ Set-ExcelRange -Worksheet $ws -Range (($ws.Cells[1,$htHeader[$StrHeader]].Addres
 #Mailbox Archive Permissions
 $StrHeader= "Mailbox Archive Permissions"
 Set-ExcelRange -Worksheet $ws -Range (($ws.Cells[1,$htHeader[$StrHeader]].Address).Substring(0,($ws.Cells[1,$htHeader[$StrHeader]].Address).Length-1) + "1:" + ($ws.Cells[1,$htHeader[$StrHeader]].Address).Substring(0,($ws.Cells[1,$htHeader[$StrHeader]].Address).Length-1) + $LastRow) -WrapText 
+
 #Replace ", " with "`r`n"
 ($ws.Cells[(($ws.Cells[1,$htHeader[$StrHeader]].Address).Substring(0,($ws.Cells[1,$htHeader[$StrHeader]].Address).Length-1) + "1:" + ($ws.Cells[1,$htHeader[$StrHeader]].Address).Substring(0,($ws.Cells[1,$htHeader[$StrHeader]].Address).Length-1) + $LastRow)]).foreach({$_.Value = $_.Value -replace ",","`r`n"})
 
@@ -855,4 +1826,3 @@ Remove-Variable "excel"
 $sw.Stop()
 Write-Host ("Script runtime: " + (FormatElapsedTime($sw.Elapsed)) + " to run. " + '{0:N0}' -f ($ADUsers.Count / $sw.Elapsed.TotalMinutes) + " Users's per Minute.")
 #endregion Excel convert
-
