@@ -86,7 +86,7 @@
 	* Version 3.00.08 -	Reset Startmenu layout on Windows 10 1809+.
 	* Version 3.00.09 - Hide errors for Start Menu 1809 reset.
 	* Version 3.00.10 - Updated name of log file. Added function to install fonts. Import Security Template INI
-	* Version 3.00.11 - Updated info for Taskmenu layout. Clear old StartMenu layout. Fixed Font function error.
+	* Version 3.00.11 - Updated info for Task menu layout. Clear old StartMenu layout. Fixed Font function error.
 	* Version 3.00.12 - OneDrive Switch. Enabled different screensaver settings for VMs. ScreenSaver Parameter. 
 	* Version 3.00.13 - Updated Certificates to be folders instead of files. 
 	* Version 3.00.14 - Fixed BGinfo cleanup. Added switch SkipMSStore to ignore remove MS Store apps.
@@ -106,6 +106,8 @@
 	* Version 3.00.28 - Fixed bug with set-reg function
 	* Version 3.00.29 - Added Support for Cryptography Order.
 	* Version 3.00.30 - Optimized Removing MS Store Appx packages.
+	* Version 3.00.31 - Fixed for Schannel
+	* Version 3.00.32 - Fixed for Schannel when AllowClientTLS1 is enabled. Also removed -TLS13
 	#>
 #Requires -Version 5.1 -PSEdition Desktop
 #############################################################################
@@ -129,7 +131,6 @@ PARAM (
 	[switch]$UserOnly			= $false,
 	[switch]$NoCacheUpdate		= $false,
 	[switch]$AllowClientTLS1	= $false,
-	[switch]$TLS13          	= $false,
 	[switch]$Wifi				= $false,
 	[switch]$NoOEMInfo			= $false,
 	[switch]$OEMInfoAddSerial	= $false,
@@ -155,7 +156,7 @@ If (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 #############################################################################
 #region User Variables
 #############################################################################
-$ScriptVersion = "3.0.30"
+$ScriptVersion = "3.0.32"
 $LogFile = ("\Logs\" + `
 		   ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
 		   $env:computername + "_" + `
@@ -2879,6 +2880,9 @@ If (-Not $UserOnly) {
 	If ($ConfigFile.Config.WindowsSettings.Schannel.CipherOrderGPO) {
 		Write-Color -Text "Setting up Cipher GPO Order:" -Color White -StartTab 1
 		Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Cryptography\Configuration\SSL\00010002" "Functions" $ConfigFile.Config.WindowsSettings.Schannel.CipherOrderGPO "String" "GPO Cipher Order"
+	}	If ($ConfigFile.Config.WindowsSettings.Schannel.CipherOrderGPOTLS1 -and $AllowClientTLS1) {
+		Write-Color -Text "Setting up Cipher GPO Order:" -Color White -StartTab 1
+		Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Cryptography\Configuration\SSL\00010002" "Functions" $ConfigFile.Config.WindowsSettings.Schannel.CipherOrderGPOTLS1 "String" "GPO Cipher Order"
 	}
 	#http://www.vistax64.com/powershell/21794-creating-registry-keys-createsubkey-method.html
 	#Set Ciphers
@@ -2888,7 +2892,7 @@ If (-Not $UserOnly) {
 			# Write-Host ("`t Enabling Cipher: " + $Cipher.'#text') -foregroundcolor Yellow
 			Write-Color -Text "Enabling Cipher: ",
 								$Cipher.'#text' -Color White,DarkYellow -StartTab 1
-			reg add $('"' + $RegAddSCHANNEL + '\Ciphers\' + ($Cipher.'#text') + '"') /v Enabled /d 4294967295 /t REG_DWORD /f
+			reg add $('"' + $RegAddSCHANNEL + '\Ciphers\' + ($Cipher.'#text') + '"') /v Enabled /d 1 /t REG_DWORD /f
 			#Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\" + $Cipher.'#text' ) "Enabled" 1 "DWORD"
 		} else {
 			# Write-Host ("`t Disabling Cipher: " + $Cipher.'#text') -foregroundcolor Green
@@ -2904,16 +2908,18 @@ If (-Not $UserOnly) {
 			# Write-Host ("`t Enabling Hash: " + $Hash.'#text') -foregroundcolor Yellow
 			Write-Color -Text "Enabling Hash: ",
 								$Hash.'#text' -Color White,DarkYellow -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\" + $Hash.'#text' ) "Enabled" 4294967295 "DWORD" 'Hashes'
+			reg add $('"' + $RegAddSCHANNEL + '\Hashes\' + ($Cipher.'#text') + '"') /v Enabled /d 1 /t REG_DWORD /f					
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\" + $Hash.'#text' ) "Enabled" 1 "DWORD" 'Hashes'
 		} else {
 			# Write-Host ("`t Disabling Hash: " + $Hash.'#text') -foregroundcolor Green
 			Write-Color -Text "Disabling Hash: ",
 								$Hash.'#text' -Color White,DarkGreen -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\" + $Hash.'#text' ) "Enabled" 0 "DWORD" 'Hashes'
+			reg add $('"' + $RegAddSCHANNEL + '\Hashes\' + ($Cipher.'#text') + '"') /v Enabled /d 0 /t REG_DWORD /f					
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\" + $Hash.'#text' ) "Enabled" 0 "DWORD" 'Hashes'
 		}
 	}
 	If ($AllowClientTLS1) {
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\SHA") "Enabled" 4294967295 "DWORD" "Re-Enabling SHA" 
+		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\SHA") "Enabled" 1 "DWORD" "Re-Enabling SHA" 
 		Write-Warning "Re-Enabling SHA" 
 	}
 	# Set KeyExchangeAlgorithms
@@ -2929,9 +2935,12 @@ If (-Not $UserOnly) {
 								$KeyExchangeAlgorithm.'#text' -Color White,DarkGreen -StartTab 1
 			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text' ) "Enabled" 0 "DWORD" 'KeyExchangeAlgorithms'
 		}
-		If ($KeyExchangeAlgorithm.'#text' -eq "Diffie-Hellman" -and $KeyExchangeAlgorithm.ServerMinKeyBitLength) {
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\Diffie-Hellman") "ServerMinKeyBitLength" $KeyExchangeAlgorithm.ServerMinKeyBitLength "DWORD" 'Set Diffie-Hellman'
+		If ($KeyExchangeAlgorithm.ServerMinKeyBitLength) {
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text') "ServerMinKeyBitLength" $KeyExchangeAlgorithm.ServerMinKeyBitLength "DWORD" ('Set ServerMinKeyBitLength ' + $KeyExchangeAlgorithm.'#text')
 		}
+		If ($KeyExchangeAlgorithm.ClientMinKeyBitLength) {
+			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text') "ServerMinKeyBitLength" $KeyExchangeAlgorithm.ClientMinKeyBitLength "DWORD" ('Set ClientMinKeyBitLength ' + $KeyExchangeAlgorithm.'#text')
+		}		
 	}
 	#Set Protocols
 	Foreach ($Protocol in $ConfigFile.Config.WindowsSettings.Schannel.Protocol) {
@@ -2971,12 +2980,6 @@ If (-Not $UserOnly) {
 			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Client") "Enabled" 0 "DWORD" 'SSL Client Protocols'
 			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Client") "DisabledByDefault" 1 "DWORD" 'SSL Client Protocols'
 		}
-	}
-	If ($TLS13) {
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Client") "Enabled" 1 "DWORD" "Set TLS 1.3 Client"
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Client") "DisabledByDefault" 0 "DWORD" "Set TLS 1.3 Client"
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Server") "Enabled" 1 "DWORD" "Set TLS 1.3 Server"
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Server") "DisabledByDefault" 0 "DWORD" "Set TLS 1.3 Server"
 	}
 	If ($AllowClientTLS1) {
 		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Client") "Enabled" 1 "DWORD" "Set TLS 1.0"
