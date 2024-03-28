@@ -17,7 +17,8 @@
 .PARAMETER PSKillPath
 .PARAMETER PSServicePath
 .PARAMETER PSExecPath
-.PARAMETER Command
+.PARAMETER Commands
+.PARAMETER AlwaysRunCommands
 .PARAMETER Program
 .PARAMETER Service
 .PARAMETER VerboseLog
@@ -97,6 +98,7 @@
 	Version 1.7.02 - Fixed more bugs from updates.
 	Version 1.7.03 - Make stopping Program and Service run once for all files. 
 	Version 1.7.04 - Change input to list of strings. 
+	Version 1.7.05 - Cleaned up errors output. Added AlwaysRunCommands to force running commands on destination computer.
 #>
 
 PARAM (
@@ -105,22 +107,23 @@ PARAM (
 	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=2)][string[]]$Computers, 
 	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=3)][string]$ComputerList,
 	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=4)][string[]]$Commands,	
+	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=4)][switch]$AlwaysRunCommands,	
     [Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=5)][string]$Program,    
 	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=6)][string]$Service,
 	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=7)][String]$User,
 	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=8)][String]$Password,
 	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=9)][String]$csv_Name       = "Device name",
 	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=10)][String]$csv_IP         = "IP address",
-	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=11)][int]$Timeout 			= 30,
+	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=11)][int]$Timeout 			= 60,
 	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=12)][switch]$CommandForeachFile,
 	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=13)][switch]$ErrorCSV,
 	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=14)][switch]$UseDate 		= $true,
 	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=15)][switch]$Copy 			= $true,
-    [Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=16)][string]$PSKillPath 	= "\\github.com\PSTools\pskill.exe",    
-    [Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=17)][string]$PSServicePath  = "\\github.com\PSTools\PsService.exe",   
-	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=18)][string]$PSExecPath     = "\\github.com\PSTools\PsExec.exe"
+    [Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=16)][string]$PSKillPath 	= "\\plsfinancial.com\share\IT\Utilities\PSTools\pskill.exe",    
+    [Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=17)][string]$PSServicePath  = "\\plsfinancial.com\share\IT\Utilities\PSTools\PsService.exe",   
+	[Parameter(Mandatory=$false,ValueFromPipeline=$true,Position=18)][string]$PSExecPath     = "\\plsfinancial.com\share\IT\Utilities\PSTools\PsExec.exe"
 )
-$ScriptVersion = "1.7.04"
+$ScriptVersion = "1.7.05"
 #############################################################################
 #region User Variables
 #############################################################################
@@ -128,6 +131,7 @@ $SourceFileObjects=@{}
 $count = 1
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $GoodIPs=@()
+$InvalidChars = [IO.Path]::GetInvalidFileNameChars() -join ''
 $Logs=New-Object System.Collections.ArrayList
 Class CSVObject {
 	[DateTime]${Date}
@@ -153,19 +157,23 @@ Class CSVObject {
 #region Setup logging
 #Start logging.
 If (-Not [string]::IsNullOrEmpty($ComputerList)) {
-	$LogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + (Split-Path -leaf -Path $Destination) + "_" + (Split-Path -leaf -Path $ComputerList) + "_" + (Get-Date -format yyyyMMdd-hhmm) + ".log")
-	$CSVLogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + (Split-Path -leaf -Path $Destination ) + "_" + (Split-Path -leaf -Path $ComputerList ) + "_" + (Get-Date -format yyyyMMdd-hhmm) + ".csv")
+	$LogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + (Split-Path -leaf -Path $Destination) + "_" + (Split-Path -leaf -Path $ComputerList) + "_" + (Get-Date -format yyyyMMdd-hhmm) + ".log") -replace "[${invalidChars}]",'_'
+	$CSVLogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + (Split-Path -leaf -Path $Destination ) + "_" + (Split-Path -leaf -Path $ComputerList ) + "_" + (Get-Date -format yyyyMMdd-hhmm) + ".csv") -replace "[${invalidChars}]",'_'
 }Else{
-	$LogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + (Split-Path -leaf -Path $Destination ) + "_" + (Get-Date -format yyyyMMdd-hhmm) + ".log")
-	$CSVLogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + (Split-Path -leaf -Path $Destination ) + "_" + (Get-Date -format yyyyMMdd-hhmm) + ".csv")
+	$LogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + (Split-Path -leaf -Path $Destination ) + "_" + (Get-Date -format yyyyMMdd-hhmm) + ".log") -replace "[${invalidChars}]",'_'
+	$CSVLogFile = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Logs\" + ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + (Split-Path -leaf -Path $Destination ) + "_" + (Get-Date -format yyyyMMdd-hhmm) + ".csv") -replace "[${invalidChars}]",'_'
 }
 If (-Not [string]::IsNullOrEmpty($LogFile)) {
 	If (-Not( Test-Path (Split-Path -Path $LogFile -Parent))) {
+		Try{
 		New-Item -ItemType directory -Path (Split-Path -Path $LogFile -Parent)
         $Acl = Get-Acl (Split-Path -Path $LogFile -Parent)
         $Ar = New-Object system.Security.AccessControl.FileSystemAccessRule('Users', "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
         $Acl.SetAccessRule($Ar)
         Set-Acl (Split-Path -Path $LogFile -Parent) $Acl
+		}Catch{
+
+		}
 	}
 	Try{
 		#Try to make sure we are not logging already.
@@ -181,6 +189,20 @@ If (-Not [string]::IsNullOrEmpty($LogFile)) {
 		Stop-transcript
 		Start-Transcript -Path $LogFile -Append
 	} 
+}
+
+If (-Not [string]::IsNullOrEmpty($CSVLogFile)) {
+	If (-Not( Test-Path (Split-Path -Path $CSVLogFile -Parent))) {
+		Try{
+		New-Item -ItemType directory -Path (Split-Path -Path $CSVLogFile -Parent)
+        $Acl = Get-Acl (Split-Path -Path $CSVLogFile -Parent)
+        $Ar = New-Object system.Security.AccessControl.FileSystemAccessRule('Users', "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+        $Acl.SetAccessRule($Ar)
+        Set-Acl (Split-Path -Path $CSVLogFile -Parent) $Acl
+		}Catch{
+
+		}
+	}
 }
 #endregion Setup logging	
 #region Importing ComputerList
@@ -289,7 +311,7 @@ If (-Not ([string]::IsNullOrEmpty($Service))) {
 }
 #endregion Check for PSService
 #region Check for PSExec
-	If(Get-Command PSExec){
+	If(Get-Command PSExec -ErrorAction SilentlyContinue){
 		$PSExecPath = (get-command PSExec).source
 	}Else{
 		If (-Not (Test-Path $PSExecPath -PathType Leaf)) {
@@ -726,7 +748,7 @@ Function New-RemoteFolder {
         #Map to the share
         New-PSDrive -Name "PSFRF" -PSProvider "FileSystem" -Root ($ArrayPath[0..3] -Join "\") -Credential $Credential -ErrorAction SilentlyContinue | Out-Null
         If (Test-Path "PSFRF:\"  -ErrorAction SilentlyContinue) {
-            $error = New-Item -ItemType "directory" -Path ("PSFRF:\" + ($ArrayPath[0..($ArrayPath.GetUpperBound(0))] -Join "\")) -Force -ErrorAction SilentlyContinue
+            $CurrentError = New-Item -ItemType "directory" -Path ("PSFRF:\" + ($ArrayPath[0..($ArrayPath.GetUpperBound(0))] -Join "\")) -Force -ErrorAction SilentlyContinue
             If(Test-Path -Path ("PSFRF:\" + ($ArrayPath[4..($ArrayPath.GetUpperBound(0))] -Join "\"))) {
                 $Log = [CSVObject]::new()
                 $Log.Date = Get-Date
@@ -741,7 +763,7 @@ Function New-RemoteFolder {
                 $Log = [CSVObject]::new()
                 $Log.Date = Get-Date
                 $Log.Computer = $Computer
-                $Log.Status = ("Failed to Create Folder: " + $error)
+                $Log.Status = ("Failed to Create Folder: " + $CurrentError)
                 $Log.Command = ("Create: " + $Destination)
                 $Log."Log Level" = "Error"
                 $Logs.Add($Log) | Out-Null
@@ -792,11 +814,18 @@ Foreach ($Computer in $Computers) {
 			$GoodIPs += $Computer
 		}
 	}else{
-		Foreach ($IP in ((([Net.DNS]::GetHostEntry($Computer)).AddressList.ipaddresstostring))) {
-			If ($IP -ne "127.0.0.1" -and $IP -ne "::1") {
-				If (Test-Connection -ComputerName $IP -BufferSize 16 -Count 1 -Quiet) {
-					Write-Host ("`t Responds with IP: " + $IP) -ForegroundColor Gray
-					$GoodIPs += $IP
+		Try{
+			$IPs = ([Net.DNS]::GetHostEntry($Computer)).AddressList.ipaddresstostring
+		}Catch{
+		
+		}
+		If ($IPs){
+			Foreach ($IP in $IPs) {
+				If ($IP -ne "127.0.0.1" -and $IP -ne "::1") {
+					If (Test-Connection -ComputerName $IP -BufferSize 16 -Count 1 -Quiet) {
+						Write-Host ("`t Responds with IP: " + $IP) -ForegroundColor Gray
+						$GoodIPs += $IP
+					}
 				}
 			}
 		}
@@ -806,11 +835,11 @@ Foreach ($Computer in $Computers) {
 			#Check to see of remove UNC is mapped
 			if (Test-Path "PSRemote:\" -ErrorAction SilentlyContinue) {
 				#Remove Existing Mapping 
-				Remove-PSDrive -Name "PSRemote"
+				Remove-PSDrive -Name "PSRemote" | Out-Null
 				If ($LASTEXITCODE) {
 					#Remove Existing Mapping 
 					if (Test-Path "PSRemote:\" -ErrorAction SilentlyContinue) {
-						Remove-PSDrive -Name "PSRemote" -Force
+						Remove-PSDrive -Name "PSRemote" -Force | Out-Null
 					}
 				}
 			}
@@ -818,7 +847,7 @@ Foreach ($Computer in $Computers) {
 			If ($Credential) {
 				#Create Directory if it does not exist
 				If (-Not (Test-Path -Path ("\\" +  $IP + "\" + $Destination.replace(":","$")) -Credential $Credential -PathType Container)) {
-					$FunctionOut= New-RemoteFolder -Destination ("\\" +  $IP + "\" + $Destination.replace(":","$")) -Credential $Credential
+					$FunctionOut = New-RemoteFolder -Destination ("\\" +  $IP + "\" + $Destination.replace(":","$")) -Credential $Credential
 					$Logs.Add($FunctionOut)
 				} 
 				New-PSDrive -Name "PSRemote" -PSProvider "FileSystem" -Root ("\\" +  $IP + "\" + $Destination.replace(":","$")) -Credential $Credential -ErrorAction SilentlyContinue | out-null
@@ -1090,8 +1119,10 @@ Foreach ($Computer in $Computers) {
 						$Log."Log Level" = "Informational"
 						$Logs.Add($Log) | Out-Null
 						#Start Service
-						$FunctionOut = Start-PSService $IP $Service $PSServicePath $Timeout $User $Password
-						$Logs.Add($FunctionOut)
+						If (-Not [string]::IsNullOrWhiteSpace($Service)){
+							$FunctionOut = Start-PSService $IP $Service $PSServicePath $Timeout $User $Password
+							$Logs.Add($FunctionOut)
+						}
 						#Run Program
 						$cCount = 1
 						If ($Commands -and $CommandForeachFile) {
@@ -1112,7 +1143,7 @@ Foreach ($Computer in $Computers) {
 					$fCount ++
 				}
 				#Run Program at the end
-				If ($Commands -and $CommandForeachFile -eq $false -and $FilesCopied) {
+				If ($Commands -and $CommandForeachFile -eq $false -and ($FilesCopied -or $AlwaysRunCommands)) {
 					$cCount = 1
 					Foreach ($Command in $Commands) {
 						If ($Command) {
@@ -1175,6 +1206,7 @@ If ($Logs) {
 	If ($ErrorCSV) {
 		$Logs | Where-Object {$_."Log Level" -eq "Error"} | Export-csv -NoTypeInformation -Path ($CSVLogFile -replace ".csv","_Error.csv")
 	}
+	Write-Host $CSVLogFile
 	$Logs | Export-csv -NoTypeInformation -Path $CSVLogFile
 }
 
