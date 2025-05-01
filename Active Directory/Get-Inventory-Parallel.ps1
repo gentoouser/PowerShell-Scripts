@@ -23,7 +23,7 @@
     Maximum time in seconds to wait for before canceling command/operation. 
 .PARAMETER LogHistory
     Negative number for number of days to log at past IIS log files.
-.PARAMETER MaxMemoryUseage
+.PARAMETER MaxMemoryUsage
     Maximum percentage of ram to use parsing log files. Without this large logs would crash the server while parsing. 
 .PARAMETER WSO
     Share where WSUSOffline files are stored. Used with -InstallWMF
@@ -78,12 +78,13 @@
                 04/07/2021        - Added SQL databases, FortiClient Version,LanDesk Agent detection.
                 06/21/2021        - Remove AD module dependency in threads. Fix Errors.
                 08/24/2021        - Added LAN Manager authentication level
-                08/31/2021        - Added Last Hotfixes and Export to Excel directly
+                08/31/2021        - Added Last Hot-fixes and Export to Excel directly
                 09/29/2021        - Fixed output formatting. Added TLS info.
                 09/30/2021        - Create one WMI and PSSession per computer instead of for each command. Also cleaned up reported IPs. Added information from vCenter about the VMs. Cleaned up progressbar reporting.
-                11/08/2021        - Added switch SetupWinRM to configure WinRM on remote computer using PSExec. Tweaked progressbar reporting. Fixed issue with LANDesk Agent reporting wrong status
+                11/08/2021        - Added switch SetupWinRM to configure WinRM on remote computer using PSExec. Tweaked progress-bar reporting. Fixed issue with LANDesk Agent reporting wrong status
                 02/28/2022        - Switched to use class instead of PSCustomObject.
                 05/10/2022        - Added more variable checks and TRY{}/Catch{}'s to reduce errors in transcript. 
+                04/27/2025        - Updated ConvertFrom-IISW3CLog to use less memory and to fix issues with large IIS logs.
 
   Release Date: 10-02-2018
    
@@ -101,14 +102,18 @@ Param(
     [Int]$SleepTime = 5,
     [Int]$TimeOut = 90,
     [Int]$LogHistory = -90,
-    [Int]$MaxMemoryUseage = 80,
-    [string]$WSO = "\\ucn\share\wsusoffline-12_CE\client",
+    [Int]$MaxMemoryUsage = 80,
+    [string]$WSO = "\\github.com\wsusoffline-master\client",
     [switch]$InstallWMF,
     [switch]$SetupWinRM,
     [switch]$RemoveSMB1,
     [switch]$Excel,
     [switch]$Verbose,
-    [array]$VIServers = @()
+    [array]$VIServers = @("vcenter.github.com"),
+    [string[]]$IgnoreIPs=@(
+        "1.1.1.1",
+		"8.8.8.8"
+        )
 )
 $FileDate = (Get-Date -format yyyyMMdd-hhmm)
 $LogFile = ($OutputFolder + "\" + `
@@ -120,7 +125,7 @@ $sw = [Diagnostics.Stopwatch]::StartNew()
 $Inventory = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
 $VMs = [System.Collections.ArrayList]@()
 $ScanCount = 1
-$UNCPSExecPath = "\\plsfinancial.com\share\IT\Utilities\PSTools\PsExec.exe"
+$UNCPSExecPath = "github.com\PsExec.exe"
 $RemoveServices=@(
     "ActiveX Installer (AxInstSV) - Disabled",
     "App Readiness - Manual",
@@ -176,6 +181,7 @@ $RemoveServices=@(
     "Encrypting File System (EFS) - Disabled",
     "Enterprise App Management Service - Manual",
     "Extensible Authentication Protocol - Manual",
+    "FortiClient Service Scheduler - Auto",
     "Function Discovery Provider Host - Manual",
     "Function Discovery Provider Host - Disabled",
     "Function Discovery Resource Publication - Manual",
@@ -211,6 +217,11 @@ $RemoveServices=@(
     "IPsec Policy Agent - Manual",
     "KDC Proxy Server service (KPS) - Manual",
     "KtmRm for Distributed Transaction Coordinator - Manual",
+    "LANDESK Remote Control Service - Auto",
+    "LANDesk Targeted Multicast - Auto",
+    "LANDesk(R) Extended device discovery service - Manual",
+    "LANDesk(R) Management Agent - Auto",
+    "LANDesk(R) Software Monitoring Service - Auto",
     "Link-Layer Topology Discovery Mapper - Manual",
     "Link-Layer Topology Discovery Mapper - Disabled",
     "Local Session Manager - Auto",
@@ -255,6 +266,7 @@ $RemoveServices=@(
     "Program Compatibility Assistant Service - Disabled",
     "Problem Reports and Solutions Control Panel Support - Manual",
     "Quality Windows Audio Video Experience - Disabled",
+    "Quest Rapid Recovery Agent Service - Auto",
     "Radio Management Service - Disabled",
     "Remote Access Auto Connection Manager - Manual",
     "Remote Access Connection Manager - Manual",
@@ -360,17 +372,21 @@ $RemoveServices=@(
 )
 [string[]]$KillProcesses=@(
     "TrustedInstaller",
-
+    "fcappdb",
+    "FCDBLog",
+    "fmon",
+    "FortiESNAC",
+    "FortiProxy"
 )
 $winrmcommands=@(
-    'netsh advfirewall firewall add rule dir=in name="DCOM" program=%systemroot%\system32\svchost.exe service=rpcss action=allow protocol=TCP localport=135 remoteip=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,LocalSubnet profile=any',
-    'netsh advfirewall firewall add rule dir=in name="WMI-In" program=%systemroot%\system32\svchost.exe service=winmgmt action = allow protocol=TCP localport=any remoteip=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,LocalSubnet profile=any',
-    'netsh advfirewall firewall add rule dir=in name="UnsecApp" program=%systemroot%\system32\wbem\unsecapp.exe action=allow remoteip=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,LocalSubnet profile=any',
-    'netsh advfirewall firewall add rule dir=in name="WINRM-HTTP" protocol=tcp localport=5985 action=allow remoteip=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,LocalSubnet profile=any',
-    'netsh advfirewall firewall add rule dir=in name="WINRM-HTTPS" protocol=tcp localport=5986 action=allow remoteip=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,LocalSubnet profile=any',
-    'netsh advfirewall firewall add rule name="ICMP Allow incoming V4 echo request" protocol=icmpv4:8,any dir=in action=allow remoteip=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,LocalSubnet',
-    'netsh advfirewall firewall add rule dir=out name="WMI-OUT" program=%systemroot%\system32\svchost.exe service=winmgmt action=allow protocol=TCP localport=any remoteip=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,LocalSubnet profile=any',
-    'PowerShell -Command {New-Item -Path WSMan:\LocalHost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $(Get-ChildItem -Path cert:\LocalMachine\My | Sort-Object -Descending -property NotAfter | Where {$_.Subject -match [System.Net.Dns]::GetHostByName(($env:computerName)).hostname} | Select-Object -first 1).Thumbprint -Force"}',
+    'netsh advfirewall firewall add rule dir=in name="DCOM" program=%systemroot%\system32\svchost.exe service=rpcss action=allow protocol=TCP localport=135 remoteip=10.0.0.0/8,LocalSubnet profile=any',
+    'netsh advfirewall firewall add rule dir=in name="WMI-In" program=%systemroot%\system32\svchost.exe service=winmgmt action = allow protocol=TCP localport=any remoteip=10.0.0.0/8,LocalSubnet profile=any',
+    'netsh advfirewall firewall add rule dir=in name="UnsecApp" program=%systemroot%\system32\wbem\unsecapp.exe action=allow remoteip=10.0.0.0/8,LocalSubnet profile=any',
+    'netsh advfirewall firewall add rule dir=in name="WINRM-HTTP" protocol=tcp localport=5985 action=allow remoteip=10.0.0.0/8,LocalSubnet profile=any',
+    'netsh advfirewall firewall add rule dir=in name="WINRM-HTTPS" protocol=tcp localport=5986 action=allow remoteip=10.0.0.0/8,LocalSubnet profile=any',
+    'netsh advfirewall firewall add rule name="ICMP Allow incoming V4 echo request" protocol=icmpv4:8,any dir=in action=allow remoteip=10.0.0.0/8,LocalSubnet',
+    'netsh advfirewall firewall add rule dir=out name="WMI-OUT" program=%systemroot%\system32\svchost.exe service=winmgmt action=allow protocol=TCP localport=any remoteip=10.0.0.0/8,LocalSubnet profile=any',
+    'PowerShell -Command {New-Item -Path WSMan:\LocalHost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $(Get-ChildItem -Path cert:\LocalMachine\My | Sort-Object -Descending -property NotAfter | Where {$_.Issuer -eq "CN=Github CA, DC=gethub, DC=com" -and $_.Subject -match [System.Net.Dns]::GetHostByName(($env:computerName)).hostname} | Select-Object -first 1).Thumbprint -Force"}',
     'net stop winrm && net start winrm'
 )
 
@@ -513,7 +529,7 @@ Foreach ($ComputerName in $AllComputersNames) {
     If ($null -ne $ComputerName) {
         $ComputerOS = $AllComputers | Where-object {$_.Name -eq $ComputerName}
         Write-Verbose "Starting job ($((Get-Job -name * | Measure-Object).Count+1)/$MaxJobs) for $ComputerName."
-        Start-Job -Name  $ComputerName -ArgumentList $ComputerName,$ComputerOS,$RemoveServices,$RemoveSMB1,$InstallWMF,$LogHistory,$KillProcesses,$VMs,$winrmcommands,$SetupWinRM,$PSExecPath,$TimeOut -ScriptBlock{
+        Start-Job -Name  $ComputerName -ArgumentList $ComputerName,$ComputerOS,$RemoveServices,$RemoveSMB1,$InstallWMF,$LogHistory,$KillProcesses,$VMs,$winrmcommands,$SetupWinRM,$PSExecPath,$TimeOut,$IgnoreIPs -ScriptBlock{
             param
             (
                 $ComputerName=$ComputerName,
@@ -527,7 +543,8 @@ Foreach ($ComputerName in $AllComputersNames) {
                 $winrmcommands=$winrmcommands,
                 $SetupWinRM=$SetupWinRM,
                 $PSExecPath=$PSExecPath,
-                $TimeOut=$TimeOut
+                $TimeOut=$TimeOut,
+                $IgnoreIPs=$IgnoreIPs
             )
             Class InventoryObject {
                 [string]${AD Name}
@@ -1270,7 +1287,9 @@ Foreach ($ComputerName in $AllComputersNames) {
                     Try{
                         IF ($ArrComputerServcies | Where-Object {$_.Name -eq "W3SVC"}) {
                             $ComputerIIS = Invoke-Command -errorAction SilentlyContinue -HideComputerName -Session $psSession -ScriptBlock {                           
-                                $MaxMemoryUseage = 75
+                                $MaxMemoryUsage = 75
+                                $Octet = '(?:0?0?[0-9]|0?[1-9][0-9]|1[0-9]{2}|2[0-5][0-5]|2[0-4][0-9])'
+[regex] $IPv4Regex = "^(?:$Octet\.){3}$Octet$"
                                 #Force Process to run with lower priority
                                 Get-Process -id $pid | ForEach-Object {$_.PriorityClass='BelowNormal'}
 
@@ -1281,39 +1300,35 @@ Foreach ($ComputerName in $AllComputersNames) {
                                         [Alias('PSPath')]
                                         [string[]]
                                         $Path,
-                                        [int]$MaxMemoryUseage = 75,
+                                        [int]$MaxMemoryUsage = 75,
                                         [string[]]$FilterField,
-                                        [string[]]$KillProcesses
+                                        [string[]]$KillProcesses,
+                                        [string[]]$IgnoreIPs=@()
                                     )
                                     #Source: https://gist.github.com/jstangroome/6189660
                                     process {
                                         If ($KillProcesses) {
                                             Stop-Process -Force -Name $KillProcesses -ErrorAction SilentlyContinue
                                         }
-                                        If ($null -eq $MaxMemoryUseage -or $MaxMemoryUseage -le 0) {
-                                            $MaxMemoryUseage = 75
+                                        If ($null -eq $MaxMemoryUsage -or $MaxMemoryUsage -le 0) {
+                                            $MaxMemoryUsage = 75
                                         }
                                         foreach ($SinglePath in $Path) {
-                            
+                                
                                             $FieldNames = $null
                                             $Properties = @{}
+                                
+                                            $Octet = '(?:0?0?[0-9]|0?[1-9][0-9]|1[0-9]{2}|2[0-5][0-5]|2[0-4][0-9])'
+                                            [regex] $IPv4Regex = "^(?:$Octet\.){3}$Octet$"
+                                
+                                            #See if using Get-Counter is faster
+                                            # Get the total and available memory counters
+                                            $totalMemory = (Get-Counter '\Memory\Committed Bytes').CounterSamples.CookedValue
+                                            $availableMemory = (Get-Counter '\Memory\Available Bytes').CounterSamples.CookedValue
+                                
+                                            $PercentMemoryUsed = "{0:N2}" -f (($totalMemory - $availableMemory) / $totalMemory) * 100
                                             
-                                            #Test Memory Usage
-                                            If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
-                                                $OperatingSystem = Get-CimInstance -Class win32_OperatingSystem
-                                            }Else{
-                                                $OperatingSystem = Get-WmiObject -Class win32_OperatingSystem
-                                            }
-                                            # Lets grab the free memory
-                                            $FreeMemory = $OperatingSystem.FreePhysicalMemory
-                                            # Lets grab the total memory
-                                            $TotalMemory = $OperatingSystem.TotalVisibleMemorySize
-                                            # Calculate used memory
-                                            $MemoryUsed = ($TotalMemory-$FreeMemory)
-                                            # Lets do some math for percent
-                                            $PercentMemoryUsed = "{0:N2}" -f (($MemoryUsed / $TotalMemory) * 100)
-                                            
-                                            If ( $PercentMemoryUsed -le $MaxMemoryUseage ) {
+                                            If ( $PercentMemoryUsed -le $MaxMemoryUsage ) {
                                                 Get-Content -Path $SinglePath |
                                                     ForEach-Object {
                                                         if ($_ -match '^#') {
@@ -1326,21 +1341,80 @@ Foreach ($ComputerName in $AllComputersNames) {
                                                             }
                                                         } else {
                                                             $FieldValues = @(-split $_)
+                                                            $XForwardedFor = $null
                                                             $Properties.Clear()
-                                                            for ($Index = 0; $Index -lt $FieldValues.Length; $Index++) {
-                                                                If( $null -eq $FieldValues[$Index]) {
-                                                                    If ($FilterField) {
-                                                                        If ($FieldNames -in $FilterField) {
+                                                            
+                                                            if ($FilterField) {
+                                                                $FilterField | ForEach-Object { 
+                                                                    If ($FieldNames -contains $_) {
+                                                                        $Index = $FieldNames.IndexOf($_)
+                                                                        If( $null -eq $FieldValues[$Index] -or $FieldValues[$Index] -eq "-") {
                                                                             $Properties[$FieldNames[$Index]] = ""
-                                                                        }
-                                                                    }Else{
-                                                                        $Properties[$FieldNames[$Index]] = ""
-                                                                    }
-                                                                }else{
-                                                                    If ($null -ne $FieldNames[$Index] ) {
-                                                                        If ($FilterField) {
-                                                                            If ($FieldNames -in $FilterField) {
+                                                                        }Else{
+                                                                            If($_ -eq "c-ip"){
+                                                                                If ($FieldNames.IndexOf("X-Forwarded-For") -gt -1) {
+                                                                                    $XForwardedFor = ($FieldValues[$FieldNames.IndexOf("X-Forwarded-For")] -replace "\+" -replace "-") -split "," | Where-Object {$_ -match $IPv4Regex -and $_ -notin $IgnoreIPs}
+                                                                                    If ($XForwardedFor){
+                                                                                        If ($null -ne $XForwardedFor[0] -and $XForwardedFor[0] -ne "") {
+                                                                                            $Properties[$FieldNames[$Index]] = $XForwardedFor[0]
+                                                                                        }Else {
+                                                                                            If($FieldValues[$Index] -match $IPv4Regex -and $FieldValues[$Index] -notin $IgnoreIPs){
+                                                                                                $Properties[$FieldNames[$Index]] = $FieldValues[$Index]
+                                                                                            }Else{
+                                                                                                $Properties[$FieldNames[$Index]] = ""
+                                                                                            }
+                                                                                        }
+                                                                                    }Else{
+                                                                                        If($FieldValues[$Index] -match $IPv4Regex -and $FieldValues[$Index] -notin $IgnoreIPs){
+                                                                                            $Properties[$FieldNames[$Index]] = $FieldValues[$Index]
+                                                                                        }Else{
+                                                                                            $Properties[$FieldNames[$Index]] = ""
+                                                                                        }
+                                                                                    }
+                                                                                }Else{
+                                                                                    If($FieldValues[$Index] -match $IPv4Regex -and $FieldValues[$Index] -notin $IgnoreIPs){
+                                                                                            $Properties[$FieldNames[$Index]] = $FieldValues[$Index]
+                                                                                    }Else{
+                                                                                        $Properties[$FieldNames[$Index]] = ""
+                                                                                    }
+                                                                                }
+                                                                            }else{
                                                                                 $Properties[$FieldNames[$Index]] = $FieldValues[$Index]
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }Else {
+                                                                for ($Index = 0; $Index -lt $FieldValues.Length; $Index++) {
+                                                                    If( $null -eq $FieldValues[$Index] -and $FieldValues[$Index] -eq "-") {
+                                                                        $Properties[$FieldNames[$Index]] = ""
+                                                                    }Else{
+                                                                        If($FieldNames[$Index] -eq "c-ip"){
+                                                                            If ($FieldNames.IndexOf("X-Forwarded-For") -gt -1) {
+                                                                                $XForwardedFor = ($FieldValues[$FieldNames.IndexOf("X-Forwarded-For")] -replace "\+" -replace "-") -split "," | Where-Object {$_ -match $IPv4Regex -and $_ -notin $IgnoreIPs}
+                                                                                If ($XForwardedFor){
+                                                                                    If ($null -ne $XForwardedFor[0] -and $XForwardedFor[0] -ne "") {
+                                                                                        $Properties[$FieldNames[$Index]] = $XForwardedFor[0]
+                                                                                    }Else{
+                                                                                        If ($FieldValues[$Index] -match $IPv4Regex -and $FieldValues[$Index] -notin $IgnoreIPs) {
+                                                                                            $Properties[$FieldNames[$Index]] = $FieldValues[$Index]
+                                                                                        }Else{
+                                                                                            $Properties[$FieldNames[$Index]] = ""
+                                                                                        }
+                                                                                    }
+                                                                                }Else{
+                                                                                    If($FieldValues[$Index] -match $IPv4Regex -and $FieldValues[$Index] -notin $IgnoreIPs){
+                                                                                        $Properties[$FieldNames[$Index]] = $FieldValues[$Index]
+                                                                                    }Else{
+                                                                                        $Properties[$FieldNames[$Index]] = ""
+                                                                                    }
+                                                                                }
+                                                                            }else{
+                                                                                If ($FieldValues[$Index] -match $IPv4Regex -and $FieldValues[$Index] -notin $IgnoreIPs) {
+                                                                                    $Properties[$FieldNames[$Index]] = $FieldValues[$Index]
+                                                                                }Else{
+                                                                                    $Properties[$FieldNames[$Index]] = ""
+                                                                                }
                                                                             }
                                                                         }Else{
                                                                             $Properties[$FieldNames[$Index]] = $FieldValues[$Index]
@@ -1348,7 +1422,11 @@ Foreach ($ComputerName in $AllComputersNames) {
                                                                     }
                                                                 }
                                                             }
-                                                            [pscustomobject]$Properties
+                                                            # [pscustomobject]$Properties
+                                                            # Filter out objects where all $Properties values are null
+                                                            # if ($Properties.PSObject.Properties.Value -notcontains $null -and $Properties.PSObject.Properties.Value -notcontains "") {
+                                                                [pscustomobject]$Properties
+                                                            # }
                                                         }
                                                     }
                                             }Else{
@@ -1358,7 +1436,7 @@ Foreach ($ComputerName in $AllComputersNames) {
                                                 }
                                             }
                                         }
-                            
+                                
                                     }
                                 } 
                                 If (Get-Module -ListAvailable -Name "WebAdministration") {
@@ -1387,9 +1465,12 @@ Foreach ($ComputerName in $AllComputersNames) {
                                                 $Logs = Get-ChildItem ([System.Environment]::ExpandEnvironmentVariables($_.logfile.directory) + "\W3SVC" + $_.id) -include *.log -rec | Where-Object {$_.LastWriteTime -gt (Get-Date).AddDays($using:LogHistory)} | Sort-Object -Property LastWriteTime -Descending
                                                 $Count = 0
                                                 If ($null -ne $logs) {
-                                                    foreach ($log in $Logs) {
-                                                        $Count += ($log | ConvertFrom-IISW3CLog -FilterField "c-ip" -MaxMemoryUseage $MaxMemoryUseage -KillProcesses $KillProcesses | Where-Object {$null -ne $_."c-ip" }| Measure-Object).Count
-                                                    }
+                                                    $TempCountIP = (ConvertFrom-IISW3CLog -Path $Logs -FilterField "c-ip" -IgnoreIPs $using:IgnoreIPs | Where-Object {-Not [string]::IsNullOrWhiteSpace($_."c-ip")} | Group-Object -Property "c-ip")
+                                                    $TotalCount = 0
+                                                    $TempCountIP | ForEach-Object { $Count = $Count + $_.Count}
+                                                    # foreach ($log in $Logs) {
+                                                    #     $Count += ($log | ConvertFrom-IISW3CLog -FilterField "c-ip" -MaxMemoryUsage $MaxMemoryUsage -KillProcesses $KillProcesses | Where-Object {$null -ne $_."c-ip" }| Measure-Object).Count
+                                                    # }
                                                 }
                                                 Write-Output ($_.Name + " (" + ([string]$_.Bindings.Collection -join ";") + ") Hits in " + $using:LogHistory + " : " +  $Count)
                                                 $apps = $_ | Get-ChildItem | Where-Object { $_.nodetype -eq "application" }
@@ -1398,6 +1479,9 @@ Foreach ($ComputerName in $AllComputersNames) {
                                                         Write-Output ("`t" + $app.Name )
                                                     }
                                                 }
+                                                $TempCountIP = $null
+                                                [System.GC]::Collect()
+                                                [System.GC]::WaitForPendingFinalizers()
                                             }
                                         }
                                     }
@@ -1873,4 +1957,3 @@ If (-Not [string]::IsNullOrEmpty($LogFile)) {
 $VMs = $null
 $AllComputers = $null
 $Inventory = $null
-
