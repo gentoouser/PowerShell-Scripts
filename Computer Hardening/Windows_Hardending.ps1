@@ -1,14 +1,25 @@
 <# 
 .SYNOPSIS
     Name: Windows_Hardending.ps1
-    Hardens Fresh installs of Windows
+    Hardens Fresh installs of Windows to CIS standards.
 
 .DESCRIPTION
-	* Hardens c:\
+	* Harden's c:\
 	* Caches configuration files
 	* Creates Store Users
 	* Lock down users by loading registry and applying settings
-	* Lock down users by applying GPO
+	* Lock down machine by registry applying settings
+	* Removes unneeded services
+	* Removes unneeded apps
+	* Removes unneeded scheduled tasks
+	* Adds Firewall rules
+	* Adds Custom Backgrounds
+	* Adds Custom Start Menu Layout
+	* Adds Custom Fonts
+	* Adds Custom Certificates
+	* Adds Custom Security Templates
+	* Adds Custom Scheduled Jobs
+	* Hardens SSL settings
 	
 .PARAMETER Config
 	XML Configuration file with all the hardening settings.
@@ -52,7 +63,24 @@
 	Keeps Microsoft Store untouched; all non-whitelisted apps will be removed. 
 .PARAMETER SkipSystemPermissions
 	Keeps System drive from having user permissions hardened. 
-
+.PARAMETER SkipSystemRestore
+	Keeps System Restore from being disabled.
+.PARAMETER ReRegisterAppx
+	Re-Registers all Appx packages.
+.PARAMETER SkipServices
+	Skips changing services.
+.PARAMETER ScreenSaver
+	Sets the ScreenSaver timeout.
+.PARAMETER StartLayoutXML
+	XML file to import StartLayout.
+.PARAMETER BackgroundFolder
+	Folder to import Backgrounds.
+.PARAMETER Manager
+	Enables Manager settings.
+.PARAMETER Store
+	Enables Store settings.
+.PARAMETER IgnoreIIS
+	Enables IIS settings.
 .EXAMPLE
    & .\Windows_Hardending.ps1 -AllowClientTLS1
 .EXAMPLE
@@ -108,6 +136,16 @@
 	* Version 3.00.30 - Optimized Removing MS Store Appx packages.
 	* Version 3.00.31 - Fixed for Schannel
 	* Version 3.00.32 - Fixed for Schannel when AllowClientTLS1 is enabled. Also removed -TLS13
+	* Version 3.00.33 - Fixed for Internet Options protocols. 
+	* Version 3.00.34 - Updated Adobe section to handle Adobe Acrobat and Acrobat Reader.
+	* Version 3.00.35 - Added auditpol settings.
+	* Version 3.00.36 - Fixed Issue with DisallowRun.
+	* Version 3.00.37 - Fixed issues with -Profiles
+	* Version 3.00.38 - Updated Comments.
+	* Version 3.00.39 - Updated Set-Reg function to handle not setting $RegBackup.
+	* Version 3.00.40 - Fix for Schannel issue using 4294967295 instead of 1 for enabled
+	* Version 3.00.41 - Added SkipSystemRestore to skip disabling System Restore.
+	* Version 3.00.42 - Allows for IIS to be ignored.
 	#>
 #Requires -Version 5.1 -PSEdition Desktop
 #############################################################################
@@ -116,7 +154,7 @@
 PARAM (
 	[CmdletBinding()]
 	[string]$Config 			= $null,
-    [array]$Profiles  	  		= @("Default"),	
+    [array]$Profiles  	        = @("Default"),	
 	[string]$LICache	  		= $null,
 	[string]$RemoteFiles  		= (Split-Path -Parent -Path $MyInvocation.MyCommand.Definition),
 	[String]$User		    	= $null,
@@ -140,7 +178,9 @@ PARAM (
 	[switch]$SkipMSStore		= $false,
 	[switch]$ReRegisterAppx		= $false,
 	[switch]$SkipServices		= $false,
-	[switch]$SkipSystemPermissions		= $false
+	[switch]$SkipSystemPermissions		= $false,
+	[switch]$SkipSystemRestore	= $false,
+	[switch]$IgnoreIIS	= $false
 )
 #############################################################################
 #endregion Parameter Config
@@ -156,7 +196,7 @@ If (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 #############################################################################
 #region User Variables
 #############################################################################
-$ScriptVersion = "3.0.32"
+$ScriptVersion = "3.0.41"
 $LogFile = ("\Logs\" + `
 		   ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
 		   $env:computername + "_" + `
@@ -262,13 +302,17 @@ if ( $User -and $Password) {
 #endregion Share Credential Setup
 #region ProfileList Setup
 If ($Profiles[0].Contains(",")) {
+	$TP = @()
 	#Setup ProfileList
 	ForEach ($Profile in ($Profiles[0].split(","))) {
 		If ($Profile) {
 			$ProfileList.Add($Profile)
 			$HideAccounts += $Profile
+			$TP += $Profile
 		}
 	}
+	$Profiles = $TP
+	Remove-Variable TP
 }else{
 	#Setup ProfileList
 	ForEach ($Profile in $Profiles) {
@@ -399,7 +443,43 @@ function Get-CurrentUserSID {
 	return ([System.DirectoryServices.AccountManagement.UserPrincipal]::Current).SID.Value            
 }
 function Set-Reg {
-		[CmdletBinding()] 
+	<# 
+	.SYNOPSIS
+	Set-Reg is a function to set a registry key and value.
+
+	.DESCRIPTION
+
+	.PARAMETER regPath
+	The path to the registry key.
+	.PARAMETER name
+	The name of the registry value.
+	.PARAMETER value
+	The data for the registry value.
+	.PARAMETER type
+	The type of the registry value.
+	Valid values are:
+	 String: Specifies a null-terminated string. Equivalent to REG_SZ.
+	 ExpandString: Specifies a null-terminated string that contains unexpanded references to environment variables that are expanded when the value is retrieved. Equivalent to REG_EXPAND_SZ.
+	 Binary: Specifies binary data in any form. Equivalent to REG_BINARY.
+	 DWord: Specifies a 32-bit binary number. Equivalent to REG_DWORD.
+	 MultiString: Specifies an array of null-terminated strings terminated by two null characters. Equivalent to REG_MULTI_SZ.
+	 Qword: Specifies a 64-bit binary number. Equivalent to REG_QWORD.
+	 Unknown: Indicates an unsupported registry data type, such as REG_RESOURCE_LIST.
+	.PARAMETER comment
+	A comment for the registry value.
+
+	.EXAMPLE
+	Set-Reg -regPath "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -name "Test" -value "C:\test.exe" -type "String" -comment "This is a
+
+	.NOTES
+	Source: https://github.com/nichite/chill-out-windows-10/blob/master/chill-out-windows-10.ps1
+	Modifier: Paul Fuller 
+	Changes:
+		* Version 1.01.00 - Fix $RegBackup null issue and start to track changes.
+
+	#>
+
+	[CmdletBinding()] 
 	Param 
 	( 
 		[Parameter(Mandatory=$true,Position=1,HelpMessage="Path to Registry Key")][string]$regPath, 
@@ -409,14 +489,6 @@ function Set-Reg {
 		[Parameter(Mandatory=$false,Position=5,HelpMessage="Comment value")]$comment
 	) 
 	$key=$null
-	#Source: https://github.com/nichite/chill-out-windows-10/blob/master/chill-out-windows-10.ps1
-	# String: Specifies a null-terminated string. Equivalent to REG_SZ.
-	# ExpandString: Specifies a null-terminated string that contains unexpanded references to environment variables that are expanded when the value is retrieved. Equivalent to REG_EXPAND_SZ.
-	# Binary: Specifies binary data in any form. Equivalent to REG_BINARY.
-	# DWord: Specifies a 32-bit binary number. Equivalent to REG_DWORD.
-	# MultiString: Specifies an array of null-terminated strings terminated by two null characters. Equivalent to REG_MULTI_SZ.
-	# Qword: Specifies a 64-bit binary number. Equivalent to REG_QWORD.
-	# Unknown: Indicates an unsupported registry data type, such as REG_RESOURCE_LIST.
 	Class BackupRegistry{
 		[String]$Path
 		[String]$Name
@@ -427,8 +499,8 @@ function Set-Reg {
 	$key = $null
 	$regvalue = $null
 	$regname = $null
-	If(Test-Path $regPath) {
-        $key = Get-Item -Path $regPath
+	If(Test-Path $regPath -ErrorAction SilentlyContinue) {
+		$key = Get-Item -Path $regPath
 	}Else{
 		New-Item -Path $regPath -Force | Out-Null
 		$key = Get-Item -Path $regPath
@@ -466,7 +538,13 @@ function Set-Reg {
 		}Else {
 			Write-Verbose ("`Updating:" + $regPath + "\" + $name + " = " + $value)
 		}
-		$Script:RegBackup.Add($BackupReg) | out-null
+		if (Get-Variable Regbackup -ErrorAction SilentlyContinue){
+			$Script:RegBackup.Add($BackupReg) | out-null
+		}Else{
+			$Script:RegBackup = New-Object System.Collections.ArrayList
+			$Script:RegBackup.Add($BackupReg) | out-null
+		}
+
 		New-ItemProperty -Path $regPath -Name $name -Value $value -PropertyType $type -Force | Out-Null
 	}
 }
@@ -1418,6 +1496,51 @@ If ($Store) {
 	}
 }
 #endregion Create Local Store users
+#region Create Local Profiles
+If ($Profiles) {
+	ForEach ( $User in $Profiles) {	
+		If (-Not (Get-LocalUser -Name $User -erroraction 'silentlycontinue')) {
+			If (-Not (Test-Path ($UsersProfileFolder + "\" + $User + "\ntuser.dat"))) {
+				write-host ("Creating User: " + $User )
+				#Random 120 chr. password
+				$TempPass= (ConvertTo-SecureString ([system.web.security.membership]::GeneratePassword(120,32)).tostring() -AsPlainText -Force)
+				New-LocalUser -Name ($User).ToLower() -Description "Hardening Script User" -FullName ($User) -Password $TempPass -AccountNeverExpires -UserMayNotChangePassword -PasswordNeverExpires | Out-Null
+				Add-LocalGroupMember -Name 'Administrators' -Member ($User) | Out-Null
+				Write-Host "`tWorking on Creating user profile: " ($User)
+				#launch process as user to create user profile
+				# https://msdn.microsoft.com/en-us/library/system.diagnostics.processstartinfo(v=vs.110).aspx
+				$processStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+				$processStartInfo.UserName = ($User)
+				$processStartInfo.Domain = "."
+				$processStartInfo.Password = $TempPass
+				$processStartInfo.FileName = "cmd"
+				$processStartInfo.WorkingDirectory = $LICache
+				$processStartInfo.Arguments = "/C echo . && echo %username% && echo ."
+				$processStartInfo.LoadUserProfile = $true
+				$processStartInfo.UseShellExecute = $false
+				$processStartInfo.WindowStyle  = "minimized"
+				$processStartInfo.RedirectStandardOutput = $false
+				$process = [System.Diagnostics.Process]::Start($processStartInfo)
+				$Process.WaitForExit()   
+				#Add setup user to profiles created to allow registry to be created. 
+				If (Test-Path ($UsersProfileFolder + "\" + $User) ) {
+					$ProfileList.Add(($User).ToLower()) | Out-Null
+					$HideAccounts += ($User).ToLower()
+					#Grant Current user rights on new Profiles
+					Write-Host ("`tUpdating ACLs and adding to Profile List: " + ($UsersProfileFolder + "\" + $User))
+					$user_account=$env:username
+					$Acl = Get-Acl ($UsersProfileFolder + "\" + $User)
+					$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule($user_account, "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+					$Acl.Setaccessrule($Ar)
+					Set-Acl ($UsersProfileFolder + "\" + $User) $Acl
+					#Disable User.
+					Disable-LocalUser -Name ($User).ToLower() -Confirm:$false
+				}					
+			}
+		}
+	}
+}
+#endregion Create Local Profiles
 #region Disable Local Administrator
 #If not logged in as administrator and administrators groups has more than one user set administrator account with random password.
 If ($env:username -ne "Administrator") {
@@ -2151,6 +2274,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 					#region Deny Programs to run
 					If ($ConfigFile.Config.WindowsSettings.BlackListPrograms.Block.count -ge 1) {
 						write-host ("`tSetting up Store settings Deny Programs")
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "DisallowRun" 1 "DWORD" "Deny Programs From Running"
 						#Cleanup old
 						If (Test-Path ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun")) {
 							Remove-Item ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun") -Recurse | out-null
@@ -2162,9 +2286,11 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 							# 					$Exe -Color White,Red -StartTab 2
 							write-host -NoNewLine -Object "`t`tBlackListing: " -ForegroundColor White
 							write-host -Object $Exe -ForegroundColor Red
-							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun") $i $Exe "String" 'Deny Programs to run'
+							Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun") $Exe 1 "DWORD" "Deny Programs to run: $Exe"
 							$i++
 						}
+					}Else {
+						Set-Reg ($HKEY.replace("HKU\","HKU:\") + "\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") "DisallowRun" 0 "DWORD" "Allow any Deny Programs From Running"
 					}
 					#endregion Deny Programs to run		
 				}
@@ -2358,6 +2484,43 @@ If ($ConfigFile.Config.WindowsSettings.SecurityTemplateINI) {
 #endregion Import and Set Security Template INI
 #============================================================================
 #============================================================================
+#region auditpol settings
+#============================================================================
+If ($ConfigFile.Config.WindowsSettings.Auditpol.subcategory) {
+	Write-Host "Importing audit policy Settings ..."
+	ForEach ($subcategory in $ConfigFile.Config.WindowsSettings.Auditpol.subcategory) {
+		Write-Host "`t$($subcategory.'#text')"
+		#Reset Vars
+		$auditpolTestResultSuccess = $null
+		$auditpolTestResultFailure = $null
+		#Get setting
+		$auditpolTest = auditpol /get /subcategory:"$($subcategory.'#text')"
+		If ($auditpolTest){
+			Write-Host ("`t`t Current setting: " + (($auditpolTest[-2]).split("  ")[-1..-3] -replace "`n"," " -replace "`r"," "))
+			#Parse setting
+			If ( ($auditpolTest[-2]).split("  ")[-1..-3] -contains "Success") {
+				$auditpolTestResultSuccess = "enable"
+			}Else{
+				$auditpolTestResultSuccess = "disable"
+			}
+			If ( ($auditpolTest[-2]).split("  ")[-1..-3] -contains "Failure") {
+				$auditpolTestResultFailure = "enable"
+			}Else{
+				$auditpolTestResultFailure = "disable"
+			}
+			#Test results
+			If ($subcategory.success -ne $auditpolTestResultSuccess -or $subcategory.failure -ne $auditpolTestResultFailure){
+				#Update
+				Write-Host "`t`tUpdating: $($subcategory.'#text') success:$($subcategory.success) failure:$($subcategory.failure)"
+				auditpol.exe /set /subcategory:"$($subcategory.'#text')" /success:$($subcategory.success) /failure:$($subcategory.failure) | Out-Null
+			}
+		}
+	}
+}
+#============================================================================
+#endregion auditpol settings
+#============================================================================
+#============================================================================
 #region Main Local Machine
 #============================================================================
 If (-Not $UserOnly) {
@@ -2374,12 +2537,20 @@ If (-Not $UserOnly) {
 		ForEach ( $Feature in $ConfigFile.Config.WindowsSettings.RemoveWindowsFeatures.Remove ) {
 			If (Get-Command Get-WindowsOptionalFeature -errorAction SilentlyContinue) {
 				If (($GWPFC | Where-Object {$_.FeatureName -eq $Feature}).state -eq "Enabled") {
-					# Write-Host ("`t" + $Feature) -ForegroundColor gray
-					# Write-Color -Text "Disabling Windows Optional Feature: ",
-					# 					$Feature -Color DarkYellow,White -StartTab 1
-					write-host -NoNewLine -Object "`tDisabling Windows Optional Feature: " -ForegroundColor DarkYellow
-					write-host -Object $Feature -ForegroundColor White
-					Disable-WindowsOptionalFeature -Online -FeatureName $Feature -NoRestart | out-null
+					If($IgnoreIIS -and $Feature -match "IIS-") {
+						# Write-Host ("`t" + $Feature + " Ignored.") -ForegroundColor green
+						# Write-Color -Text "Ignored Windows Optional Feature: ",
+						# 					$Feature -Color DarkGreen,White -StartTab 1
+						write-host -NoNewLine -Object "`tIgnored Windows Optional Feature: " -ForegroundColor DarkGreen
+						write-host -Object $Feature -ForegroundColor White
+					} else {
+						# Write-Host ("`t" + $Feature) -ForegroundColor gray
+						# Write-Color -Text "Disabling Windows Optional Feature: ",
+						# 					$Feature -Color DarkYellow,White -StartTab 1
+						write-host -NoNewLine -Object "`tDisabling Windows Optional Feature: " -ForegroundColor DarkYellow
+						write-host -Object $Feature -ForegroundColor White
+						Disable-WindowsOptionalFeature -Online -FeatureName $Feature -NoRestart | out-null
+					}
 				} else {
 					If ($GWPFC | Where-Object {$_.FeatureName -eq $Feature}) {
 						# Write-Host ("`tWindows Optional Feature: " + $Feature + " Already disabled.") -ForegroundColor green
@@ -2397,7 +2568,15 @@ If (-Not $UserOnly) {
 					# 					$Feature -Color DarkYellow,White -StartTab 1
 					write-host -NoNewLine -Object "`tDisabling Windows Capability: " -ForegroundColor DarkYellow
 					write-host -Object $Feature -ForegroundColor White
-					$GWCC | Where-Object {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"} | Remove-WindowsCapability -online | out-null
+					If($IgnoreIIS -and $Feature -match "IIS-") {
+						# Write-Host ("`t" + $Feature + " Ignored.") -ForegroundColor green
+						# Write-Color -Text "Ignored Windows Capability: ",
+						# 					$Feature -Color DarkGreen,White -StartTab 1
+						write-host -NoNewLine -Object "`tIgnored Windows Capability: " -ForegroundColor DarkGreen
+						write-host -Object $Feature -ForegroundColor White
+					} else {
+						$GWCC | Where-Object {$_.name -like ("*" + $Feature + "*") -and $_.state -eq "Installed"} | Remove-WindowsCapability -online | out-null
+					}
 				} else {
 					If (($GWCC | Where-Object {$_.name -like ("*" + $Feature + "*")}).Name) {
 						# Write-Host ("`tWindows Capability: " + $Feature + " Already disabled.") -ForegroundColor green
@@ -2605,9 +2784,12 @@ If (-Not $UserOnly) {
 			Write-Host "Disabling Hibernate..." -ForegroundColor Green
 			POWERCFG -h off
 		}
-		If ($ConfigFile.Config.WindowsSettings.VM.DisableSystemRestore -eq 'true' -or $ConfigFile.Config.WindowsSettings.VM.DisableSystemRestore -eq 'yes') {
-			Write-Host "Disabling System Restore..." -ForegroundColor Green
-			Disable-ComputerRestore -Drive "C:\"
+		If ($SkipSystemRestore -eq $False -and ($ConfigFile.Config.WindowsSettings.VM.DisableSystemRestore -eq 'true' -or $ConfigFile.Config.WindowsSettings.VM.DisableSystemRestore -eq 'yes')) {
+			If(Get-Command Disable-ComputerRestore -ErrorAction SilentlyContinue) {
+				Write-Host "Disabling System Restore..." -ForegroundColor Green
+				Disable-ComputerRestore -Drive "C:\"
+			}
+
 		}
 		If ($ConfigFile.Config.WindowsSettings.VM.NewNetworkWindowOff -eq 'true' -or $ConfigFile.Config.WindowsSettings.VM.NewNetworkWindowOff -eq 'yes') {
 			If (-Not (Test-path -path 'HKLM:\SYSTEM\CurrentControlSet\Control\Network\NewNetworkWindowOff')) {			
@@ -2691,12 +2873,14 @@ If (-Not $UserOnly) {
 #============================================================================
 If (-Not $UserOnly) {
 	Write-Host "Setting up Adobe Policies"
-	ForEach ( $CARV in $ConfigFile.Config.AdobeReader.Version ) {
-		ForEach ( $item in $ConfigFile.Config.AdobeReader.Item ) {
-			Set-Reg ("HKLM:\SOFTWARE\Policies\Adobe\Acrobat Reader\" + $CARV + "\" + $item.Key) $item.Value $item.Data $item.Type
-			#Wow6432Node
-			If ([Environment]::Is64BitOperatingSystem) {
-				Set-Reg ("HKLM:\SOFTWARE\Policies\Adobe\Acrobat Reader\" + $CARV + "\" + $item.Key).replace("\Software\","\Software\Wow6432Node\") $item.Value $item.Data $item.Type 'Setting up Adobe Policies'
+	ForEach ( $CAP in $ConfigFile.Config.AdobeAcrobat.Procduct ) {
+		ForEach ( $CAV in $ConfigFile.Config.AdobeAcrobat.Version ) {
+			ForEach ( $item in $ConfigFile.Config.AdobeAcrobat.Item ) {
+				Set-Reg ("HKLM:\SOFTWARE\Policies\Adobe\" + $CAP + "\" + $CAV + "\" + $item.Key) $item.Value $item.Data $item.Type ("Product: " + $CAP + " Version: " + $CAV + " Setting: " +$item.Comment)
+				#Wow6432Node
+				If ([Environment]::Is64BitOperatingSystem) {
+					Set-Reg ("HKLM:\SOFTWARE\Policies\Adobe\" + $CAP + "\" + $CAV + "\" + $item.Key).replace("\Software\","\Software\Wow6432Node\") $item.Value $item.Data $item.Type ("Product: " + $CAP + " Version: " + $CAV + " Setting: " +$item.Comment)
+				}
 			}
 		}
 	}
@@ -2888,16 +3072,24 @@ If (-Not $UserOnly) {
 	#Set Ciphers
 	#Need to go old school to set registry as powershell cannot handle keys with "/" in them. 
 	Foreach ($Cipher in $ConfigFile.Config.WindowsSettings.Schannel.Cipher) {
+		$CurrentCipher = $null
+		$CurrentCipher = Get-ItemPropertyValue -Path (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\Ciphers\" + ( $Cipher.'#text')) -Name "Enabled" -ErrorAction SilentlyContinue
+		Write-Color -Text "Existing Cipher: ", $Cipher.'#text', $CurrentCipher -Color White,DarkYellow,DarkRed -StartTab 1
 		If ($Cipher.Status -eq "Enable" -or $Cipher.Status -eq "Enabled" -or $Cipher.Status -eq "on") {
-			# Write-Host ("`t Enabling Cipher: " + $Cipher.'#text') -foregroundcolor Yellow
-			Write-Color -Text "Enabling Cipher: ",
-								$Cipher.'#text' -Color White,DarkYellow -StartTab 1
-			reg add $('"' + $RegAddSCHANNEL + '\Ciphers\' + ($Cipher.'#text') + '"') /v Enabled /d 1 /t REG_DWORD /f
-			#Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\" + $Cipher.'#text' ) "Enabled" 1 "DWORD"
+			If ($CurrentCipher -ne 1 -or $CurrentCipher -ne 4294967295) {
+				Write-Color -Text "Enabling Cipher: ",
+									$Cipher.'#text',
+									" " -Color White,DarkYellow,White -StartTab 1
+				# reg add $('"' + $RegAddSCHANNEL + '\Ciphers\' + ($Cipher.'#text') + '"') /v Enabled /d 1 /t REG_DWORD /f
+				#Hope to fix issues with SCHANNEL and 1 settings
+				reg add $('"' + $RegAddSCHANNEL + '\Ciphers\' + ($Cipher.'#text') + '"') /v Enabled /d 4294967295 /t REG_DWORD /f
+				#Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\" + $Cipher.'#text' ) "Enabled" 1 "DWORD"
+			}
 		} else {
 			# Write-Host ("`t Disabling Cipher: " + $Cipher.'#text') -foregroundcolor Green
 			Write-Color -Text "Disabling Cipher: ",
-								$Cipher.'#text' -Color White,DarkGreen -StartTab 1
+								$Cipher.'#text',
+								" " -Color White,DarkGreen,White -StartTab 1
 			reg add $('"' + $RegAddSCHANNEL + '\Ciphers\' + ($Cipher.'#text') + '"') /v Enabled /d 0 /t REG_DWORD /f
 			#Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\" + $Cipher.'#text' ) "Enabled" 0 "DWORD"
 		}
@@ -2907,19 +3099,23 @@ If (-Not $UserOnly) {
 		If ($Hash.Status -eq "Enable" -or $Hash.Status -eq "Enabled" -or $Hash.Status -eq "on") {
 			# Write-Host ("`t Enabling Hash: " + $Hash.'#text') -foregroundcolor Yellow
 			Write-Color -Text "Enabling Hash: ",
-								$Hash.'#text' -Color White,DarkYellow -StartTab 1
+								$Hash.'#text',
+								" " -Color White,DarkYellow,White -StartTab 1
 			reg add $('"' + $RegAddSCHANNEL + '\Hashes\' + ($Cipher.'#text') + '"') /v Enabled /d 1 /t REG_DWORD /f					
 			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\" + $Hash.'#text' ) "Enabled" 1 "DWORD" 'Hashes'
 		} else {
 			# Write-Host ("`t Disabling Hash: " + $Hash.'#text') -foregroundcolor Green
 			Write-Color -Text "Disabling Hash: ",
-								$Hash.'#text' -Color White,DarkGreen -StartTab 1
+								$Hash.'#text',
+								" " -Color White,DarkGreen,White -StartTab 1
 			reg add $('"' + $RegAddSCHANNEL + '\Hashes\' + ($Cipher.'#text') + '"') /v Enabled /d 0 /t REG_DWORD /f					
 			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\" + $Hash.'#text' ) "Enabled" 0 "DWORD" 'Hashes'
 		}
 	}
 	If ($AllowClientTLS1) {
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\SHA") "Enabled" 1 "DWORD" "Re-Enabling SHA" 
+		# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\SHA") "Enabled" 1 "DWORD" "Re-Enabling SHA" 
+		# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Hashes\SHA") "Enabled" 4294967295 "DWORD" "Re-Enabling SHA" 
+		Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\Hashes\SHA") "Enabled" 4294967295 "DWORD" "Re-Enabling SHA" 
 		Write-Warning "Re-Enabling SHA" 
 	}
 	# Set KeyExchangeAlgorithms
@@ -2927,19 +3123,25 @@ If (-Not $UserOnly) {
 		If ($KeyExchangeAlgorithm.Status -eq "Enable" -or $KeyExchangeAlgorithm.Status -eq "Enabled" -or $KeyExchangeAlgorithm.Status -eq "on") {
 			# Write-Host ("`t Enabling KeyExchangeAlgorithm: " + $KeyExchangeAlgorithm.'#text') -foregroundcolor Yellow
 			Write-Color -Text "Enabling KeyExchangeAlgorithm: ",
-								$KeyExchangeAlgorithm.'#text' -Color White,DarkYellow -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text' ) "Enabled" 1 "DWORD" 'KeyExchangeAlgorithms'
+								$KeyExchangeAlgorithm.'#text',
+								" " -Color White,DarkYellow,White -StartTab 1
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text' ) "Enabled" 1 "DWORD" 'KeyExchangeAlgorithms'
+			Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text' ) "Enabled" 4294967295 "DWORD" 'KeyExchangeAlgorithms'
 		} else {
 			# Write-Host ("`t Disabling KeyExchangeAlgorithm: " + $KeyExchangeAlgorithm.'#text') -foregroundcolor Green
 			Write-Color -Text "Disabling KeyExchangeAlgorithm: ",
-								$KeyExchangeAlgorithm.'#text' -Color White,DarkGreen -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text' ) "Enabled" 0 "DWORD" 'KeyExchangeAlgorithms'
+								$KeyExchangeAlgorithm.'#text',
+								" " -Color White,DarkGreen,White -StartTab 1
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text' ) "Enabled" 0 "DWORD" 'KeyExchangeAlgorithms'
+			Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text' ) "Enabled" 0 "DWORD" 'KeyExchangeAlgorithms'
 		}
 		If ($KeyExchangeAlgorithm.ServerMinKeyBitLength) {
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text') "ServerMinKeyBitLength" $KeyExchangeAlgorithm.ServerMinKeyBitLength "DWORD" ('Set ServerMinKeyBitLength ' + $KeyExchangeAlgorithm.'#text')
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text') "ServerMinKeyBitLength" $KeyExchangeAlgorithm.ServerMinKeyBitLength "DWORD" ('Set ServerMinKeyBitLength ' + $KeyExchangeAlgorithm.'#text')
+			Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text') "ServerMinKeyBitLength" $KeyExchangeAlgorithm.ServerMinKeyBitLength "DWORD" ('Set ServerMinKeyBitLength ' + $KeyExchangeAlgorithm.'#text')
 		}
 		If ($KeyExchangeAlgorithm.ClientMinKeyBitLength) {
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text') "ServerMinKeyBitLength" $KeyExchangeAlgorithm.ClientMinKeyBitLength "DWORD" ('Set ClientMinKeyBitLength ' + $KeyExchangeAlgorithm.'#text')
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text') "ServerMinKeyBitLength" $KeyExchangeAlgorithm.ClientMinKeyBitLength "DWORD" ('Set ClientMinKeyBitLength ' + $KeyExchangeAlgorithm.'#text')
+			Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\KeyExchangeAlgorithms\" + $KeyExchangeAlgorithm.'#text') "ServerMinKeyBitLength" $KeyExchangeAlgorithm.ClientMinKeyBitLength "DWORD" ('Set ClientMinKeyBitLength ' + $KeyExchangeAlgorithm.'#text')
 		}		
 	}
 	#Set Protocols
@@ -2951,16 +3153,20 @@ If (-Not $UserOnly) {
 								"Server ",
 								"Protocol: ",
 								$Protocol.'#text' -Color White,DarkCyan,White,DarkYellow -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "Enabled" 1 "DWORD" 'SSL Server Protocols'
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "DisabledByDefault" 0 "DWORD" 'SSL Server Protocols'
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "Enabled" 1 "DWORD" 'SSL Server Protocols'
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "Enabled" 4294967295 "DWORD" 'SSL Server Protocols'
+			Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\Protocols\" + $Protocol.'#text' + "\Server") "Enabled" 4294967295 "DWORD" 'SSL Server Protocols'
+			Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\Protocols\" + $Protocol.'#text' + "\Server") "DisabledByDefault" 0 "DWORD" 'SSL Server Protocols'
 		} else {
 			# Write-Host ("`t Disabling Server Protocol: " + $Protocol.'#text') -foregroundcolor Green
 			Write-Color -Text "Disabling ",
 								"Server ",
 								"Protocol: ",
 								$Protocol.'#text' -Color White,DarkCyan,White,DarkGreen -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Server" ) "Enabled" 0 "DWORD" 'SSL Server Protocols'
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "DisabledByDefault" 1 "DWORD" 'SSL Server Protocols'
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Server" ) "Enabled" 0 "DWORD" 'SSL Server Protocols'
+			Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\Protocols\" + $Protocol.'#text'  + "\Server" ) "Enabled" 0 "DWORD" 'SSL Server Protocols'
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Server") "DisabledByDefault" 1 "DWORD" 'SSL Server Protocols'
+			Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\Protocols\" + $Protocol.'#text' + "\Server") "DisabledByDefault" 1 "DWORD" 'SSL Server Protocols'
 		}
 		#Client
 		If ($Protocol.Client -eq "Enable" -or $Protocol.Client -eq "Enabled" -or $Protocol.Client -eq "on") {
@@ -2969,23 +3175,30 @@ If (-Not $UserOnly) {
 								"Client ",
 								"Protocol: ",
 								$Protocol.'#text' -Color White,DarkGray,White,DarkYellow -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Client") "Enabled" 1 "DWORD" 'SSL Client Protocols'
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Client") "DisabledByDefault" 0 "DWORD" 'SSL Client Protocols'
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Client") "Enabled" 1 "DWORD" 'SSL Client Protocols'
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Client") "Enabled" 4294967295 "DWORD" 'SSL Client Protocols'
+			Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\Protocols\" + $Protocol.'#text'  + "\Client") "Enabled" 4294967295 "DWORD" 'SSL Client Protocols'
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Client") "DisabledByDefault" 0 "DWORD" 'SSL Client Protocols'
+			Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\Protocols\" + $Protocol.'#text' + "\Client") "DisabledByDefault" 0 "DWORD" 'SSL Client Protocols'
 		} else {
 			# Write-Host ("`t Disabling Protocol: " + $Protocol.'#text') -foregroundcolor Green
 			Write-Color -Text "Disabling ",
 								"Client ",
 								"Protocol: ",
 								$Protocol.'#text' -Color White,DarkGray,White,DarkGreen -StartTab 1
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Client") "Enabled" 0 "DWORD" 'SSL Client Protocols'
-			Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Client") "DisabledByDefault" 1 "DWORD" 'SSL Client Protocols'
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text'  + "\Client") "Enabled" 0 "DWORD" 'SSL Client Protocols'
+			Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\Protocols\" + $Protocol.'#text'  + "\Client") "Enabled" 0 "DWORD" 'SSL Client Protocols'
+			# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\" + $Protocol.'#text' + "\Client") "DisabledByDefault" 1 "DWORD" 'SSL Client Protocols'
+			Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\Protocols\" + $Protocol.'#text' + "\Client") "DisabledByDefault" 1 "DWORD" 'SSL Client Protocols'
 		}
 	}
 	If ($AllowClientTLS1) {
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Client") "Enabled" 1 "DWORD" "Set TLS 1.0"
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Client") "DisabledByDefault" 0 "DWORD" "Set TLS 1.0"
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.1\Client") "Enabled" 1 "DWORD" "Set TLS 1.0"
-		Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.1\Client") "DisabledByDefault" 0 "DWORD" "Set TLS 1.0"
+		# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Client") "Enabled" 1 "DWORD" "Set TLS 1.0"
+		# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.1\Client") "Enabled" 1 "DWORD" "Set TLS 1.1"
+		# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Client") "Enabled" 4294967295 "DWORD" "Set TLS 1.0"
+		Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\Protocols\TLS 1.0\Client") "Enabled" 4294967295 "DWORD" "Set TLS 1.0"
+		# Set-Reg ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.1\Client") "Enabled" 4294967295 "DWORD" "Set TLS 1.1"
+		Set-Reg (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\Protocols\TLS 1.1\Client") "Enabled" 4294967295 "DWORD" "Set TLS 1.1"
 		Write-Warning "Re-Enabling Client TLS 1.0" 
 	}
 	#.Net TLS Settings
@@ -3007,14 +3220,15 @@ If (-Not $UserOnly) {
 		}
 	}
 	If ($ConfigFile.Config.WindowsSettings.Schannel.WinHttp) {
+		Write-Host "Setting up Internet Options for TLS 1.2"
 		#https://support.microsoft.com/en-us/help/3140245/update-to-enable-tls-1-1-and-tls-1-2-as-a-default-secure-protocols-in
-		Set-Reg ("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp") "DefaultSecureProtocols" $ConfigFile.Config.WindowsSettings.Schannel.WinHttp "DWORD"
+		Set-Reg ("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp") "DefaultSecureProtocols" $ConfigFile.Config.WindowsSettings.Schannel.WinHttp "DWORD" 'Internet Options Settings'
 		If ([Environment]::Is64BitOperatingSystem) {
-			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp") "DefaultSecureProtocols" $ConfigFile.Config.WindowsSettings.Schannel.WinHttp "DWORD"  '.Net TLS Settings'
+			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp") "DefaultSecureProtocols" $ConfigFile.Config.WindowsSettings.Schannel.WinHttp "DWORD"  'Internet Options Settings'
 		}
-		Set-Reg ("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp") "SecureProtocols" $ConfigFile.Config.WindowsSettings.Schannel.WinHttp "DWORD"
+		Set-Reg ("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings") "SecureProtocols" $ConfigFile.Config.WindowsSettings.Schannel.WinHttp "DWORD" 'Internet Options Settings'
 		If ([Environment]::Is64BitOperatingSystem) {
-			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp") "SecureProtocols" $ConfigFile.Config.WindowsSettings.Schannel.WinHttp "DWORD"  '.Net TLS Settings'
+			Set-Reg ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Internet Settings") "SecureProtocols" $ConfigFile.Config.WindowsSettings.Schannel.WinHttp "DWORD"  'Internet Options Settings'
 		}
 	}
 }
@@ -3725,8 +3939,8 @@ If (-Not $UserOnly) {
 					}
 				}
 				$SchJobOptions = New-ScheduledJobOption -RunElevated
-				If ((-Not (get-ScheduledJob -Name $Job.Name)) -and (-Not (get-ScheduledJob | Where-Object {$_.Name -eq $Job.Name}))) {
-					Register-ScheduledJob -Name $Job.Name -Trigger $HashJTrigger -ScheduledJobOption $SchJobOptions  -ScriptBlock {$Job.'#text'}
+				If ((-Not (Get-ScheduledJob -Name $Job.Name -errorAction silentlyContinue)) -and (-Not (Get-ScheduledJob -errorAction silentlyContinue | Where-Object {$_.Name -eq $Job.Name}))) {
+					Register-ScheduledJob -Name $Job.Name -Trigger $HashJTrigger -ScheduledJobOption $SchJobOptions  -ScriptBlock {$Job.'#text'} -errorAction silentlyContinue
 				}
 			}
 		} Else {
@@ -3807,7 +4021,7 @@ Write-Host ("Script took: " + (FormatElapsedTime($sw.Elapsed)) + " to run.")
 #endregion Main Local Machine Cleanup
 #============================================================================
 If( -Not ($Script:RegBackup)){
-	$Script:RegBackup | Export-Csv -IncludeTypeInformation -Path (($LICache + $LogFile) -replace ".log",".csv")
+	$Script:RegBackup | Export-Csv -NoTypeInformation -Path (($LICache + $LogFile) -replace ".log",".csv")
 }
 If (-Not [string]::IsNullOrEmpty($LICache + $LogFile)) {
 	Stop-Transcript
@@ -3815,3 +4029,4 @@ If (-Not [string]::IsNullOrEmpty($LICache + $LogFile)) {
 #############################################################################
 #endregion Main
 #############################################################################
+
