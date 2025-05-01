@@ -1,12 +1,15 @@
 <# 
 .SYNOPSIS
     Name: Store_Restore.ps1
-    Import Store Settings to Zip file
+    Import Store Settings to Zip file, Changes hostname, and IP address and enables windows account.
 
 .DESCRIPTION
-    Restoreuser data and custom app settings.
-
-
+    Import Store Settings to Zip file, Changes hostname, and IP address and enables windows account.
+    This script will store the settings of the machine to a zip file. This will include the following:
+    - Desktop
+    - Favorites
+    - My Pictures
+    - Custom settings
 .PARAMETER 
 
 
@@ -20,12 +23,21 @@
     1.0.01 - Updated Manager registry settings
     1.0.02 - Added code to hide Console
     1.0.03 - Auto-Logon Fix, Fixes or unlocking Managers. 
+    1.0.04 - Added Auto Update for BIOS and Auto Install for LanDesk.
     1.0.05 - Removed WindowLogonUser and Added logic to update logon based on machine name.
+    1.0.06 - Updated Passwords based on PCI 2019 Store standard.
     1.0.07 - Fix IP update and computer rename.
-    1.0.09 - Fix bug with disabling all accounts. Added prompt about disableing Auto Logon. Fixed issues with setting Manager settings. 
+    1.0.08 - Create StaffingModel folder.
+    1.0.09 - Fix bug with disabling all accounts. Added prompt about disabling Auto Logon. Fixed issues with setting Manager settings. Fixed issues with not updating admin autologon to new password. 
     1.0.10 - Updated to deal with zip file from powershell 2.0
-    1.0.11 - Manager's registy keys bug. Get-CimInstance testing. Start Office 2019 install. 
-    1.0.12 - Fixed issue with renaming machine.
+    1.0.11 - Manager's registry keys bug. Get-CimInstance testing. Start Office 2019 install. 
+    1.0.12 - Machine factory name password issue. Fixed issue with renaming machine.
+    1.0.13 - Disable RDP after LanDesk agent is installed.
+    1.0.14 - Fixed issue with the Adapter selection list.
+    1.0.15 - Add Logic to install newer Ivanti EPM agent.
+    1.0.16 - Remove Old Agent
+    1.0.17 - Add Logic for RDM Installer
+    1.0.18 - 20250424 - Look at for Ivanti services to see if EPM agent is installed.
 #>
 #Requires -Version 5.1 -PSEdition Desktop
 #Force Starting of Powershell script as Administrator 
@@ -49,15 +61,15 @@ $Settings =[hashtable]::Synchronized(@{})
 # $Settings =@{}
 $SettingsOutput =[hashtable]::Synchronized(@{})
 # $SettingsOutput =@{}
-$Settings.Version = "1.0.12"
+$Settings.Version = "1.0.18"
 $Settings.WindowTitle = ("Store Restore Version: " + $Settings.Version)
 $Settings.tempfolder = ""
-$Settings.CustomAppFolder = "github\app"
-$Settings.CustomAppRegKey = "github\app"
-$Settings.CustomAppName = "app"
+$Settings.CustomAppFolder = "github\Custom"
+$Settings.CustomAppRegKey = "github\Custom"
+$Settings.CustomAppName = "Custom"
 $Settings.DNS = @("1.1.1.1","8.8.8.8")
 $Settings.Subnet = "255.255.255.0"
-$Settings.OfficeSubFolder = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\Microsoft Office 2019")
+$Settings.OfficeSubFolder = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\NEW PC\Microsoft Office 2019 x64")
 $Settings.OfficeActivationScript = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "Office_2019_Activate.bat")
 $settings.Admin = "admin"
 $Settings.AccountBlacklist = @(
@@ -65,20 +77,29 @@ $Settings.AccountBlacklist = @(
     "ASPNET"
     "DefaultAccount"
     "Guest"
-    "WDAGUtilityAccount"  
+    "WDAGUtilityAccount"
+    "admin"   
 )
 $Settings.AccountDisableBlacklist = @(
         "ASPNET"
+        "cba_anonymous"
+        "admin"
 )
 $Settings.DEVCNames = @(
     "DEV"
     "TST"
     "QA"
 )
+$Settings.UPrePass = ""
+$Settings.UPostPass = ""
+$Settings.DefaultState = ""
+$Settings.APrePass = ""
+$Settings.APostPass = ""
 $Settings.WindowLogonUserRegString = "hkcu:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
 $Settings.WindowLogonUserReg = (Get-ItemProperty -path $Settings.WindowLogonUserRegString)
 $Settings.USF = (Get-ItemProperty -path "hkcu:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")
 $Settings.UsersProfileFolder = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' -Name "ProfilesDirectory").ProfilesDirectory
+$Settings.RDMEPMURL = "https://github.com/install/"
 
 $Settings.BackupFolders =@()
 If (Test-Path (${env:ProgramFiles(x86)} + "\" + $Settings.CustomAppFolder)) {
@@ -92,7 +113,12 @@ $Settings.BackupFolders += $([string]$Settings.USF.Favorites)
 $Settings.BackupFolders += $([string]$Settings.USF."My Pictures")
 $Settings.BackupFolders += $([string]$Settings.USF."{374DE290-123F-4565-9164-39C4925E467B}") #Downloads
 $Settings.BackupFolders += $([string]$Settings.USF.Personal) #My Documents
-
+#Dev ComputerNames
+$Settings.$DEVCNames = @(
+    "DEV"
+    "TST"
+    "QA"
+)
 #region Icon
 $iconBase64 =''
 #endregion Icon
@@ -102,21 +128,21 @@ $iconBase64 =''
 #############################################################################
 #region Functions
 #############################################################################
-function FormatElapsedTime($ts) {   	   	 
+function Format-ElapsedTime($ts) {
     #https://stackoverflow.com/questions/3513650/timing-a-commands-execution-in-powershell
 	$elapsedTime = ""
-    if ( $ts.Hours -gt 0 ) {	 
+    if ( $ts.Hours -gt 0 ) {
         $elapsedTime = [string]::Format( "{0:00} hours {1:00} min. {2:00}.{3:00} sec.", $ts.Hours, $ts.Minutes, $ts.Seconds, $ts.Milliseconds / 10 );
     } else {
-        if ( $ts.Minutes -gt 0 ) {		 
+        if ( $ts.Minutes -gt 0 ) {
             $elapsedTime = [string]::Format( "{0:00} min. {1:00}.{2:00} sec.", $ts.Minutes, $ts.Seconds, $ts.Milliseconds / 10 );
-        } else {		 
+        } else {
             $elapsedTime = [string]::Format( "{0:00}.{1:00} sec.", $ts.Seconds, $ts.Milliseconds / 10 );
         }
         if ($ts.Hours -eq 0 -and $ts.Minutes -eq 0 -and $ts.Seconds -eq 0) {
             $elapsedTime = [string]::Format("{0:00} ms.", $ts.Milliseconds);
         }
-        if ($ts.Milliseconds -eq 0) {		 
+        if ($ts.Milliseconds -eq 0) {
             $elapsedTime = [string]::Format("{0} ms", $ts.TotalMilliseconds);
         }
     }
@@ -138,12 +164,16 @@ function Set-Reg {
     # DWord: Specifies a 32-bit binary number. Equivalent to REG_DWORD.
     # MultiString: Specifies an array of null-terminated strings terminated by two null characters. Equivalent to REG_MULTI_SZ.
     # Qword: Specifies a 64-bit binary number. Equivalent to REG_QWORD.
+    # Unknown: Indicates an unsupported registry data type, such as REG_RESOURCE_LIST.
+
     If(!(Test-Path $regPath)) {
         New-Item -Path $regPath -Force | Out-Null
     }
+
     If($type -eq "Binary" -and $value.GetType().Name -eq "String" -and $value -match ",") {
         $value = [byte[]]($value -split ",")
     }
+
     New-ItemProperty -Path $regPath -Name $name -Value $value -PropertyType $type -Force | Out-Null
 }
 function Show-Console
@@ -192,6 +222,7 @@ function Browse_File {
     $Settings.OpenFileDialog.filter = "ZIP Archive Files|*.zip|All Files|*.*" 
     $Settings.OpenFileDialog.ShowDialog() | Out-Null
     $Settings.Restore_Backup.Text = $Settings.OpenFileDialog.filename    
+
     $Settings.tempfolder = ($env:temp + "\" + [io.path]::GetFileNameWithoutExtension($Settings.OpenFileDialog.filename))
 
       $BrowseRunspace =[runspacefactory]::CreateRunspace()
@@ -237,6 +268,71 @@ function Browse_File {
     $Settings.Manager.Enabled = $True
     $Settings.Start.text = "Restore"
 }
+Function Copy-WebFolder {
+    <#
+    .LINK
+    https://stackoverflow.com/questions/11436694/how-to-download-a-whole-folder-of-files-subfolders-from-the-web-in-powershell
+
+    .SYNOPSIS
+     This function copies a folder (and optionally, its subfolders)
+    .NOTES
+    When copying subfolders it calls itself recursively
+    .COMPONENT
+    Requires WebClient object $webClient defined, e.g. $webClient = New-Object System.Net.WebClient
+    .PARAMETER source
+        The url of folder to copy, with trailing /, e.g. http://website/folder/structure/
+    .PARAMETER destination
+        The folder to copy $source to, with trailing \ e.g. D:\CopyOfStructure\
+    .PARAMETER recursive
+        True if subfolders of $source are also to be copied or False to ignore subfolders
+
+    #>
+    [CmdletBinding()] 
+    Param 
+    ( 
+        [Parameter(Mandatory=$true,Position=1,HelpMessage="URL")][string]$source, 
+        [Parameter(Mandatory=$true,Position=2,HelpMessage="Destination")][string]$destination,
+        [Parameter(Mandatory=$true,Position=3,HelpMessage="Recursive")][switch]$recursive 
+    ) 
+    if (!$(Test-Path($destination))) {
+        New-Item $destination -type directory -Force
+    }
+    If ($destination -notmatch "\\$") {
+        $destination = $destination + "\"
+    }   
+    If ($source -notmatch "/$") {
+        $source = $source + "/"
+    }
+    # Create a new WebClient object to download the files
+    $webClient = New-Object System.Net.WebClient
+    # Get the file list from the web page
+    $webString = $webClient.DownloadString($source)
+    $lines = [Regex]::Split($webString, "<br>")
+    # Parse each line, looking for files and folders
+    foreach ($line in $lines) {
+        if ($line.ToUpper().Contains("HREF")) {
+            # File or Folder
+            if (!$line.ToUpper().Contains("[TO PARENT DIRECTORY]")) {
+                # Not Parent Folder entry
+                $items =[Regex]::Split($line, """")
+                $items = [Regex]::Split($items[2], "(>|<)")
+                $item = $items[2]
+                if ($line.ToLower().Contains("&lt;dir&gt")) {
+                    # Folder
+                    if ($recursive) {
+                        # Subfolder copy required
+                        Copy-WebFolder "$source$item/" "$destination$item/" $recursive
+                    } else {
+                        # Subfolder copy not required
+                    }
+                } else {
+                    # File
+                    $webClient.DownloadFile("$source$item", "$destination$item")
+                }
+            }
+        }
+    }
+}
 function Start_Work {
     param (
         
@@ -275,7 +371,7 @@ function Start_Work {
                 if ([BitConverter]::IsLittleEndian) {
                     [Array]::Reverse($bytes)
                 }
-                return [BitConverter]::ToUInt32($bytes, 0)								  
+                return [BitConverter]::ToUInt32($bytes, 0)
             }
             function Get-IPAddressFromUInt32 {
                 [CmdletBinding()]
@@ -317,16 +413,139 @@ function Start_Work {
             }
             #endregion CustomAppReg Reg Import  
             #region Account setup
-            #region Disable
-                #Disable all accounts not Admin, User or Blacklist
-                #Remove black listed accounts
-                If ($Settings.AccountDisableBlacklist -notcontains $LocalUser) {
-                    #Disable Accounts.
-                    # write-output ("Disabled Non-Window " + $LocalUser.Name + " account . . .")
-                    Disable-LocalUser -Name $LocalUser -Confirm:$false
+            #region Disable and update password for user
+                #Update Password using new computer name
+                [boolean]$SetPassAdmin = $false
+                If ($Settings.Machine_Name.Text) {
+                    $arrComName = $Settings.Machine_Name.Text -split "-"
+                    #State
+                    #Deal with Dev boxes.
+                    Try{
+                        $State = $arrComName[0].ToUpper()
+                        If ($State.Length -ne 2) {
+                            $UPrePass = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($Settings.UPrePass))
+                            $UPostPass = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($Settings.UPostPass))
+                            $State = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($Settings.DefaultState))
+                        }
+                    }
+                    Catch {
+                        $State = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($Settings.DefaultState))
+                    }
+                    #Store Number
+                    Try{
+                        $Store = $arrComName[1].ToLower()
+                    }
+                    Catch {
+                        $Store = $null
+                    }
+                    #Get Window
+                    Try{
+                        $Window = $arrComName[2] -replace  "\D+" 
+                        If (-Not $Window) {
+                            $Window = 01
+                        }
+                    }
+                    Catch {
+                        $Window = 01
+                    }
+                    #Get Window Type
+                    Try{
+                        $WindowType = ($arrComName[2] -replace '[0-9]').ToLower()
+                        If ($WindowType.Length -ne 1) {
+                            $WindowType = "w"
+                        }
+                    }
+                    Catch {
+                        $WindowType = "w"
+                    }
+                    Try {
+                        If ($arrComName[2].ToLower() -match "m") {
+                            $MWT = $Settings.IP_Address.Text
+                            $ManaberWindow = ([int]$MWT.substring( $MWT.Length -2) - 10)
+                            If ($ManaberWindow.Length -ne 2) {
+                                $ManaberWindow = ("0" + $ManaberWindow)
+                            }
+                            #write-output ("Manager PC Setting window to: " + $ManaberWindow)
+                            $Window = $ManaberWindow
+                        }
+                    }
+                    Catch {
 
-                } 
-   
+                    }
+
+                    #Force Dev Password based on name
+                    foreach ($Name in $Settings.DEVCNames) {
+                        If ($env:COMPUTERNAME -contains $Name ) {
+                            $UPrePass = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($Settings.UPrePass))
+                            $UPostPass = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($Settings.UPostPass))
+                            $State = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($Settings.DefaultState))
+                        }
+                    }
+                    #Loop and Set Passsword for users
+                    ForEach ( $LocalUser in ((Get-LocalUser).name | Sort-Object {"$_" -replace '\d',''},{("$_" -replace '\D','') -as [int]})) {
+                        If (-Not ($Settings.AccountBlacklist.contains($LocalUser))) {
+                            #Get Window number from username
+                            Try{
+                                $UserWindow = $LocalUser -replace  "\D+" -replace '\b0*\B',''
+                                If (-Not $UserWindow) {
+                                    $UserWindow = 01
+                                }
+                                If ($UserWindow.Length -ne 2) {
+                                    $UserWindow = ("0" + $UserWindow)
+                                }
+
+                            }
+                            Catch {
+                                $UserWindow = 01
+                            }
+                            #Set New Password
+                            $TempPass = -join ($UPrePass,$State.ToUpper(),$Store,$WindowType,$UserWindow,$UPostPass)
+                            If (-Not [string]::IsNullOrEmpty($TempPass)) {
+                                Set-LocalUser -Name ($LocalUser) -PasswordNeverExpires:$true -Password (ConvertTo-SecureString $TempPass -AsPlainText -Force) | Out-Null
+                            }
+                        }
+                        If ($LocalUser.ToUpper() -eq $settings.Admin.ToUpper()) {
+                            If ($Settings.Machine_Name.Text) {
+                                $APrePass = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($Settings.APrePass))
+                                $APostPass = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($Settings.APostPass))
+                                $arrComName = $Settings.Machine_Name.Text -split "-"
+                                #Deal with Dev boxes.
+                                Try{
+                                    $State = $arrComName[0].ToUpper()
+                                    If ($State.Length -ne 2) {
+                                        $UPrePass = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($Settings.UPrePass))
+                                        $UPostPass = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($Settings.UPostPass))
+                                        $State = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($Settings.DefaultState))
+                                    }
+                                }
+                                Catch {
+                                    $State = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($Settings.DefaultState))
+                                }
+                                $TempPass = -join ($APrePass,$State.ToLower(),$APostPass)
+                                If (-Not [string]::IsNullOrEmpty($TempPass)) {
+                                    #Set Local Admin.
+                                    $SetPassAdmin = $true
+                                    Set-LocalUser -Name ($LocalUser) -PasswordNeverExpires:$true -Password (ConvertTo-SecureString $TempPass -AsPlainText -Force) | Out-Null
+                                    #Update password for autologon
+                                    If ((Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name 'AutoAdminLogon' -ErrorAction SilentlyContinue).AutoAdminLogon -ne 0) {
+                                        If ((Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name 'DefaultPassword' -ErrorAction SilentlyContinue).DefaultPassword) {  
+                                            Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name 'DefaultPassword' -Value $TempPass  -Type String
+                                        }
+                                    }
+                                }   
+                            }
+                        }
+                        #Disable all accounts not Admin, User or Blacklist
+                        #Remove black listed accounts
+                        If ($Settings.AccountDisableBlacklist -notcontains $LocalUser) {
+                            #Disable Accounts.
+                            # write-output ("Disabled Non-Window " + $LocalUser.Name + " account . . .")
+                            Disable-LocalUser -Name $LocalUser -Confirm:$false
+
+                        } 
+                    }
+                }    
+
             #endregion Disable and update password for user
             #Enable selected account
                 If ($Settings.WindowLogonUser.SelectedItem.ToString()) {
@@ -437,7 +656,8 @@ function Start_Work {
             }
             #endregion Printers
             #region Restore files
-            If ($Settings.Restore_Backup.Text) {			
+            If ($Settings.Restore_Backup.Text) {
+
                 ForEach ($Restore in $Settings.BackupFolders) {
                     $CFN = Split-Path -Leaf $Restore
                     #Create Folder for restored folder
@@ -466,7 +686,7 @@ function Start_Work {
             #region Set Machine IP
             If ($Settings.IP_Address.Text) {
                 If ($Settings.Network_Adapter.SelectedItem.ToString()) {
-                    $Settings.NetworkAddress = [IPAddress] (([IPAddress]$Settings.IP_Address.Text ).Address -band ([IPAddress] $Settings.Subnet).Address)
+                    $Settings.NetworkAddress = [IPAddress] (([IPAddress]$Settings.IP_Address.Text ).Address -band ([IPAddress] $Settings.IP_Subnet.Text  ).Address)
                     If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
                         $wmi = Get-CimInstance win32_networkadapterconfiguration -filter ("Description = '" + $Settings.Network_Adapter.SelectedItem.ToString() + "'")
                     } Else {
@@ -474,13 +694,12 @@ function Start_Work {
                     } 
                     #Only change IP if it is different.
                     If (( $wmi.ipaddress | Where-object {$_.IPaddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1"}) -ne $Settings.IP_Address.Text) {
-                        $wmi.EnableStatic($Settings.IP_Address.Text, $Settings.Subnet)              
+                        $wmi.EnableStatic($Settings.IP_Address.Text, $Settings.IP_Subnet.Text )              
                         $wmi.SetGateways((Get-IPAddressFromUInt32 -UInt32 ((Get-UInt32FromIPAddress -IPAddress $Settings.NetworkAddress.IpAddressToString) +1)).IPAddressToString, 1)        
                         $wmi.SetDNSServerSearchOrder($Settings.DNS)
                     }
                 }
             }
-		 
             #endregion Set Machine IP
             #region Set Machine Name
             If ($Settings.Machine_Name.Text) {
@@ -498,7 +717,6 @@ function Start_Work {
                     }
                 }
             }
-		 
             #endregion Set Machine Name
             #region Managers 
             If ($Settings.Manager.Checked) {
@@ -617,7 +835,16 @@ function Start_Work {
                     New-Item  ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{24ad3ad4-a569-4530-98e1-ab02f9417aa8}") 
                     Set-Reg "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer" "{24AD3AD4-A569-4530-98E1-AB02F9417AA8}" 1 "DWORD"
                 }
-                
+                #region StaffingModel
+                    if (-Not (Test-Path -Path "C:\StaffingModel")) {
+                        New-Item -Path "C:\StaffingModel" -ItemType Directory -Force
+                    }
+                    #Granting "Users" Modify
+                    $Acl = Get-Acl "C:\StaffingModel"
+                    $Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("Users", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+                    $Acl.Setaccessrule($Ar)
+                    Set-Acl "C:\StaffingModel" $Acl
+                #endregion StaffingModel
                 #Unload Manager
                 [gc]::collect()
                 $process = (REG UNLOAD $HKEY)
@@ -663,6 +890,32 @@ function Start_Work {
                 }
             #endregion Stop Autologon
 
+            #Stop Auto Launch 
+            If (Get-Service -DisplayName LANDesk*,Managed*) {
+                try {
+                    $TaskService = New-Object -ComObject "Schedule.Service"
+                }
+                catch [Management.Automation.PSArgumentException] {
+                    throw $_
+                }
+                try {
+                    $TaskService.Connect()
+                }
+                catch [Management.Automation.MethodInvocationException] {
+                    Write-Error "Error connecting to '$ComputerName' - '$_'"
+                    return
+                }
+                $rootFolder = $TaskService.GetFolder("\")
+                try {
+                    $Task=($rootFolder.GetTasks(0)| Where-Object  {([xml]$_.xml).Task.Actions.Exec.Command -contains $MyInvocation.MyCommand.Name})
+                    #$taskDefinition = ( $rootFolder.GetTasks(0)| Where-Object  {$_.name -eq $taskName} ).Definition
+                    Disable-ScheduledTask -TaskName $Task.Name
+                }
+                catch [Management.Automation.MethodInvocationException] {
+                    Write-Error "Scheduled task '$task.Name' not found on '$computerName'."
+                    return
+                }
+            }
             #Reboot after all done.
             If([System.Windows.MessageBox]::Show(('Would you like to Reboot?'),'System Reboot','YesNo','Question') -eq "Yes") {
                     Restart-Computer
@@ -675,13 +928,12 @@ function Start_Work {
         While ($MainpsCmd.Handle.IsCompleted -ne $true) {
             Start-Sleep -Milliseconds 100
             [gc]::collect()
-											 
         }
 
         [gc]::collect()
         $Settings.sw.Stop()
         [gc]::collect()
-        $Settings.Store_Setup.text = ( $Settings.WindowTitle + " Done. Time: " + (FormatElapsedTime($Settings.sw.Elapsed)) ) 
+        $Settings.Store_Setup.text = ( $Settings.WindowTitle + " Done. Time: " + (Format-ElapsedTime($Settings.sw.Elapsed)) ) 
         $MainpsCmd.Powershell.EndInvoke($MainpsCmd.Handle)
         [gc]::collect()
         $Settings.Stop.Text = "Exit"
@@ -714,6 +966,11 @@ function Stop_Work {
         [void]$Settings.Store_Setup.Close()
     }
 }
+
+function Update-IPForm {
+    $Settings.IP_Address.Text = ($Settings.Network_Adapter_List | Where-object {$_.Description -eq $Settings.Network_Adapter.SelectedItem}).IPAddress
+    $Settings.IP_Address.Refresh()    
+}
 #############################################################################
 #endregion Functions
 #############################################################################
@@ -728,7 +985,85 @@ Add-Type -AssemblyName PresentationCore,PresentationFramework
 Add-Type -AssemblyName System.Windows.Forms
 #Password Generation
 Add-Type -AssemblyName System.web
+#region BIOS update
+    #Get Model Info
+    $SysInfo = Get-CimInstance -ClassName Win32_ComputerSystem
+    #Get BIOS Info
+    $SysBIOS = Get-CimInstance -ClassName win32_bios
+    $Temp = $SysBIOS.SMBIOSBIOSVersion -split " "
+    $BIOSSystemVersion = [int64]($Temp[$Temp.count - 1] -replace  "\D+")
+    #Enum Model
+    Switch -Wildcard ($SysInfo.Model) {
+        "HP t620*" {
+            $BIOSFolder = (Get-ChildItem -Directory -Path (Split-Path -Parent -Path $MyInvocation.MyCommand.Definition)  -Filter "*BIOS*HP t620*" | Select-Object -Last 1)
+        }
+        "HP t630*" {
+            $BIOSFolder = (Get-ChildItem -Directory -Path (Split-Path -Parent -Path $MyInvocation.MyCommand.Definition)  -Filter "*BIOS*HP t630*" | Select-Object -Last 1) 
+        } 
+        Default {
+            #"No matches"
+        }       
+    }
 
+    #Collect Info
+    If ($BIOSFolder) {
+        $BIOSInstallers = $BIOSFolder| Get-ChildItem -File -Filter *.exe
+        $BIOSBin = $BIOSFolder| Get-ChildItem -File -Filter *.bin | Select-Object -Last 1
+        $BIOSVersion = [int]($BIOSBin.Name -split "_" -replace ".bin" -replace  "\D+" | Select-Object -Last 1)
+        If ($BIOSSystemVersion -lt $BIOSVersion) {
+            #Installer type
+            If ($SysInfo.SystemType -match "x64") {
+                $BIOSInstaller = $BIOSInstallers | Where-Object {$_.Name -match "X64"} | Select-Object -Last 1
+            } else {
+                $BIOSInstaller = $BIOSInstallers | Where-Object {$_.Name -notmatch "X64"} | Select-Object -Last 1
+            }
+            #Ask to Install update.
+            If ($BIOSInstaller) {
+                If([System.Windows.MessageBox]::Show(('Would you like to update BIOS from: '+ $BIOSSystemVersion + " to: " + $BIOSVersion + "?"),'BIOS Update','YesNo','Question') -eq "Yes") {
+                    #Update BIOS
+                    Start-Process -FilePath ($BIOSInstaller.FullName) -ArgumentList $BIOSBin.Name -WorkingDirectory (Split-Path -Parent -Path $BIOSBin.FullName) -Wait
+                    #Reboot Maching after install is done.
+                    If([System.Windows.MessageBox]::Show(('Would you like to Reboot?'),'System Reboot','YesNo','Question') -eq "Yes") {
+                        Restart-Computer
+                    }
+                }
+            }
+        }
+    }
+#endregion BIOS update
+
+#region Landesk Agent Install
+    #Test for LanDesk Servcies
+    If (-Not (Get-Service -DisplayName LANDesk*,Managed*,Ivanti* -ErrorAction SilentlyContinue)) {
+        #Find LanDesk Installer
+        $LanDeskInstaller = Get-ChildItem -Path (Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) -Recurse -Filter "EPMAgentInstaller.exe" | Select-Object -First 1
+        If ($LanDeskInstaller) {
+            If([System.Windows.MessageBox]::Show(('Would you like install: '+ (Split-Path -Leaf -Path (Split-Path -Parent -Path $LanDeskInstaller.FullName)) + "?"),'Ivanti Agent Install','YesNo','Question') -eq "Yes") {
+                #Install Agent
+                Start-Process -FilePath ($LanDeskInstaller.FullNameName) -Wait
+
+                If ($Settings.RDMEPMURL -and (-Not (Test-Path -Path "${env:ProgramFiles(x86)}\Ria Money Transfer\Ria Device Manager Center"))) {
+                    If([System.Windows.MessageBox]::Show(('Would you like install: Ria Money Transfer?'),'Ria Money Transfer Install','YesNo','Question') -eq "Yes") {
+                        #Download RDM Installer from EPM
+                        Copy-WebFolder -source ($Settings.RDMEPMURL) -destination ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "/RDM_AIO_Install/") -recursive
+                        #Install RDM
+                        Start-Process -FilePath (((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "/RDM_AIO_Install/RDM_AIO_Install.bat"))  -Wait
+                    }
+                }
+                #Reboot Maching after install is done.
+                If([System.Windows.MessageBox]::Show(('Would you like to Reboot?'),'System Reboot','YesNo','Question') -eq "Yes") {
+                    #Disable RDP
+                    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections' 1 "DWORD"
+                    Restart-Computer
+                    break
+                }else {
+                    #Disable RDP
+                    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections' 1 "DWORD"
+                }
+            }
+        }
+    }
+#endregion Landesk Agent Install
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $Settings.Store_Setup                     = New-Object system.Windows.Forms.Form
@@ -741,6 +1076,7 @@ If ($iconBase64) {
     $iconBytes       = [Convert]::FromBase64String($iconBase64)
     $stream          = New-Object IO.MemoryStream($iconBytes, 0, $iconBytes.Length)
     $stream.Write($iconBytes, 0, $iconBytes.Length);
+    $iconImage       = [System.Drawing.Image]::FromStream($stream, $true)
     $Settings.Store_Setup.icon       = [System.Drawing.Icon]::FromHandle((New-Object System.Drawing.Bitmap -Argument $stream).GetHIcon())
 }
 
@@ -790,9 +1126,9 @@ $Settings.Machine_Name.text               = $env:computername
 
 
 If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
-    $Settings.Network_Adapter_List = Get-CimInstance -Class Win32_NetworkAdapterConfiguration -Filter 'IPEnabled = True' | Where-object {$_.IPaddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1"} | Select-Object Description,IPAddress,DefaultIPGateway,IPSubnet,DNSServerSearchOrder
+    $Settings.Network_Adapter_List = Get-CimInstance -Class Win32_NetworkAdapterConfiguration -Filter 'IPEnabled = True' | Where-object {$_.IPaddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1" -and $_.IPaddress -notlike '*:*' -and $_.Description -notmatch "Hyper-V|VMnet1|VMnet8" } | Select-Object Description,IPAddress,DefaultIPGateway,IPSubnet,DNSServerSearchOrder,IPSubnet
 } Else {
-    $Settings.Network_Adapter_List = Get-WmiObject -Class Win32_NetworkAdapterConfiguration -Filter 'IPEnabled = True' | Where-object {$_.IPaddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1"} | Select-Object Description,IPAddress,DefaultIPGateway,IPSubnet,DNSServerSearchOrder
+    $Settings.Network_Adapter_List = Get-WmiObject -Class Win32_NetworkAdapterConfiguration -Filter 'IPEnabled = True' | Where-object {$_.IPaddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1" -and $_.IPaddress -notlike '*:*' -and $_.Description -notmatch "Hyper-V|VMnet1|VMnet8"} | Select-Object Description,IPAddress,DefaultIPGateway,IPSubnet,DNSServerSearchOrder,IPSubnet
 } 
 
 $Settings.IP_Address_Label                = New-Object system.Windows.Forms.Label
@@ -809,22 +1145,42 @@ $Settings.IP_Address.width                = 180
 $Settings.IP_Address.height               = 20
 $Settings.IP_Address.location             = New-Object System.Drawing.Point(125,65)
 $Settings.IP_Address.Font                 = 'Microsoft Sans Serif,10'
-$Settings.IP_Address.Text                 = ($Settings.Network_Adapter_List | Select-Object -first 1).IPAddress | Where-Object {$_ -notlike '*:*'}
+$Settings.IP_Address.Text                 = ($Settings.Network_Adapter_List | Select-Object -first 1).IPAddress
 # $Settings.IP_Address.Enabled              = $false
+
+$Settings.IP_Subnet_Label                = New-Object system.Windows.Forms.Label
+$Settings.IP_Subnet_Label.text           = "IP Subnet mask:"
+$Settings.IP_Subnet_Label.AutoSize       = $true
+$Settings.IP_Subnet_Label.width          = 25
+$Settings.IP_Subnet_Label.height         = 10
+$Settings.IP_Subnet_Label.location       = New-Object System.Drawing.Point(10,90)
+$Settings.IP_Subnet_Label.Font           = 'Microsoft Sans Serif,10'
+
+$Settings.IP_Subnet                      = New-Object system.Windows.Forms.TextBox
+$Settings.IP_Subnet.multiline            = $false
+$Settings.IP_Subnet.width                = 180
+$Settings.IP_Subnet.height               = 20
+$Settings.IP_Subnet.location             = New-Object System.Drawing.Point(125,90)
+$Settings.IP_Subnet.Font                 = 'Microsoft Sans Serif,10'
+if (($Settings.Network_Adapter_List | Select-Object -first 1).IPSubnet){
+    $Settings.IP_Subnet.Text                 = ($Settings.Network_Adapter_List | Select-Object -first 1).IPSubnet
+}Else{
+    $Settings.IP_Subnet.Text                 = $Settings.Subnet
+}
 
 $Settings.Network_Adapter_Label                = New-Object system.Windows.Forms.Label
 $Settings.Network_Adapter_Label.text           = "Network Adapter:"
 $Settings.Network_Adapter_Label.AutoSize       = $true
 $Settings.Network_Adapter_Label.width          = 25
 $Settings.Network_Adapter_Label.height         = 10
-$Settings.Network_Adapter_Label.location       = New-Object System.Drawing.Point(10,95)
+$Settings.Network_Adapter_Label.location       = New-Object System.Drawing.Point(10,120)
 $Settings.Network_Adapter_Label.Font           = 'Microsoft Sans Serif,10'
 
 $Settings.Network_Adapter                       = New-Object system.Windows.Forms.ComboBox
 #$Settings.Network_Adapter.text                  = " "
 $Settings.Network_Adapter.width                 = 265
 $Settings.Network_Adapter.height                = 20
-$Settings.Network_Adapter.location              = New-Object System.Drawing.Point(125,95)
+$Settings.Network_Adapter.location              = New-Object System.Drawing.Point(125,120)
 $Settings.Network_Adapter.Font                  = 'Microsoft Sans Serif,10'
 
 
@@ -833,14 +1189,14 @@ $Settings.WindowLogonUser_Label.text           = "Window User:"
 $Settings.WindowLogonUser_Label.AutoSize       = $true
 $Settings.WindowLogonUser_Label.width          = 25
 $Settings.WindowLogonUser_Label.height         = 10
-$Settings.WindowLogonUser_Label.location       = New-Object System.Drawing.Point(10,125)
+$Settings.WindowLogonUser_Label.location       = New-Object System.Drawing.Point(10,145)
 $Settings.WindowLogonUser_Label.Font           = 'Microsoft Sans Serif,10'
 
 $Settings.WindowLogonUser                       = New-Object system.Windows.Forms.ComboBox
 $Settings.WindowLogonUser.text                  = " "
 $Settings.WindowLogonUser.width                 = 265
 $Settings.WindowLogonUser.height                = 20
-$Settings.WindowLogonUser.location              = New-Object System.Drawing.Point(125,125)
+$Settings.WindowLogonUser.location              = New-Object System.Drawing.Point(125,145)
 $Settings.WindowLogonUser.Font                  = 'Microsoft Sans Serif,10'
 
 
@@ -848,13 +1204,13 @@ $Settings.Manager                      = New-Object System.Windows.Forms.Checkbo
 $Settings.Manager.Text                 = "Manager"
 $Settings.Manager.width                = 180
 $Settings.Manager.height               = 20
-$Settings.Manager.Location             = New-Object System.Drawing.Size(125,150) 
+$Settings.Manager.Location             = New-Object System.Drawing.Size(125,170) 
 $Settings.Manager.Font                 = 'Microsoft Sans Serif,10'
 $Settings.Manager.Checked              = $False
 
 
 $Settings.FBackup = New-Object System.Windows.Forms.GroupBox #create the group box
-$Settings.FBackup.Location = New-Object System.Drawing.Size(10,170) #location of the group box (px) in relation to the primary window's edges (length, height)
+$Settings.FBackup.Location = New-Object System.Drawing.Size(10,185) #location of the group box (px) in relation to the primary window's edges (length, height)
 $Settings.FBackup.size = New-Object System.Drawing.Size(375,70) #the size in px of the group box (length, height)
 $Settings.FBackup.text = "Restore:" #labeling the box
 $Settings.FBackup.Enabled = $false
@@ -897,7 +1253,7 @@ $Settings.Start.location                = New-Object System.Drawing.Point(320,27
 $Settings.Start.Font                    = 'Microsoft Sans Serif,10'
 # $Settings.Start.Enabled                 = $false
 
-$Settings.Store_Setup.controls.AddRange(@($Settings.Machine_Name_Label,$Settings.IP_Address_Label,$Settings.Machine_Name,$Settings.IP_Address,$Settings.Network_Adapter_Label,$Settings.Network_Adapter,$Settings.Restore_Backup,$Settings.Start,$Settings.Stop,$Settings.Restore_Backup_Label,$Settings.Browse,$Settings.WindowLogonUser_Label,$Settings.WindowLogonUser,$Settings.Manager,$Settings.FBackup))
+$Settings.Store_Setup.controls.AddRange(@($Settings.Machine_Name_Label,$Settings.IP_Address_Label,$Settings.IP_Subnet_Label,$Settings.IP_Subnet,$Settings.Machine_Name,$Settings.IP_Address,$Settings.Network_Adapter_Label,$Settings.Network_Adapter,$Settings.Restore_Backup,$Settings.Start,$Settings.Stop,$Settings.Restore_Backup_Label,$Settings.Browse,$Settings.WindowLogonUser_Label,$Settings.WindowLogonUser,$Settings.Manager,$Settings.FBackup))
 
 
 #############################################################################
@@ -910,6 +1266,7 @@ $Settings.Store_Setup.controls.AddRange(@($Settings.Machine_Name_Label,$Settings
 $Settings.Browse.Add_Click({ Browse_File })
 $Settings.Start.Add_Click({ Start_Work })
 $Settings.Stop.Add_Click({ Stop_Work })
+$Settings.Network_Adapter.Add_SelectedIndexChanged({ Update-IPForm })
 #$Settings.WindowLogonUser.Add_SelectedIndexChanged({  })
 
 ForEach ( $LocalUser in ((Get-LocalUser).name | Sort-Object {"$_" -replace '\d',''},{("$_" -replace '\D','') -as [int]})) {
@@ -934,13 +1291,17 @@ ForEach ( $NIC in $Settings.Network_Adapter_List) {
     }
 }
 
-If ($Settings.Network_Adapter.SelectionLength -ge 0) {
-    $Settings.Network_Adapter.SelectedIndex = 0
+If ($Settings.Network_Adapter.Items.Count -ge 0) {
+    If (($Settings.Network_Adapter_List | Where-object {$_.IPAddress -eq $Settings.IP_Address.Text}).InterfaceAlias){
+        $Settings.Network_Adapter.SelectedItem =  ($Settings.Network_Adapter_List | Where-object {$_.IPAddress -eq $Settings.IP_Address.Text}).InterfaceAlias
+    }Else{
+        $Settings.Network_Adapter.SelectedItem =  ($Settings.Network_Adapter_List | Where-object {$_.IPAddress -eq $Settings.IP_Address.Text}).Description
+    }
 }
-
 
 [void]$Settings.Store_Setup.ShowDialog()
 
 #############################################################################
 #endregion Main
 #############################################################################
+
