@@ -1,7 +1,7 @@
-<# 
+﻿<# 
 .SYNOPSIS
     Name: Exchange_Export_Disabled_Mailboxes.ps1
-    Disabled User MailBox Export
+    Exports user mailboxes and then disables exchange object. 
 
 .DESCRIPTION
 	*Find All Disabled Users in Active Directory
@@ -25,6 +25,21 @@
 	Only shows who would be exported. 
 .PARAMETER Wait
     Time to wait for PST export.
+.PARAMETER Priority
+	Set the priority of export.
+.PARAMETER SplitYear
+	Split PST by Years.
+.PARAMETER Reverse
+	Sort user in reverse order.
+.PARAMETER IgnorePermissions
+	Ignore extra permissions on mailbox.
+.PARAMETER MaxItems
+	Max items in one folder before splitting into yearly .pst files.
+.PARAMETER MaxMailboxSize
+	Max Mailbox size before splitting into yearly .pst files.
+.PARAMETER ExcludeUsers
+	Users to exclude from export.
+
 .EXAMPLE
    & Exchange_Export_Disabled_Mailboxes.ps1 -Archive \\remoteserver\share
 
@@ -53,14 +68,20 @@
 	1.0.20 - Fixed bug where splityear and disabled would disable the mailbox only after one year was exported. 
 	1.0.21 - Fixed Progress display for split years. 
 	1.0.22 - Fixed bug introduced by Exchange 2016 CU22. Added switch and logic to disable Litigation Hold. Clean up calling function logic.
-	1.0.23 - Fixed issue where Job status would not work on Exchange 2010. Using ReqestGuid to monitor job now. Also added logic to identify exchange versions and use different commands.
+	1.0.23 - Fixed issue where Job status would not work on Exchange 2010. Using RequestGuid to monitor job now. Also added logic to identify exchange versions and use different commands.
 	1.0.24 - Added logic to handle Online Archive export. 
 	1.0.25 - Fixed issue with -ExportedDisable
 	1.0.26 - Saving PSTs to <username>\Outlook Mail sub-folders now.
+	1.0.27 - Removed other account types for exporting.
+	1.0.28 - Force Mailboxes to be disabled when exporting. Fixed issue when no mailboxes are passthough to get all the correctly disabled mailboxes.
+	1.0.29 - Fixed issue where mailbox was disabled before job was cleaned up. 
+	1.0.30 - Provide count of skipped users. 
+	1.0.31 - Clean up errors on screen.
+	1.0.32 - Fix issue with connecting to exchange server.
 #>
 PARAM (
-    [Parameter(Mandatory=$false,HelpMessage="Folder path to Archived homedrive.")][string]$Archive = "\\github.com\MailBox_Export",
-    [Parameter(Mandatory=$false,HelpMessage="Exchange Server.")][string]$Server = "mail.github.com",
+    [Parameter(Mandatory=$false,HelpMessage="Folder path to Archived homedrive.")][string]$Archive = "\\fs.github.com\MailBox_Export",
+    [Parameter(Mandatory=$false,HelpMessage="Exchange Server.")][string]$Server = "owa.github.com",
     [Parameter(Mandatory=$false,HelpMessage="User to samAccountName to export.")][string[]]$MailBox,
     [Parameter(Mandatory=$false,HelpMessage="Disable mailbox. (Remove from Outlook)")][switch]$Disable,
     [Parameter(Mandatory=$false,HelpMessage="Export Online Archive")][switch]$OnlineArchive=$true,
@@ -80,15 +101,18 @@ PARAM (
 		($env:USERDOMAIN + "\Organization Management"),
 		($env:USERDOMAIN + "\Exchange Servers"),
 		($env:USERDOMAIN + "\Exchange Domain Servers"),
+		($env:USERDOMAIN + "\Exchange Services"),
+		($env:USERDOMAIN + "\Exchange Trusted Subsystem"),
 		($env:USERDOMAIN + "\Administrators"),
 		"NT AUTHORITY\SYSTEM",
 		"NT AUTHORITY\SELF"
+
 	)
 )
-$ScriptVersion = "1.0.26"
+$ScriptVersion = "1.0.32"
 #Requires -Version 5.1 -PSEdition Desktop -Assembly System.DirectoryServices.AccountManagement
 
-#relauch script if running with powershell lower then 5.1
+#relaunch script if running with powershell lower then 5.1
 # if ($PSVersionTable.PSVersion -lt [Version]"5.1") {
 # 	# Re-launch as version 5 if we're not already
 #     $params = ($PSBoundParameters.GetEnumerator() | ForEach-Object {"-{0} {1}" -f $_.Key,$_.Value}) -join " "
@@ -112,6 +136,7 @@ $TestOnlyOut = @()
 $DisabledAccounts = @()
 $CurrentYear = (get-date).year
 $ObjUser = $null
+$skipped = 0 
 #############################################################################
 #endregion User Variables$
 #############################################################################
@@ -139,15 +164,30 @@ If (-Not [string]::IsNullOrEmpty($LogFile)) {
 	Write-Host (" ")
 }		
 
-##Load Active Directory Module
-# Load AD PSSnapins
-# If ((Get-Module | Where-Object {$_.Name -Match "ActiveDirectory"}).Count -eq 0 ) {
-# 	Write-Host ("Loading Active Directory Plugins") -foregroundcolor "Green"
-# 	Import-Module "ActiveDirectory"  -ErrorAction SilentlyContinue
-# } Else {
-# 	Write-Host ("Active Directory Plug-ins Already Loaded") -foregroundcolor "Green"
-# }
-
+#region Load AD Module
+If (Get-Module -ListAvailable -Name "ActiveDirectory") {
+	If (-Not (Get-Module "ActiveDirectory" -ErrorAction SilentlyContinue)) {
+		Import-Module "ActiveDirectory"
+	} Else {
+		#write-host "ActiveDirectory PowerShell Module Already Loaded"
+	}
+} Else {
+	If (Get-WindowsCapability -Name "RSAT.ActiveDirectory*" -Online | Where-Object {$_.State -ne "Installed"}){
+		#write-host "Installing ActiveDirectory PowerShell Module!"
+		Get-WindowsCapability -Name "RSAT.ActiveDirectory*" -Online | Where-Object {$_.State -ne "Installed"} | Add-WindowsCapability -Online 
+		Import-Module "ActiveDirectory"
+	} Else {
+		If (Get-WindowsFeature "RSAT-AD-PowerShell" -ErrorAction SilentlyContinue) {
+		#write-host "Installing ActiveDirectory PowerShell Module!"
+		Install-WindowsFeature "RSAT-AD-PowerShell"
+		Import-Module "ActiveDirectory"
+		}Else{
+			[System.Windows.Forms.MessageBox]::Show("Please install ActiveDirectory Powershell Modules" , "Error")
+			exit
+		}
+	}
+}
+#endregion Load AD Module
 #region ignore any SSL Warning 
 ## Choose to ignore any SSL Warning issues caused by Self Signed Certificates  
 
@@ -192,7 +232,11 @@ If ((Get-PSSession | Where-Object { $_.ConfigurationName -Match "Microsoft.Excha
 		. $env:ExchangeInstallPath\bin\RemoteExchange.ps1
 		Connect-ExchangeServer -auto -AllowClobber
 	} else {
-		$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$Server/PowerShell/ -Authentication Kerberos
+		Try {
+			$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri http://$Server/PowerShell/ -Authentication Kerberos -AllowRedirection 
+		}Catch{
+			$ERPSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://$Server/PowerShell/ -Authentication Kerberos -AllowRedirection 
+		}
 		Import-PSSession $ERPSession -AllowClobber
 	}
 } Else {
@@ -214,7 +258,7 @@ If ($MailBox) {
 	#Allows for multiple mailbox input
 	ForEach ($CM in $Mailbox) {
 		Try {
-			$ObjUser = Get-User -Identity $CM -ResultSize Unlimited -ErrorAction SilentlyContinue
+			$ObjUser = Get-User -Identity $CM -ResultSize Unlimited -ErrorAction SilentlyContinue | Where-Object {$_.UseraccountControl -like "*accountdisabled*"}
 		}
 		Catch {
 			$ObjUser = $null
@@ -228,15 +272,21 @@ If ($MailBox) {
 	}
 } else {
 	If ($Reverse) {
+		# $ADDisabledAccounts = Get-ADUser -Filter "Enabled -eq 'False' -and employeeType -ne '*'" -Properties employeeType
+		$ADDisabledAccountsUPN = ((Get-ADUser -Filter "Enabled -eq 'False'" -Properties employeeType,msExchMailboxGuid).where({[string]::IsNullOrWhiteSpace($_.employeeType) -and (-Not[string]::IsNullOrWhiteSpace($_.msExchMailboxGuid)) -and (-Not[string]::IsNullOrWhiteSpace($_.UserPrincipalName))}) | Select-Object UserPrincipalName).UserPrincipalName
 		#Get All Disabled accounts in Exchange
 		Write-Host ("Getting Disabled in Reverse order Accounts. Please wait . . .")
-		$DisabledAccounts += Get-User -RecipientTypeDetails UserMailbox -ResultSize Unlimited | Where-Object {$_.UseraccountControl -like "*accountdisabled*"} | Sort-Object -Descending -Property SamAccountName
+		$DisabledAccounts += Get-User -RecipientTypeDetails UserMailbox -ResultSize Unlimited | Where-Object {$_.UseraccountControl -like "*accountdisabled*" -and $_.UserPrincipalName -in $ADDisabledAccountsUPN} | Sort-Object -Descending -Property SamAccountName
+		
 	}Else{
+		# $ADDisabledAccounts = Get-ADUser -Filter "Enabled -eq 'False' -and employeeType -ne '*'" -Properties employeeType
+		$ADDisabledAccountsUPN = ((Get-ADUser -Filter "Enabled -eq 'False'" -Properties employeeType,msExchMailboxGuid).where({[string]::IsNullOrWhiteSpace($_.employeeType) -and (-Not[string]::IsNullOrWhiteSpace($_.msExchMailboxGuid)) -and (-Not[string]::IsNullOrWhiteSpace($_.UserPrincipalName))}) | Select-Object UserPrincipalName).UserPrincipalName
 		#Get All Disabled accounts in Exchange
 		Write-Host ("Getting Disabled Accounts. Please wait . . .")
-		$DisabledAccounts += Get-User -RecipientTypeDetails UserMailbox -ResultSize Unlimited | Where-Object {$_.UseraccountControl -like "*accountdisabled*"} | Sort-Object -Property SamAccountName
+		$DisabledAccounts += Get-User -RecipientTypeDetails UserMailbox -ResultSize Unlimited | Where-Object {$_.UseraccountControl -like "*accountdisabled*" -and $_.UserPrincipalName -in $ADDisabledAccountsUPN} | Sort-Object -Property SamAccountName
 	}
 }
+
 #############################################################################
 #endregion Setup Sessions
 #############################################################################
@@ -313,11 +363,11 @@ Function Export-Mail {
 	}
 	If ($ObjUser){
 		If ($ObjUser.RecipientType -eq "UserMailbox" ) {
-			$CurrentMailBox = $ObjUser | Get-Mailbox
+			$CurrentMailBox = $ObjUser | Get-Mailbox -WarningAction SilentlyContinue -ErrorAction SilentlyContinue 
 			If ($DisableLitigationHold -and ($CurrentMailBox.LitigationHoldEnabled -eq "True" -or $CurrentMailBox.LitigationHoldEnabled)) {
-				Set-Mailbox -Identity  $ObjUser.SamAccountName -LitigationHoldEnabled:$false
+				Set-Mailbox -Identity  $ObjUser.SamAccountName -LitigationHoldEnabled:$false -WarningAction Ignore -ErrorAction Ignore
 			}
-			$CMExport = (Get-MailboxExportRequest | Where-Object { $_.Mailbox -eq $CurrentMailBox.Identity})
+			$CMExport = (Get-MailboxExportRequest -WarningAction SilentlyContinue -ErrorAction SilentlyContinue | Where-Object { $_.Mailbox -eq $CurrentMailBox.Identity})
 			If ($year) {
 				If ($CMExport | Where-Object { $_.Name -eq ("Export_" + $ObjUser.SamAccountName + "_" + $Year)}) {
 					$CMExportBad = $true
@@ -395,7 +445,7 @@ Function Export-Mail {
 				}
 				If($SkiptoOnlineArchive -eq $false){
 					#Test to see of MAPI is enabled
-					if (-Not (Get-CASMailbox -Identity $ObjUser.SamAccountName).MapiEnabled) {
+					if (-Not (Get-CASMailbox -Identity $ObjUser.SamAccountName -WarningAction SilentlyContinue -ErrorAction SilentlyContinue ).MapiEnabled) {
 						#Enable MAPI
 						Set-CASMailbox -Identity $ObjUser.SamAccountName -MAPIEnabled $true
 						[System.GC]::Collect()
@@ -539,16 +589,19 @@ Function Export-Mail {
 					}
 				}
 				If ($ExportJobStatusName) {
-					$ExportMailBoxList = $ExportJobStatusName | Get-MailboxExportRequest
+					$ExportMailBoxList = $ExportJobStatusName | Get-MailboxExportRequest -WarningAction SilentlyContinue -ErrorAction SilentlyContinue 
 				}
 				If (!$ExportMailBoxList) {
 					#Check for Completion status
-					$ExportMailBoxList = Get-MailboxExportRequest | Where-Object { $_.Mailbox -eq $CurrentMailBox.Identity -And ($_.status -in $BadStatuses -or $_.Status -eq "Completed" -or $_.status.value -in $BadStatuses -or $_.Status.value -eq "Completed")}
+					$ExportMailBoxList = Get-MailboxExportRequest -WarningAction SilentlyContinue -ErrorAction SilentlyContinue | Where-Object { $_.Mailbox -eq $CurrentMailBox.Identity -And ($_.status -in $BadStatuses -or $_.Status -eq "Completed" -or $_.status.value -in $BadStatuses -or $_.Status.value -eq "Completed")}
 				}
 				If ($ExportMailBoxList.status -eq "Completed" -or $ExportMailBoxList.status.value -eq "Completed") {
-					#Remove Exchange account of PST was successful. 
+					#Remove MailboxExport job
+					Write-Host ("`t`t Removing MailboxExport job from Exchange: " + $CurrentMailBox.Identity)
+					$ExportMailBoxList | Remove-MailboxExportRequest -Confirm:$false -WarningAction SilentlyContinue -ErrorAction SilentlyContinue 
 					#Disable MAPI unless it was already enabled
-					Set-CASMailbox -Identity $ObjUser.SamAccountName -MAPIEnabled $MapiEnabled
+					Set-CASMailbox -Identity $ObjUser.SamAccountName -MAPIEnabled $MapiEnabled -WarningAction SilentlyContinue -ErrorAction SilentlyContinue 
+					#Remove Exchange account of PST was successful. 
 					If ($year) {
 						If ($Disable -and $year -eq (get-date).year) {
 							Write-Host ("`t`t Removing Mailbox from Exchange: " + $CurrentMailBox.Identity)
@@ -560,8 +613,6 @@ Function Export-Mail {
 							Disable-Mailbox -Identity $ObjUser.SamAccountName -confirm:$false
 						}
 					}
-					Write-Host ("`t`t Removing MailboxExport job from Exchange: " + $CurrentMailBox.Identity)
-					$ExportMailBoxList | Remove-MailboxExportRequest -Confirm:$false
 				}
 				#Stop if PST Export failed.
 				If ($ExportMailBoxList.status -in $BadStatuses -or $ExportMailBoxList.status.value -in $BadStatuses) {
@@ -574,8 +625,8 @@ Function Export-Mail {
 			$CurrentMailBoxArchive = $null
 			$CMExport = $null
 			If ($OnlineArchive){
-				If(($null -ne ($ObjUser | Get-Mailbox -Archive -ErrorAction SilentlyContinue))){
-					$CurrentMailBoxArchive = $ObjUser | Get-Mailbox -Archive
+				$CurrentMailBoxArchive = $ObjUser | Get-Mailbox -Archive -WarningAction SilentlyContinue -ErrorAction SilentlyContinue 
+				If(($null -ne ($CurrentMailBoxArchive))){
 					If ($DisableLitigationHold -and ($CurrentMailBoxArchive.LitigationHoldEnabled -eq "True" -or $CurrentMailBoxArchive.LitigationHoldEnabled)) {
 						Set-Mailbox -Identity  $ObjUser.SamAccountName -LitigationHoldEnabled:$false
 					}
@@ -599,7 +650,7 @@ Function Export-Mail {
 							#Test Archive Folder
 							If (-Not (Test-Path "PSHome:\") -or (Get-PSdrive -name "PSHome").root -ne $Archive) {
 								If (Test-Path "PSHome:\") {
-									Remove-PSDrive -Name "PSHome"
+									Remove-PSDrive -Name "PSHome" 
 								}
 								New-PSDrive -Name "PSHome" -PSProvider FileSystem -Root  $Archive  -Credential $Credential  -ErrorAction SilentlyContinue | Out-Null
 								If (!(Test-Path "PSHome:\")) {
@@ -658,7 +709,7 @@ Function Export-Mail {
 						#Test to see of MAPI is enabled
 						if (-Not (Get-CASMailbox -Identity $ObjUser.SamAccountName).MapiEnabled) {
 							#Enable MAPI
-							Set-CASMailbox -Identity $ObjUser.SamAccountName -MAPIEnabled $true
+							Set-CASMailbox -Identity $ObjUser.SamAccountName -MAPIEnabled $true -WarningAction SilentlyContinue -ErrorAction SilentlyContinue 
 							[System.GC]::Collect()
 							Start-Sleep -Seconds 5
 						}else{ 
@@ -804,10 +855,12 @@ Function Export-Mail {
 						$ExportMailBoxList = Get-MailboxExportRequest | Where-Object { $_.Mailbox -eq $CurrentMailBoxArchive.Identity -And ($_.status -in $BadStatuses -or $_.Status -eq "Completed" -or $_.status.value -in $BadStatuses -or $_.Status.value -eq "Completed")}
 					}
 					If ($ExportMailBoxList.status -eq "Completed" -or $ExportMailBoxList.status.value -eq "Completed") {
-						#Remove Exchange account of PST was successful. 
-						
+						#Remove MailboxExport job
+						Write-Host ("`t`t Removing MailboxExport job from Exchange: " + $CurrentMailBoxArchive.Identity)
+						$ExportMailBoxList | Remove-MailboxExportRequest -Confirm:$false						
 						#Disable MAPI unless it was already enabled
 						Set-CASMailbox -Identity $ObjUser.SamAccountName -MAPIEnabled $MapiEnabled
+						#Remove Exchange account of PST was successful. 
 						If ($year) {
 							If ($Disable -and $year -eq (get-date).year) {
 								Write-Host ("`t`t Removing Mailbox from Exchange: " + $CurrentMailBoxArchive.Identity)
@@ -819,8 +872,6 @@ Function Export-Mail {
 								Disable-Mailbox -Identity $ObjUser.SamAccountName -confirm:$false
 							}
 						}
-						Write-Host ("`t`t Removing MailboxExport job from Exchange: " + $CurrentMailBoxArchive.Identity)
-						$ExportMailBoxList | Remove-MailboxExportRequest -Confirm:$false
 					}
 					#Stop if PST Export failed.
 					If ($ExportMailBoxList.status -in $BadStatuses -or $ExportMailBoxList.status.value -in $BadStatuses) {
@@ -864,7 +915,7 @@ ForEach ($DA in $DisabledAccounts) {
     $FixedDAMP = @{}
 	$DAMP = $null
 	$MCount++
-	Write-Progress -Id 0 -Activity $("Processing User: " + $DA.Name ) -status $("User: " + $MCount + " out of " + $TotalUsers ) -percentComplete (($MCount/$TotalUsers)*100) 
+	Write-Progress -Id 0 -Activity $("Processing User: " + $DA.Name ) -status $("User: " + $MCount + " out of " + $TotalUsers + " with " + $skipped + " users skipped." ) -percentComplete (($MCount/$TotalUsers)*100) 
 		Write-Host ("Processing User: " + $DA.Name) -ForegroundColor DarkGray
 	If ($DA.RecipientType -eq "UserMailbox" ) {
 		Try{
@@ -970,6 +1021,7 @@ ForEach ($DA in $DisabledAccounts) {
 				Write-Host ("`tMailBox Permissions Fixed Count: " + $FixedDAMP.count) -ForegroundColor yellow
 				$FixedDAMP | Format-Table -AutoSize
 				$NAtE ++
+				$skipped++
 				#Write Output to CSV
 				If ($TestOnly) {	
 					$CSVFixedDAMP = $null
