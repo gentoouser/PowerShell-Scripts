@@ -9,7 +9,7 @@
     - Desktop
     - Favorites
     - My Pictures
-    - Custom settings
+    - customapp settings
 .PARAMETER 
 
 
@@ -38,6 +38,10 @@
     1.0.16 - Remove Old Agent
     1.0.17 - Add Logic for RDM Installer
     1.0.18 - 20250424 - Look at for Ivanti services to see if EPM agent is installed.
+    1.0.19 - 20250603 - Disable reboot prompt.
+    1.0.20 - 20251021 - Fixed issue with Ivanti EPM installation detection.
+    1.0.21 - 20251210 - Major re-work to set IP Address. Added monitoring of EPM Agent install. 
+    1.0.22 - 20251216 - Readded prompt to install EPM Agent.
 #>
 #Requires -Version 5.1 -PSEdition Desktop
 #Force Starting of Powershell script as Administrator 
@@ -61,14 +65,16 @@ $Settings =[hashtable]::Synchronized(@{})
 # $Settings =@{}
 $SettingsOutput =[hashtable]::Synchronized(@{})
 # $SettingsOutput =@{}
-$Settings.Version = "1.0.18"
+$Settings.Version = "1.0.21"
 $Settings.WindowTitle = ("Store Restore Version: " + $Settings.Version)
 $Settings.tempfolder = ""
-$Settings.CustomAppFolder = "github\Custom"
-$Settings.CustomAppRegKey = "github\Custom"
-$Settings.CustomAppName = "Custom"
+$Settings.EPMFolderItemCount = 25
+$Settings.EPMAgentPath = "${env:ProgramFiles(x86)}\Ivanti\EPM Agent"
+$Settings.CustomAppFolder = "Github\customapp"
+$Settings.CustomAppRegKey = "Github\customapp"
+$Settings.CustomAppName = "customapp"
 $Settings.DNS = @("1.1.1.1","8.8.8.8")
-$Settings.Subnet = "255.255.255.0"
+$Settings.Subnet = "255.255.255.128"
 $Settings.OfficeSubFolder = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "\NEW PC\Microsoft Office 2019 x64")
 $Settings.OfficeActivationScript = ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "Office_2019_Activate.bat")
 $settings.Admin = "admin"
@@ -78,12 +84,9 @@ $Settings.AccountBlacklist = @(
     "DefaultAccount"
     "Guest"
     "WDAGUtilityAccount"
-    "admin"   
 )
 $Settings.AccountDisableBlacklist = @(
         "ASPNET"
-        "cba_anonymous"
-        "admin"
 )
 $Settings.DEVCNames = @(
     "DEV"
@@ -99,7 +102,7 @@ $Settings.WindowLogonUserRegString = "hkcu:\SOFTWARE\Microsoft\Windows NT\Curren
 $Settings.WindowLogonUserReg = (Get-ItemProperty -path $Settings.WindowLogonUserRegString)
 $Settings.USF = (Get-ItemProperty -path "hkcu:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")
 $Settings.UsersProfileFolder = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' -Name "ProfilesDirectory").ProfilesDirectory
-$Settings.RDMEPMURL = "https://github.com/install/"
+$Settings.RDMEPMURL = "https://localwebserver/repository/Packages/RDM_AIO_Install/"
 
 $Settings.BackupFolders =@()
 If (Test-Path (${env:ProgramFiles(x86)} + "\" + $Settings.CustomAppFolder)) {
@@ -113,14 +116,9 @@ $Settings.BackupFolders += $([string]$Settings.USF.Favorites)
 $Settings.BackupFolders += $([string]$Settings.USF."My Pictures")
 $Settings.BackupFolders += $([string]$Settings.USF."{374DE290-123F-4565-9164-39C4925E467B}") #Downloads
 $Settings.BackupFolders += $([string]$Settings.USF.Personal) #My Documents
-#Dev ComputerNames
-$Settings.$DEVCNames = @(
-    "DEV"
-    "TST"
-    "QA"
-)
+
 #region Icon
-$iconBase64 =''
+$iconBase64 = ""
 #endregion Icon
 #############################################################################
 #endregion User Variables
@@ -128,6 +126,17 @@ $iconBase64 =''
 #############################################################################
 #region Functions
 #############################################################################
+function Convert-PrefixLengthToSubnetMask {
+    param (
+    [Parameter(Mandatory = $true)]
+    [ValidateRange(0, 32)]
+    [int]$PrefixLength
+    )
+    # Calculate the subnet mask
+    $mask = ([math]::Pow(2, $PrefixLength) - 1) * [math]::Pow(2, (32 - $PrefixLength))
+    $bytes = [BitConverter]::GetBytes([UInt32]$mask)
+    (($bytes.Count - 1)..0 | ForEach-Object { [String]$bytes[$_] }) -join "."
+}
 function Format-ElapsedTime($ts) {
     #https://stackoverflow.com/questions/3513650/timing-a-commands-execution-in-powershell
 	$elapsedTime = ""
@@ -149,35 +158,112 @@ function Format-ElapsedTime($ts) {
     return $elapsedTime
 }
 function Set-Reg {
-    [CmdletBinding()] 
-    Param 
-    ( 
-        [Parameter(Mandatory=$true,Position=1,HelpMessage="Path to Registry Key")][string]$regPath, 
-        [Parameter(Mandatory=$true,Position=2,HelpMessage="Name of Value")][string]$name,
-        [Parameter(Mandatory=$true,Position=3,HelpMessage="Data for Value")]$value,
-        [Parameter(Mandatory=$true,Position=4,HelpMessage="Type of Value")][ValidateSet("String", "ExpandString","Binary","DWord","MultiString","Qword","Unknown",IgnoreCase =$true)][string]$type 
-    ) 
-    #Source: https://github.com/nichite/chill-out-windows-10/blob/master/chill-out-windows-10.ps1
-    # String: Specifies a null-terminated string. Equivalent to REG_SZ.
-    # ExpandString: Specifies a null-terminated string that contains unexpanded references to environment variables that are expanded when the value is retrieved. Equivalent to REG_EXPAND_SZ.
-    # Binary: Specifies binary data in any form. Equivalent to REG_BINARY.
-    # DWord: Specifies a 32-bit binary number. Equivalent to REG_DWORD.
-    # MultiString: Specifies an array of null-terminated strings terminated by two null characters. Equivalent to REG_MULTI_SZ.
-    # Qword: Specifies a 64-bit binary number. Equivalent to REG_QWORD.
-    # Unknown: Indicates an unsupported registry data type, such as REG_RESOURCE_LIST.
+	<# 
+	.SYNOPSIS
+	Set-Reg is a function to set a registry key and value.
 
-    If(!(Test-Path $regPath)) {
-        New-Item -Path $regPath -Force | Out-Null
-    }
+	.DESCRIPTION
 
-    If($type -eq "Binary" -and $value.GetType().Name -eq "String" -and $value -match ",") {
-        $value = [byte[]]($value -split ",")
-    }
+	.PARAMETER regPath
+	The path to the registry key.
+	.PARAMETER name
+	The name of the registry value.
+	.PARAMETER value
+	The data for the registry value.
+	.PARAMETER type
+	The type of the registry value.
+	Valid values are:
+	 String: Specifies a null-terminated string. Equivalent to REG_SZ.
+	 ExpandString: Specifies a null-terminated string that contains unexpanded references to environment variables that are expanded when the value is retrieved. Equivalent to REG_EXPAND_SZ.
+	 Binary: Specifies binary data in any form. Equivalent to REG_BINARY.
+	 DWord: Specifies a 32-bit binary number. Equivalent to REG_DWORD.
+	 MultiString: Specifies an array of null-terminated strings terminated by two null characters. Equivalent to REG_MULTI_SZ.
+	 Qword: Specifies a 64-bit binary number. Equivalent to REG_QWORD.
+	 Unknown: Indicates an unsupported registry data type, such as REG_RESOURCE_LIST.
+	.PARAMETER comment
+	A comment for the registry value.
 
-    New-ItemProperty -Path $regPath -Name $name -Value $value -PropertyType $type -Force | Out-Null
+	.EXAMPLE
+	Set-Reg -regPath "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -name "Test" -value "C:\test.exe" -type "String" -comment "This is a
+
+	.NOTES
+	Source: https://github.com/nichite/chill-out-windows-10/blob/master/chill-out-windows-10.ps1
+	Modifier: Paul Fuller 
+	Changes:
+		* Version 1.01.00 - Fix $RegBackup null issue and start to track changes.
+
+	#>
+
+	[CmdletBinding()] 
+	Param 
+	( 
+		[Parameter(Mandatory=$true,Position=1,HelpMessage="Path to Registry Key")][string]$regPath, 
+		[Parameter(Mandatory=$true,Position=2,HelpMessage="Name of Value")][string]$name,
+		[Parameter(Mandatory=$true,Position=3,HelpMessage="Data for Value")]$value,
+		[Parameter(Mandatory=$true,Position=4,HelpMessage="Type of Value")][ValidateSet("String", "ExpandString","Binary","DWord","MultiString","Qword","Unknown",IgnoreCase =$true)][string]$type ,
+		[Parameter(Mandatory=$false,Position=5,HelpMessage="Comment value")]$comment
+	) 
+	$key=$null
+	Class BackupRegistry{
+		[String]$Path
+		[String]$Name
+		[String]$Value
+		[String]$Type
+		[String]$Comment
+	}
+	$key = $null
+	$regvalue = $null
+	$regname = $null
+	If(Test-Path $regPath -ErrorAction SilentlyContinue) {
+		$key = Get-Item -Path $regPath
+	}Else{
+		New-Item -Path $regPath -Force | Out-Null
+		$key = Get-Item -Path $regPath
+	}
+	If($type -eq "Binary" -and $value.GetType().Name -eq "String" -and $value -match ",") {
+		$value = [byte[]]($value -split ",")
+	}
+	If ($key.Property.Equals($Name)){
+		If($key.GetValue($Name) -eq $Value) {
+			Write-Verbose ("`Same:" + $regPath + "\" + $name + " = " + $value)
+		}Else {
+			$BackupReg = [BackupRegistry]::new()
+			$BackupReg.Path = $regPath
+			$BackupReg.Name = $name
+			$BackupReg.Value = $value
+			$BackupReg.Type = $type
+			$BackupReg.Comment = $comment
+			If($null -eq $value){
+				Write-Verbose ("`Creating:" + $regPath + "\" + $name + " = " + $value)
+			}Else {
+				Write-Verbose ("`Updating:" + $regPath + "\" + $name + " = " + $value)
+			}
+			$Script:RegBackup.Add($BackupReg) | out-null
+			New-ItemProperty -Path $regPath -Name $name -Value $value -PropertyType $type -Force | Out-Null
+		}
+	}Else{
+		$BackupReg = [BackupRegistry]::new()
+		$BackupReg.Path = $regPath
+		$BackupReg.Name = $name
+		$BackupReg.Value = $value
+		$BackupReg.Type = $type
+		$BackupReg.Comment = $comment
+		If($null -eq $value){
+			Write-Verbose ("`Creating:" + $regPath + "\" + $name + " = " + $value)
+		}Else {
+			Write-Verbose ("`Updating:" + $regPath + "\" + $name + " = " + $value)
+		}
+		if (Get-Variable Regbackup -ErrorAction SilentlyContinue){
+			$Script:RegBackup.Add($BackupReg) | out-null
+		}Else{
+			$Script:RegBackup = New-Object System.Collections.ArrayList
+			$Script:RegBackup.Add($BackupReg) | out-null
+		}
+
+		New-ItemProperty -Path $regPath -Name $name -Value $value -PropertyType $type -Force | Out-Null
+	}
 }
-function Show-Console
-{
+function Show-Console {
     $consolePtr = [Console.Window]::GetConsoleWindow()
     # Hide = 0,
     # ShowNormal = 1,
@@ -194,8 +280,7 @@ function Show-Console
     # ForceMinimized = 11
     [Console.Window]::ShowWindow($consolePtr, 4)
 }
-function Hide-Console
-{
+function Hide-Console {
     $consolePtr = [Console.Window]::GetConsoleWindow()
     #0 hide
     [Console.Window]::ShowWindow($consolePtr, 0)
@@ -684,19 +769,97 @@ function Start_Work {
             }
             #endregion Restore files
             #region Set Machine IP
-            If ($Settings.IP_Address.Text) {
-                If ($Settings.Network_Adapter.SelectedItem.ToString()) {
-                    $Settings.NetworkAddress = [IPAddress] (([IPAddress]$Settings.IP_Address.Text ).Address -band ([IPAddress] $Settings.IP_Subnet.Text  ).Address)
+            If ([string]::IsNullOrEmpty($Settings.IP_Address.Text) -eq $false) {
+                If ([string]::IsNullOrEmpty($Settings.Network_Adapter.SelectedItem.ToString()) -eq $false) {
+                    #Get NetAdapter info
+                    $CurrentNic = $settings.Network_Adapter_List |Where-Object {$_.Description -eq $Settings.Network_Adapter.SelectedItem.ToString()}
+                    #Calculate Network Address and Gateway if Needed
+                    If ([string]::IsNullOrEmpty($CurrentNic.DefaultIPGateway)) {
+                        $Settings.NetworkAddress = [IPAddress] (([IPAddress]$Settings.IP_Address.Text ).Address -band ([IPAddress] $Settings.IP_Subnet.Text  ).Address)
+                        If ([string]::IsNullOrEmpty($Settings.NetworkAddress.IPAddressToString) -eq $false) {
+                            $Settings.NetworkAddressGateway = (Get-IPAddressFromUInt32 -UInt32 ((Get-UInt32FromIPAddress -IPAddress $Settings.NetworkAddress.IpAddressToString) +1)).IPAddressToString
+                        }
+                    }Else {
+                        $Settings.NetworkAddressGateway = [string]$CurrentNic.DefaultIPGateway
+                    }
+                    #Prompt for Gateway if not set
+                    if ([string]::IsNullOrEmpty($Settings.NetworkAddressGateway) -eq $True) {
+                        Add-Type -AssemblyName System.Windows.Forms
+
+                        $form = New-Object System.Windows.Forms.Form
+                        $form.Text = "Enter Network Address Gateway"
+                        $form.Size = New-Object System.Drawing.Size(350,150)
+                        $form.StartPosition = "CenterScreen"
+
+                        $label = New-Object System.Windows.Forms.Label
+                        $label.Text = "Network Address Gateway:"
+                        $label.AutoSize = $true
+                        $label.Location = New-Object System.Drawing.Point(10,20)
+                        $form.Controls.Add($label)
+
+                        $textBox = New-Object System.Windows.Forms.TextBox
+                        $textBox.Size = New-Object System.Drawing.Size(200,20)
+                        $textBox.Location = New-Object System.Drawing.Point(160,18)
+                        $textBox.Text = $Settings.NetworkAddressGateway
+                        $form.Controls.Add($textBox)
+
+                        $okButton = New-Object System.Windows.Forms.Button
+                        $okButton.Text = "OK"
+                        $okButton.Location = New-Object System.Drawing.Point(100,60)
+                        $okButton.Add_Click({
+                            $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+                            $form.Close()
+                        })
+                        $form.Controls.Add($okButton)
+
+                        $cancelButton = New-Object System.Windows.Forms.Button
+                        $cancelButton.Text = "Cancel"
+                        $cancelButton.Location = New-Object System.Drawing.Point(180,60)
+                        $cancelButton.Add_Click({
+                            $form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+                            $form.Close()
+                        })
+                        $form.Controls.Add($cancelButton)
+
+                        if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                            $Settings.NetworkAddressGateway = $textBox.Text
+                        }
+                    }
+
+                    #Set IP Address,Gateway,DNS
+                    If (Get-Command New-NetIPAddress -errorAction SilentlyContinue) {
+                        If ($CurrentNic.DHCPEnabled) {
+                            New-NetIPAddress -IPAddress $Settings.IP_Address.Text -PrefixLength (Convert-SubnetMask $Settings.IP_Subnet.Text) -DefaultGateway $Settings.NetworkAddressGateway -InterfaceIndex $CurrentNic.InterfaceIndex
+                            Set-DnsClientServerAddress -InterfaceIndex $CurrentNic.InterfaceIndex -ServerAddresses ([string]$Settings.DNS -join ",")
+                        }Else {
+                            Set-NetIPAddress -IPAddress $Settings.IP_Address.Text -PrefixLength (Convert-SubnetMask $Settings.IP_Subnet.Text) -DefaultGateway $Settings.NetworkAddressGateway -InterfaceIndex $CurrentNic.InterfaceIndex
+                        }
+
+                    }Else{
+                        If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
+                            $wmi = Get-CimInstance win32_networkadapterconfiguration -filter ("Description = '" + $Settings.Network_Adapter.SelectedItem.ToString() + "'")
+                        } Else {
+                            $wmi = Get-WmiObject win32_networkadapterconfiguration -filter ("Description = '" + $Settings.Network_Adapter.SelectedItem.ToString() + "'")
+                        } 
+                        #Only change IP if it is different.
+                        If (( $wmi.ipaddress | Where-object {$_.IPaddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1"}) -ne $Settings.IP_Address.Text) {
+                            $wmi.EnableStatic($Settings.IP_Address.Text, $Settings.IP_Subnet.Text )              
+                            $wmi.SetGateways($Settings.NetworkAddressGateway, 1)        
+                            $wmi.SetDNSServerSearchOrder($Settings.DNS)
+                        }
+                    }
+                    #Test IP Set
+                    Start-Sleep -Seconds 5
                     If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
-                        $wmi = Get-CimInstance win32_networkadapterconfiguration -filter ("Description = '" + $Settings.Network_Adapter.SelectedItem.ToString() + "'")
+                        $wmiTest = Get-CimInstance win32_networkadapterconfiguration -filter ("Description = '" + $Settings.Network_Adapter.SelectedItem.ToString() + "'")
                     } Else {
-                        $wmi = Get-WmiObject win32_networkadapterconfiguration -filter ("Description = '" + $Settings.Network_Adapter.SelectedItem.ToString() + "'")
-                    } 
-                    #Only change IP if it is different.
-                    If (( $wmi.ipaddress | Where-object {$_.IPaddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1"}) -ne $Settings.IP_Address.Text) {
-                        $wmi.EnableStatic($Settings.IP_Address.Text, $Settings.IP_Subnet.Text )              
-                        $wmi.SetGateways((Get-IPAddressFromUInt32 -UInt32 ((Get-UInt32FromIPAddress -IPAddress $Settings.NetworkAddress.IpAddressToString) +1)).IPAddressToString, 1)        
-                        $wmi.SetDNSServerSearchOrder($Settings.DNS)
+                        $wmiTest = Get-WmiObject win32_networkadapterconfiguration -filter ("Description = '" + $Settings.Network_Adapter.SelectedItem.ToString() + "'")
+                    }
+                    If (( $wmiTest.ipaddress | Where-object {$_.IPaddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1"}) -ne $Settings.IP_Address.Text) {
+                        [System.Windows.MessageBox]::Show(('Failed to set IP Address to: ' + $Settings.IP_Address.Text + [Environment]::NewLine + 
+                        'Current IP set to: ' + $wmiTest.IPAddress + [Environment]::NewLine +
+                        'DHCP Enabled: ' + $wmiTest.DHCPEnabled + [Environment]::NewLine +
+                        "Please check settings. . . " ),('Failed to set IP Address to: ' + $Settings.IP_Address.Text + " Please check settings. . ." ),'OK','Hand') 
                     }
                 }
             }
@@ -835,16 +998,7 @@ function Start_Work {
                     New-Item  ("HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{24ad3ad4-a569-4530-98e1-ab02f9417aa8}") 
                     Set-Reg "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer" "{24AD3AD4-A569-4530-98E1-AB02F9417AA8}" 1 "DWORD"
                 }
-                #region StaffingModel
-                    if (-Not (Test-Path -Path "C:\StaffingModel")) {
-                        New-Item -Path "C:\StaffingModel" -ItemType Directory -Force
-                    }
-                    #Granting "Users" Modify
-                    $Acl = Get-Acl "C:\StaffingModel"
-                    $Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("Users", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
-                    $Acl.Setaccessrule($Ar)
-                    Set-Acl "C:\StaffingModel" $Acl
-                #endregion StaffingModel
+
                 #Unload Manager
                 [gc]::collect()
                 $process = (REG UNLOAD $HKEY)
@@ -890,8 +1044,8 @@ function Start_Work {
                 }
             #endregion Stop Autologon
 
-            #Stop Auto Launch 
-            If (Get-Service -DisplayName LANDesk*,Managed*) {
+            #region Stop Auto Launch 
+            If (Get-Service -DisplayName Ivanti*) {
                 try {
                     $TaskService = New-Object -ComObject "Schedule.Service"
                 }
@@ -916,6 +1070,7 @@ function Start_Work {
                     return
                 }
             }
+            #endregion Stop Auto Launch 
             #Reboot after all done.
             If([System.Windows.MessageBox]::Show(('Would you like to Reboot?'),'System Reboot','YesNo','Question') -eq "Yes") {
                     Restart-Computer
@@ -1038,30 +1193,99 @@ Add-Type -AssemblyName System.web
         #Find LanDesk Installer
         $LanDeskInstaller = Get-ChildItem -Path (Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) -Recurse -Filter "EPMAgentInstaller.exe" | Select-Object -First 1
         If ($LanDeskInstaller) {
-            If([System.Windows.MessageBox]::Show(('Would you like install: '+ (Split-Path -Leaf -Path (Split-Path -Parent -Path $LanDeskInstaller.FullName)) + "?"),'Ivanti Agent Install','YesNo','Question') -eq "Yes") {
+             If([System.Windows.MessageBox]::Show(('Would you like install: '+ (Split-Path -Leaf -Path (Split-Path -Parent -Path $LanDeskInstaller.FullName)) + "?"),'Ivanti Agent Install','YesNo','Question') -eq "Yes") {
                 #Install Agent
-                Start-Process -FilePath ($LanDeskInstaller.FullNameName) -Wait
+                Start-Process -FilePath ($LanDeskInstaller.FullName) -Wait
+            
+                #region Monitor for agent install
+                    $EPMAgentSW = [Diagnostics.Stopwatch]::StartNew()
+                    Add-Type -AssemblyName System.Windows.Forms
 
-                If ($Settings.RDMEPMURL -and (-Not (Test-Path -Path "${env:ProgramFiles(x86)}\Ria Money Transfer\Ria Device Manager Center"))) {
-                    If([System.Windows.MessageBox]::Show(('Would you like install: Ria Money Transfer?'),'Ria Money Transfer Install','YesNo','Question') -eq "Yes") {
-                        #Download RDM Installer from EPM
-                        Copy-WebFolder -source ($Settings.RDMEPMURL) -destination ((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "/RDM_AIO_Install/") -recursive
-                        #Install RDM
-                        Start-Process -FilePath (((Split-Path -Parent -Path $MyInvocation.MyCommand.Definition) + "/RDM_AIO_Install/RDM_AIO_Install.bat"))  -Wait
+                    $form = New-Object System.Windows.Forms.Form
+                    $form.Text = "Folder Monitor"
+                    $form.Size = New-Object System.Drawing.Size(300,200)
+                    $form.StartPosition = "CenterScreen"
+
+                    $label = New-Object System.Windows.Forms.Label
+                    $label.Location = New-Object System.Drawing.Point(20,10)
+                    $label.Size = New-Object System.Drawing.Size(250,80)
+                    $form.Controls.Add($label)
+
+                    # Create the progress bar
+                    $progressBar = New-Object System.Windows.Forms.ProgressBar
+                    $progressBar.Location = New-Object System.Drawing.Point(20,110)
+                    $progressBar.Size = New-Object System.Drawing.Size(250,20)
+                    $progressBar.Minimum = 0
+                    $progressBar.Maximum = $Settings.EPMFolderItemCount
+                    $form.Controls.Add($progressBar)
+
+                    function Update-Count {
+                        $count = (Get-ChildItem -Path $Settings.EPMAgentPath -Force | Measure-Object).Count
+                        $label.Text = ("Please wait, operation in progress... " + [System.Environment]::NewLine + "EPM is intalled when " + $Settings.EPMFolderItemCount + " items are in the folder." + [System.Environment]::NewLine + [System.Environment]::NewLine + "EPM Agent Folder Item Count: $count" + [System.Environment]::NewLine + "Elapsed Time: " +  (Format-ElapsedTime($EPMAgentSW.Elapsed)))
+                        $progressBar.Value = [Math]::Min($count, $Settings.EPMFolderItemCount)
+                        If ($count -ge $Settings.EPMFolderItemCount) { $form.Close() }
                     }
-                }
-                #Reboot Maching after install is done.
-                If([System.Windows.MessageBox]::Show(('Would you like to Reboot?'),'System Reboot','YesNo','Question') -eq "Yes") {
-                    #Disable RDP
-                    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections' 1 "DWORD"
-                    Restart-Computer
-                    break
-                }else {
-                    #Disable RDP
-                    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections' 1 "DWORD"
-                }
-            }
+
+                    $timer = New-Object System.Windows.Forms.Timer
+                    $timer.Interval = 3000
+                    $timer.Add_Tick({ Update-Count })
+                    $timer.Start()
+
+                    Update-Count
+
+                    $form.Add_FormClosed({ $timer.Stop() })
+                    if ($form.IsDisposed -eq $false) {
+                        [void]$form.ShowDialog()
+                    }
+                    $form.Dispose()
+                    $timer.Dispose()
+                #endregion Monitor for agent install
+             }
         }
+    }Elseif((Get-ChildItem $Settings.EPMAgentPath).count -lt $Settings.EPMFolderItemCount) {
+                        #region Monitor for agent install
+                $EPMAgentSW = [Diagnostics.Stopwatch]::StartNew()
+                Add-Type -AssemblyName System.Windows.Forms
+
+                $form = New-Object System.Windows.Forms.Form
+                $form.Text = "Folder Monitor"
+                $form.Size = New-Object System.Drawing.Size(300,200)
+                $form.StartPosition = "CenterScreen"
+
+                $label = New-Object System.Windows.Forms.Label
+                $label.Location = New-Object System.Drawing.Point(20,10)
+                $label.Size = New-Object System.Drawing.Size(250,80)
+                $form.Controls.Add($label)
+
+                # Create the progress bar
+                $progressBar = New-Object System.Windows.Forms.ProgressBar
+                $progressBar.Location = New-Object System.Drawing.Point(20,110)
+                $progressBar.Size = New-Object System.Drawing.Size(250,20)
+                $progressBar.Minimum = 0
+                $progressBar.Maximum = $Settings.EPMFolderItemCount
+                $form.Controls.Add($progressBar)
+
+                function Update-Count {
+                    $count = (Get-ChildItem -Path $Settings.EPMAgentPath -Force | Measure-Object).Count
+                    $label.Text = ("Please wait, operation in progress... " + [System.Environment]::NewLine + "EPM is intalled when " + $Settings.EPMFolderItemCount + " items are in the folder." + [System.Environment]::NewLine + [System.Environment]::NewLine + "EPM Agent Folder Item Count: $count" + [System.Environment]::NewLine + "Elapsed Time: " +  (Format-ElapsedTime($EPMAgentSW.Elapsed)))
+                    $progressBar.Value = [Math]::Min($count, $Settings.EPMFolderItemCount)
+                    If ($count -ge $Settings.EPMFolderItemCount) { $form.Close() }
+                }
+
+                $timer = New-Object System.Windows.Forms.Timer
+                $timer.Interval = 3000
+                $timer.Add_Tick({ Update-Count })
+                $timer.Start()
+
+                Update-Count
+
+                $form.Add_FormClosed({ $timer.Stop() })
+                if ($form.IsDisposed -eq $false) {
+                    [void]$form.ShowDialog()
+                }
+                $form.Dispose()
+                $timer.Dispose()
+            #endregion Monitor for agent install
     }
 #endregion Landesk Agent Install
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -1126,9 +1350,9 @@ $Settings.Machine_Name.text               = $env:computername
 
 
 If (Get-Command Get-CimInstance -errorAction SilentlyContinue) {
-    $Settings.Network_Adapter_List = Get-CimInstance -Class Win32_NetworkAdapterConfiguration -Filter 'IPEnabled = True' | Where-object {$_.IPaddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1" -and $_.IPaddress -notlike '*:*' -and $_.Description -notmatch "Hyper-V|VMnet1|VMnet8" } | Select-Object Description,IPAddress,DefaultIPGateway,IPSubnet,DNSServerSearchOrder,IPSubnet
+    $Settings.Network_Adapter_List = Get-CimInstance -Class Win32_NetworkAdapterConfiguration -Filter 'IPEnabled = True' | Where-object {$_.IPaddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1" -and $_.IPaddress -notlike '*:*' -and $_.Description -notmatch "Hyper-V|VMnet1|VMnet8" } | Select-Object InterfaceAlias,InterfaceIndex,Description,IPAddress,DefaultIPGateway,IPSubnet,DNSServerSearchOrder,DHCPEnabled
 } Else {
-    $Settings.Network_Adapter_List = Get-WmiObject -Class Win32_NetworkAdapterConfiguration -Filter 'IPEnabled = True' | Where-object {$_.IPaddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1" -and $_.IPaddress -notlike '*:*' -and $_.Description -notmatch "Hyper-V|VMnet1|VMnet8"} | Select-Object Description,IPAddress,DefaultIPGateway,IPSubnet,DNSServerSearchOrder,IPSubnet
+    $Settings.Network_Adapter_List = Get-WmiObject -Class Win32_NetworkAdapterConfiguration -Filter 'IPEnabled = True' | Where-object {$_.IPaddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1" -and $_.IPaddress -notlike '*:*' -and $_.Description -notmatch "Hyper-V|VMnet1|VMnet8"} | Select-Object InterfaceAlias,InterfaceIndex,Description,IPAddress,DefaultIPGateway,IPSubnet,DNSServerSearchOrder,DHCPEnabled
 } 
 
 $Settings.IP_Address_Label                = New-Object system.Windows.Forms.Label
@@ -1304,4 +1528,3 @@ If ($Settings.Network_Adapter.Items.Count -ge 0) {
 #############################################################################
 #endregion Main
 #############################################################################
-
