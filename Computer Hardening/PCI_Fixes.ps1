@@ -6,6 +6,26 @@
 .DESCRIPTION
     - Used to fix "Microsoft Windows Unquoted Service Path Enumeration" CVE-2013-1609 issue.
 	- WinVerifyTrust Signature Validation Vulnerability
+	- Encryption Oracle Remediation
+	- Remove Microsoft Sliverlight
+	- Remove SSPORT Driver
+	- Remove SigPlus.ocx and SigSign.ocx
+	- IE CVE-2017-8529
+	- Windows Speculative Execution
+	- Unquoted Services Path Enumeration
+	- Removing vulnerable Appx packages
+	- Remove Adobe Flash
+	- Remove Log4j from Crystal Reports
+	- Remove Log4j from customapp2
+	- Enable MS Office Automatic Updates
+	- Install Microsoft Updates
+	- Fix Insecure Windows Services Permissions
+	- Update Microsoft Defender Definitions
+	- Remove Log4j from cssimpact
+	- isusweb.dll removal
+	- Microsoft XML Parser (MSXML) and XML Core Services Unsupported removal or update.
+	- Sysmon update
+	- Hardened UNC Paths
 .RELATED LINKS
 	https://isc.sans.edu/diary/Help+eliminate+unquoted+path+vulnerabilities/14464
     http://cwe.mitre.org/data/definitions/428.html
@@ -18,9 +38,9 @@
 	Do not run Office Update
 .PARAMETER ForceUpdate
 	Force script to run even if already run.
-
+.PARAMETER UpdateMSXML
+	Force update of MSXML4
 .NOTES
-
   Changes:
     1.0.0  - Draft Script
     1.0.1  - Added more tries and different ways to run commands. Fixed logging path, force script to run as admin, fix permission to force removal of flash.
@@ -44,11 +64,17 @@
 	1.0.19 - Fix Insecure Windows Services Permissions
 	1.0.20 - Better logic for Defender update.
 	1.0.21 - Better logic for Defender update. Fix issues with flash removal.
-	1.0.22 - Remove Log4j from VirtualTerminalBridgeOri
+	1.0.22 - Remove Log4j from customapp2
 	1.0.23 - Fix CVE-2017-8529 and Windows Speculative Execution
-	
+	1.0.24 - Fix for Microsoft XML Parser (MSXML) and XML Core Services Unsupported, Remove Log4j from cssimpact,  isusweb.dll removal
+	1.0.25 - Remove Microsoft XML Parser (MSXML) by default, unless -UpdateMSXML is specified.
+	1.0.26 - Disable 3DES.
+	1.0.27 - 20250630 Silverlight deny creating files and folders. Also Disable Configuration Manager tasks.
+	1.0.28 - 20251113 Sysmon update. Cleaned up errors with Sliverlight deny rules. and Reg key check for Sliverlight removal.
+	1.0.29 - 20251114 Fixed Hardened UNC Paths
+	1.0.30 - 20251222 ECDH public server param reuse fix
   Release Date: 07/17/2024
-  Update Date:  03/28/2025
+  Update Date:  11-13-2025
    
   Author: Paul Fuller
 
@@ -66,7 +92,8 @@ Param(
 	[CmdletBinding()]
 		[switch]$NoMSUpdate = $false,
 		[switch]$NoOfficeUpdate = $false,
-		[switch]$ForceUpdate = $false
+		[switch]$ForceUpdate = $false,
+		[switch]$UpdateMSXML = $false
 )
 #endregion Parameters
 #region Force Script to run as Admin 
@@ -79,12 +106,14 @@ if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 ##Requires -RunAsAdministrator
 #endregion Force Script to run as Admin 
 #region Variables 
-$ScriptVersion = "1.0.23"
+$ScriptVersion = "1.0.29"
 $ScriptRecordVersionValue = "PCIScriptVersion"
 $ScriptRecordDateValue = "PCIScriptRunDate"
-$ScriptRecordkey = "github"
+$ScriptRecordkey = "Github"
 $LocalLogs = "C:\IT_Updates\Logs\"
-$WindowsDefenderUpdateHTTP="http://microsoft-defender/mpam-fe.exe"
+$WindowsDefenderUpdateHTTP="http://localhttpserver/repository/Packages/Microsoft%20Defender/mpam-fe.exe"
+$MSXML4UpdateHTTP = "http://localhttpserver/repository/Packages/MSXML4/msxml.msi"
+$SysmonUpdateHTTP = "https://download.sysinternals.com/files/Sysmon.zip"
 $FileDate = (Get-Date -format yyyyMMdd-hhmm)
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $CBS = @()
@@ -108,6 +137,12 @@ $RemovePermissionFromServices = @(
 	"Modify"
 	"Write"
 )
+$DisableScheduledTasks = @(
+"Configuration Manager Health Evaluation"
+"Configuration Manager Idle Detection"
+"Configuration Manager Maintenance"
+)
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 #endregion Variables 
 #region LogFile
 If (-Not $LogFile) {
@@ -469,113 +504,373 @@ If ($RegistryScriptVersion -lt $ScriptVersion -or $ForceUpdate) {
 		Set-Reg -regPath ("HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters") -name "AllowEncryptionOracle" -value 0 -type "DWORD" -comment "Fixing Encryption Oracle Remediation"
 	}
 	#endregion Encryption Oracle Remediation
+	#region Scheduled Tasks
+		Foreach ($Task in $DisableScheduledTasks) {
+			Get-ScheduledTask -TaskName  $Task -ErrorAction SilentlyContinue | Where-Object {$_.starte -ne "Disabled"} | Disable-ScheduledTask -ErrorAction SilentlyContinue
+		}
+	#endregion Scheduled Takes
 	#region Remove Microsoft Sliverlight
 		$RemoveAppName = "Microsoft Silverlight"
-		#region Remove by Windows Installer
-		Write-host "Trying to uninstall $RemoveAppName"
-		Try {
-			Write-host "`twith WindowsInstaller"
-			$Installer = New-Object -ComObject WindowsInstaller.Installer
-			$InstalledProducts = ForEach($Product in ($Installer.ProductsEx("", "", 7))){
-				Try{
-				[PSCustomObject]@{
-				ProductCode = $Product.ProductCode()
-				LocalPackage = $Product.InstallProperty("LocalPackage")
-				VersionString = $Product.InstallProperty("VersionString")
-				ProductName = $Product.InstallProperty("ProductName")}
-				}Catch{
-					# Write-Host ("Error: " + $_.Exception.Message)
-				}
-			} 
-			ForEach ($WIRA in ($InstalledProducts.Where({$_.ProductName -match $RemoveAppName}))) {
-				Try {         
-					Write-host ("`t`t" + $WIRA.ProductName + " with MsiExec /X" + $WIRA.ProductCode)
-					#MsiExec.exe /X"{${$WIRA.ProductCode}}" /quiet
-					Start-Process -FilePath ($env:SystemRoot + "\System32\MsiExec.exe") -ArgumentList ('/X' + $WIRA.ProductCode + ' /quiet') -NoNewWindow -Wait
-				}Catch{
-					
-				}
-			}
-		}Catch{
-			Write-host "`twith WMI"
-			Get-WmiObject -Class Win32_Product -ErrorAction SilentlyContinue | Where-Object Name -Match $RemoveAppName | Foreach-Object { Write-Host ("Removing: " + $_.Name) ;$_.Uninstall()}
-		}
-		#endregion Remove by Windows Installer
 		#region Remove Sliverlight by GUID
-		Write-host "`tFallback"
+		Write-host "Trying to uninstall any installed $RemoveAppName"
 		Try {
+			# Write-host "Trying to uninstall any installed $RemoveAppName with Fallback"
 			MsiExec.exe /X"{89F4137D-6C26-4A84-BDB8-2E5A4BB71E00}" /quiet
 		}Catch{
 			
 		}
 		Try {
+			# Write-host "Trying to uninstall any installed $RemoveAppName with Fallback"
 			MsiExec.exe /X"{83B900D2-51E8-4B67-BD75-643C8F14BBD8}" /quiet
 		}Catch{		
 		}
 		Try {
+			# Write-host "Trying to uninstall any installed $RemoveAppName with Fallback"
 			MsiExec.exe /X"{24AB137D-C266-A844-DB8B-0A4E1B0BE572}" /quiet
 		}Catch{
 		}
+		Try {
+			# Write-host "Trying to uninstall any installed $RemoveAppName with Fallback"
+			MsiExec.exe /X"{BB2A70DE-1FD4-4A3F-926E-D7F4FC23EADE}" /quiet
+		}Catch{
+		}
+
 		#endregion Remove Sliverlight by GUID
-		#region remove Sliverlight Files
-		Write-host "`tTrying to delete program folder"
-		$Destination = (${env:ProgramFiles(x86)} + "\" + $RemoveAppName)
-		If (Test-Path -Path $Destination) {
-			Set-Owner -Path $Destination -Account 'Administrators'
-			$Acls = Get-Acl $Destination
-			$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("BUILTIN\Administrators", "FullControl", "Allow")
-			$Acls.SetAccessRule($Ar)
-			ForEach ($Ar in $Acls.Access) {
-				# Remove any deny rules
-				If ($Ar.AccessControlType -eq "Deny") {
-					$Acls.RemoveAccessRule($Ar)
-				}
-			}
-			Set-Acl $Destination $Acls -ErrorAction SilentlyContinue	
-			Write-host ("`tTrying to remove: " + $Destination)
-			Remove-Item -Force -Recurse -Path $Destination 
-			If(Test-Path -Path $Destination) {
-				Move-OnReboot -Path $Destination
-				$RebootRequired = $True
-			}
-			reg delete 'HKLM\Software\Microsoft\Silverlight' /f
-			reg delete 'HKEY_CLASSES_ROOT\Installer\Products\D7314F9862C648A4DB8BE2A5B47BE100' /f
-			reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Classes\Installer\Products\D7314F9862C648A4DB8BE2A5B47BE100' /f
-			reg delete 'HKEY_CLASSES_ROOT\TypeLib\{283C8576-0726-4DBC-9609-3F855162009A}' /f
-			reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\install.exe' /f
-			reg delete 'HKEY_CLASSES_ROOT\AgControl.AgControl' /f
-			reg delete 'HKEY_CLASSES_ROOT\AgControl.AgControl.5.1' /f
-			reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{89F4137D-6C26-4A84-BDB8-2E5A4BB71E00}' /f
-		}
+		
+		Write-host "Trying to delete program folder for $RemoveAppName"
 		$Destination = ($env:ProgramFiles + "\" + $RemoveAppName)
-		If (Test-Path -Path $Destination) {
-			Set-Owner -Path $Destination -Account 'Administrators'
-			$Acls = Get-Acl $Destination
-			$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("BUILTIN\Administrators", "FullControl", "Allow")
-			$Acls.SetAccessRule($Ar)
-			ForEach ($Ar in $Acls.Access) {
-				# Remove any deny rules
-				If ($Ar.AccessControlType -eq "Deny") {
-					$Acls.RemoveAccessRule($Ar)
+		$Destination86 = (${env:ProgramFiles(x86)} + "\" + $RemoveAppName)
+		$InstallerDestinations = @(
+			'c:\Windows\Installer\{89F4137D-6C26-4A84-BDB8-2E5A4BB71E00}'
+			'c:\Windows\Installer\13e31e30.msi'
+		)
+		#region remove Sliverlight Files
+		If ((Test-Path -Path $Destination -ErrorAction SilentlyContinue) -OR (Test-Path -Path $Destination86 -ErrorAction SilentlyContinue)) {
+			If (Test-Path -Path $Destination -ErrorAction SilentlyContinue) {
+				Write-host ("`tTrying to remove: " + $Destination)
+				If (Get-Command -Name Set-Owner -ErrorAction SilentlyContinue) {
+					Set-Owner -Path $Destination -Account 'Administrators'
+				}Else{
+					$ACL = Get-ACL $Destination 
+					$Group = New-Object System.Security.Principal.NTAccount("Builtin", "Administrators")
+					$ACL.SetOwner($Group)
+					Set-Acl -Path $Destination -AclObject $ACL	
+				}
+				$Acls = Get-Acl $Destination
+				# Remove Deny ACLs
+				foreach ($deny in $Acls.Access | Where-Object { $_.AccessControlType -eq "Deny" }) {
+					$Acls.RemoveAccessRule($deny) | Out-Null
+				}
+				# Add Full Control for Administrators
+				$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("BUILTIN\Administrators", "FullControl", "Allow")
+				$Acls.SetAccessRule($Ar)
+				#Set modified ACLs
+				Set-Acl $Destination $Acls -ErrorAction SilentlyContinue	
+				Write-host ("`tTrying to remove: " + $Destination)
+				Try{
+					Remove-Item -Force -Recurse -Path $Destination 
+					If(Test-Path -Path $Destination -ErrorAction SilentlyContinue) {
+						Move-OnReboot -Path $Destination
+						$RebootRequired = $True
+					}
+				}Catch {
+					if ($_.Exception.Message -like "*Access*is denied*") {
+						$Acls = Get-Acl $Destination
+						If ($acls.Access.Where({$_.AccessControlType -eq "deny"}).count -ge 4) {
+							Write-Host ("`t`tDeny ACLs Inplace: " + $Destination)
+						}else {
+							Write-Host ("`t`tPlease review ACLs: " + $Destination) -ForegroundColor Red
+						}
+					}Elseif ($_.Exception.Message -like "*being used by another process*") {
+						Write-Host ("`t`tIn use by another process: " + $Destination) -ForegroundColor Yellow
+					}else{
+						Write-Host ("`t`tFailed to remove: " + $Destination) -ForegroundColor Red
+					}
 				}
 			}
-			Set-Acl $Destination $Acls -ErrorAction SilentlyContinue	
-			Write-host ("`tTrying to remove: " + $Destination)
-			Remove-Item -Force -Recurse -Path $Destination 
-			If(Test-Path -Path $Destination) {
-				Move-OnReboot -Path $Destination
-				$RebootRequired = $True
+			If (Test-Path -Path $Destination86 -ErrorAction SilentlyContinue) {
+				Write-host ("`tTrying to remove: " + $Destination86)
+				If (Get-Command -Name Set-Owner -ErrorAction SilentlyContinue) {
+					Set-Owner -Path $Destination86 -Account 'Administrators'
+				}Else{
+					$ACL = Get-ACL $Destination86 
+					$Group = New-Object System.Security.Principal.NTAccount("Builtin", "Administrators")
+					$ACL.SetOwner($Group)
+					Set-Acl -Path $Destination86 -AclObject $ACL	
+				}
+				$Acls = Get-Acl $Destination86
+				# Remove Deny ACLs
+				foreach ($deny in $Acls.Access | Where-Object { $_.AccessControlType -eq "Deny" }) {
+					$Acls.RemoveAccessRule($deny) | Out-Null
+				}
+				# Add Full Control for Administrators
+				$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("BUILTIN\Administrators", "FullControl", "Allow")
+				$Acls.SetAccessRule($Ar)
+				#Set modified ACLs
+				Set-Acl $Destination86 $Acls -ErrorAction SilentlyContinue	
+				Write-host ("`tTrying to remove: " + $Destination86)
+				Try{
+					Remove-Item -Force -Recurse -Path $Destination86 
+					If(Test-Path -Path $Destination86 -ErrorAction SilentlyContinue) {
+						Move-OnReboot -Path $Destination86
+						$RebootRequired = $True
+					}
+				}Catch {
+					if ($_.Exception.Message -like "*Access*is denied*") {
+						$Acls = Get-Acl $Destination86
+						If ($acls.Access.Where({$_.AccessControlType -eq "deny"}).count -ge 4) {
+							Write-Host ("`t`tDeny ACLs Inplace: " + $Destination86)
+						}else {
+							Write-Host ("`t`tPlease review ACLs: " + $Destination86) -ForegroundColor Red
+						}
+					}else{
+						Write-Host ("`t`tFailed to remove: " + $Destination86) -ForegroundColor Red
+					}
+				}
 			}
-			reg delete 'HKLM\Software\Microsoft\Silverlight' /f
-			reg delete 'HKEY_CLASSES_ROOT\Installer\Products\D7314F9862C648A4DB8BE2A5B47BE100' /f
-			reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Classes\Installer\Products\D7314F9862C648A4DB8BE2A5B47BE100' /f
-			reg delete 'HKEY_CLASSES_ROOT\TypeLib\{283C8576-0726-4DBC-9609-3F855162009A}' /f
-			reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\install.exe' /f
-			reg delete 'HKEY_CLASSES_ROOT\AgControl.AgControl' /f
-			reg delete 'HKEY_CLASSES_ROOT\AgControl.AgControl.5.1' /f
-			reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{89F4137D-6C26-4A84-BDB8-2E5A4BB71E00}' /f
+			#endregion remove Sliverlight Files
+			#region clean registry
+			 	If (Test-Path -Path "HKLM:\Software\Microsoft\Silverlight" -ErrorAction SilentlyContinue) {
+					reg delete 'HKLM\Software\Microsoft\Silverlight' /f
+				}
+				if (Test-Path "Registry::HKEY_CLASSES_ROOT\Installer\Products\D7314F9862C648A4DB8BE2A5B47BE100") {
+					reg delete 'HKEY_CLASSES_ROOT\Installer\Products\D7314F9862C648A4DB8BE2A5B47BE100' /f
+				}
+				# reg delete 'HKEY_CLASSES_ROOT\Interface\{C4130531-1AF7-459E-A116-97AC497F414A}' /f
+				# reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Classes\Interface\{C4130531-1AF7-459E-A116-97AC497F414A}' /f
+				# reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Classes\WOW6432Node\Interface\{C4130531-1AF7-459E-A116-97AC497F414A}' /f
+				# reg delete 'HKEY_CLASSES_ROOT\Wow6432Node\Interface\{C4130531-1AF7-459E-A116-97AC497F414A}' /f
+				If (Test-Path -Path "HKLM:\Software\Classes\Installer\Products\D7314F9862C648A4DB8BE2A5B47BE100" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Classes\Installer\Products\D7314F9862C648A4DB8BE2A5B47BE100' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Classes\WOW6432Node\Installer\Products\D7314F9862C648A4DB8BE2A5B47BE100" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Classes\WOW6432Node\Installer\Products\D7314F9862C648A4DB8BE2A5B47BE100' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Classes\WOW6432Node\CLSID\{DFEAF541-F3E1-4c24-ACAC-99C30715084A}" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Classes\WOW6432Node\CLSID\{DFEAF541-F3E1-4c24-ACAC-99C30715084A}' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Classes\WOW6432Node\TypeLib\{283C8576-0726-4DBC-9609-3F855162009A}" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Classes\WOW6432Node\TypeLib\{283C8576-0726-4DBC-9609-3F855162009A}' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\05A4B1AD0412E9149B7C44C8ED897F76" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\05A4B1AD0412E9149B7C44C8ED897F76' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\07EF711D411E1BE4DB79C87C73FBE662" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\07EF711D411E1BE4DB79C87C73FBE662' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\08196EFE47C51DE4885D641031114EBF" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\08196EFE47C51DE4885D641031114EBF' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\088DAA370DECD5145A22F2BC95B32FB2" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\088DAA370DECD5145A22F2BC95B32FB2' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\0AB480B8A63A9F94BBB1019D59C1E2B5" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\0AB480B8A63A9F94BBB1019D59C1E2B5' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\0B9C15ACDD4DB3748844EE9D585A2E6F" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\0B9C15ACDD4DB3748844EE9D585A2E6F' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\0C494A0C8886AA94D92579EFF5CC10FD" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\0C494A0C8886AA94D92579EFF5CC10FD' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\0E6E033981A67A34387D3800D9E2B999" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\0E6E033981A67A34387D3800D9E2B999' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\1091554B7FEF60443AAF37F0F52AC994" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\1091554B7FEF60443AAF37F0F52AC994' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\1211261CEB465B04B8193520D9E42FEA" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\1211261CEB465B04B8193520D9E42FEA' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\131AD5D1647C09D4FB9267032D9267E5" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\131AD5D1647C09D4FB9267032D9267E5' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\1364D1438F5E7604393DDFA6AA4A4914" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\1364D1438F5E7604393DDFA6AA4A4914' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\9274B1F3DD752DD46B78DE222629060E" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\9274B1F3DD752DD46B78DE222629060E' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Classes\TypeLib\{283C8576-0726-4DBC-9609-3F855162009A}" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_CLASSES_ROOT\TypeLib\{283C8576-0726-4DBC-9609-3F855162009A}' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\App Paths\install.exe" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\install.exe' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Classes\AgControl.AgControl" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_CLASSES_ROOT\AgControl.AgControl' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Classes\AgControl.AgControl.5.1" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_CLASSES_ROOT\AgControl.AgControl.5.1' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{89F4137D-6C26-4A84-BDB8-2E5A4BB71E00}" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{89F4137D-6C26-4A84-BDB8-2E5A4BB71E00}' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Classes\Installer\Patches\ED07A2BB4DF1F3A429E67D4FCF32AEED" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Classes\Installer\Patches\ED07A2BB4DF1F3A429E67D4FCF32AEED' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Classes\MIME\Database\Content Type\application/x-silverlight" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Classes\MIME\Database\Content Type\application/x-silverlight' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Classes\MIME\Database\Content Type\application/x-silverlight-2" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Classes\MIME\Database\Content Type\application/x-silverlight-2' /f
+				}
+				If (Test-Path -Path "HKLM:\Software\Microsoft\MATS\WindowsInstaller\{89F4137D-6C26-4A84-BDB8-2E5A4BB71E00}" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\MATS\WindowsInstaller\{89F4137D-6C26-4A84-BDB8-2E5A4BB71E00}' /f
+				}
+				If (Test-Path -Path "HKLM:\SYSTEM\ControlSet001\Control\Terminal Server\WinStations\RDP-Tcp\VideoRemotingWindowNames" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Control\Terminal Server\WinStations\RDP-Tcp\VideoRemotingWindowNames' /v "MicrosoftSilverlight" /f
+				}
+				If (Test-Path -Path "HKU:\.DEFAULT\Software\AppDataLow\Software\Microsoft\Silverlight" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_USERS\.DEFAULT\Software\AppDataLow\Software\Microsoft\Silverlight' /f
+				}
+				If (Test-Path -Path "HKU:\.DEFAULT\Software\Microsoft\Silverlight" -ErrorAction SilentlyContinue) {
+					reg delete 'HKEY_USERS\.DEFAULT\Software\Microsoft\Silverlight' /f
+				}
+				
+				$searchString = "Microsoft Silverlight"
+				Get-ChildItem "HKLM:\SOFTWARE\Classes\Installer\Assemblies" | Where-Object {$_.name -match $searchString}| Remove-Item
+				Get-ChildItem "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\Folders" | Where-Object {$_.name -match $searchString}| Remove-Item
+				Get-Item "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\UFH\SHC" | ForEach-Object {
+						$props = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+						foreach ($property in $props.PSObject.Properties) {
+							$Value
+							if ($property.Value -is [string[]]) { # REG_MULTI_SZ is string[]
+								foreach ($entry in $property.Value) {
+									if ($entry -like "*$searchString*") {
+										Remove-ItemProperty -Path $_.PSPath -Name $property.Name -ErrorAction SilentlyContinue | Out-Null
+										# Write-Output "Found in $($_.PSPath) -> $($property.Name): $entry"
+									}
+								}
+							}
+						}
+					}
+			#endregion clean registry
 		}
-		#endregion remove Sliverlight Files
+		#region Create empty Silverlight folder and set permissions to prevent future installations
+			If (-Not (Test-Path -Path $Destination)) {
+				New-Item -Path $Destination -ItemType Directory -Force | Out-Null
+			}
+				If (Get-Command -Name Set-Owner -ErrorAction SilentlyContinue) {
+					Set-Owner -Path $Destination -Account 'Administrators'
+				}Else{
+					$ACL = Get-ACL $Destination 
+					$Group = New-Object System.Security.Principal.NTAccount("Builtin", "Administrators")
+					$ACL.SetOwner($Group)
+					Set-Acl -Path $Destination -AclObject $ACL	
+				}
+				$Acls = Get-Acl $Destination
+				$Acls.SetAccessRuleProtection($True, $False)
+				$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("NT AUTHORITY\SYSTEM", "FullControl", "Deny")
+				$Acls.SetAccessRule($Ar)
+				$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("BUILTIN\Administrators", "FullControl", "Deny")
+				$Acls.SetAccessRule($Ar)
+				$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("BUILTIN\Users", "FullControl", "Deny")
+				$Acls.SetAccessRule($Ar)
+				$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("NT SERVICE\TrustedInstaller", "FullControl", "Deny")
+				$Acls.SetAccessRule($Ar)
+				# $Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES", "FullControl", "Deny")
+				# $Acls.SetAccessRule($Ar)
+				# $Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("APPLICATION PACKAGE AUTHORITY\ALL RESTRICTED APPLICATION PACKAGES", "FullControl", "Deny")
+				# $Acls.SetAccessRule($Ar)
+				Set-Acl -Path $Destination -AclObject $Acls -ErrorAction SilentlyContinue
+
+			If (-Not (Test-Path -Path $Destination86)) {
+				New-Item -Path $Destination86 -ItemType Directory -Force | Out-Null
+			}
+				If (Get-Command -Name Set-Owner -ErrorAction SilentlyContinue) {
+					Set-Owner -Path $Destination86 -Account 'Administrators'
+				}Else{
+					$ACL = Get-ACL $Destination86 
+					$Group = New-Object System.Security.Principal.NTAccount("Builtin", "Administrators")
+					$ACL.SetOwner($Group)
+					Set-Acl -Path $Destination86 -AclObject $ACL	
+				}
+				$Acls = Get-Acl $Destination86
+				$Acls.SetAccessRuleProtection($True, $False)
+				$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("NT AUTHORITY\SYSTEM", "FullControl", "Deny")
+				$Acls.SetAccessRule($Ar)
+				$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("BUILTIN\Administrators", "FullControl", "Deny")
+				$Acls.SetAccessRule($Ar)
+				$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("BUILTIN\Users", "FullControl", "Deny")
+				$Acls.SetAccessRule($Ar)
+				$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("NT SERVICE\TrustedInstaller", "FullControl", "Deny")
+				$Acls.SetAccessRule($Ar)
+				# $Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES", "FullControl", "Deny")
+				# $Acls.SetAccessRule($Ar)
+				# $Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("APPLICATION PACKAGE AUTHORITY\ALL RESTRICTED APPLICATION PACKAGES", "FullControl", "Deny")
+				# $Acls.SetAccessRule($Ar)
+				Set-Acl -Path $Destination86 -AclObject $Acls -ErrorAction SilentlyContinue
+		#endregion Create empty Silverlight folder and set permissions to prevent future installations
+		#region remove Installer Files
+			ForEach ($InstallerDestination in $InstallerDestinations) {
+				#Remove Installer Files
+				If (Test-Path -Path $InstallerDestination -ErrorAction SilentlyContinue) {
+					Write-host ("`tTrying to remove: " + $InstallerDestination)
+					If (Get-Command -Name Set-Owner -ErrorAction SilentlyContinue) {
+						Set-Owner -Path $InstallerDestination -Account 'Administrators'
+					}Else{
+						$ACL = Get-ACL $InstallerDestination 
+						$Group = New-Object System.Security.Principal.NTAccount("Builtin", "Administrators")
+						$ACL.SetOwner($Group)
+						Set-Acl -Path $InstallerDestination -AclObject $ACL	
+					}
+					$Acls = Get-Acl $InstallerDestination
+					$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("BUILTIN\Administrators", "FullControl", "Allow")
+					$Acls.SetAccessRule($Ar)
+					Set-Acl $InstallerDestination $Acls -ErrorAction SilentlyContinue	
+					Write-host ("`tTrying to remove: " + $InstallerDestination)
+					Remove-Item -Force -Recurse -Path $InstallerDestination 
+					If(Test-Path -Path $InstallerDestination -ErrorAction SilentlyContinue) {
+						Move-OnReboot -Path $InstallerDestination
+						$RebootRequired = $True
+					}	
+				}
+			}
+		#endregion remove Installer Files
+		#region search for SilverLight MSI
+			Get-ChildItem "C:\Windows\Installer" -Filter *.msi | 
+				ForEach-Object {
+					$msiPath = $_.FullName
+					# $props = Get-WmiObject -Query "SELECT * FROM Win32_Product WHERE LocalPackage='$msiPath'"
+					$installer = New-Object -ComObject WindowsInstaller.Installer
+					Try{
+						$database = $installer.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $installer, @($msiPath, 0))
+						$view = $database.OpenView("SELECT Value FROM Property WHERE Property = 'ProductName'")
+						$view.Execute()
+						$record = $view.Fetch()
+						if ($record) {
+							$productName = $record.StringData(1)
+						} else {
+							$productName = $null
+						}
+						if ($productName -like "*Silverlight*") {
+							Write-Output $msiPath
+
+							Write-Host ("`tTrying to remove: " + $msiPath)
+							If (Get-Command -Name Set-Owner -ErrorAction SilentlyContinue) {
+								Set-Owner -Path $msiPath -Account 'Administrators'
+							}Else{
+								$ACL = Get-ACL $msiPath 
+								$Group = New-Object System.Security.Principal.NTAccount("Builtin", "Administrators")
+								$ACL.SetOwner($Group)		
+								Set-Acl -Path $msiPath -AclObject $ACL
+							}
+							$Acls = Get-Acl $msiPath
+							$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("BUILTIN\Administrators", "FullControl", "Allow")
+							$Acls.SetAccessRule($Ar)
+							Set-Acl $msiPath $Acls -ErrorAction SilentlyContinue
+							Remove-Item -Force -Path $msiPath -ErrorAction SilentlyContinue
+							If(Test-Path -Path $msiPath -ErrorAction SilentlyContinue) {
+								Move-OnReboot -Path $msiPath
+								$RebootRequired = $True
+							}
+						}
+					} catch {
+						<#Do this if a terminating exception happens#>
+					}
+				}
+		#endregion search for SilverLight MSI		
 	#endregion Remove Microsoft Sliverlight
 	#region SSPORT Driver
 	If (Test-Path ($env:SystemRoot + "\System32\drivers\SSPORT.SYS")){
@@ -698,6 +993,31 @@ If ($RegistryScriptVersion -lt $ScriptVersion -or $ForceUpdate) {
 		}
 	}
 	#endregion SigPlus.ocx
+	#region isusweb.dll removal
+		If (Test-Path -Path ($env:SystemRoot + "\Downloaded Program Files\isusweb.dll")){
+		& ($env:SystemRoot + "\SysWOW64\regsvr32.exe" + " /s /u " + ($env:SystemRoot + "\Downloaded Program Files\isusweb.dll"))
+		$Destination = ($env:SystemRoot + "\Downloaded Program Files\isusweb.dll")
+		If (Test-Path $Destination){
+			Set-Owner -Path $Destination -Account 'Administrators'
+			$Acls = Get-Acl $Destination
+			$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("BUILTIN\Administrators", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
+			$Acls.SetAccessRule($Ar)
+			ForEach ($Ar in $Acls.Access) {
+				# Remove any deny rules
+				If ($Ar.AccessControlType -eq "Deny") {
+					$Acls.RemoveAccessRule($Ar)
+				}
+			}
+			Set-Acl $Destination $Acls -ErrorAction SilentlyContinue
+			Write-host ("`tTrying to remove: " + $Destination)
+			Remove-Item -Force -Path $Destination -ErrorAction SilentlyContinue
+			If(Test-Path -Path $Destination) {
+				Move-OnReboot -Path $Destination
+				$RebootRequired = $True
+			}
+		}
+	}
+	#endregion isusweb.dll removal
 	#region CVE-2017-8529
 	If ((Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Internet Explorer\Main\FeatureControl" -ErrorAction SilentlyContinue)."FEATURE_ENABLE_PRINT_INFO_DISCLOSURE_FIX" -ne 1 ) {
 		Write-Host ("Fix CVE-2017-8529")
@@ -979,10 +1299,10 @@ If ($RegistryScriptVersion -lt $ScriptVersion -or $ForceUpdate) {
 		}
 	}
 	#endregion Remove Log4j from Crystal Reports
-	#region Remove Log4j from VirtualTerminalBridgeOri
-	Write-Host ("VirtualTerminalBridgeOri log4j cleanup")
-	If (Test-Path -Path ($env:systemdrive + "\VirtualTerminalBridgeOri")) {
-		ForEach ($File in (Get-ChildItem -Recurse -File -Path ($env:systemdrive + "\VirtualTerminalBridgeOri") -Include "log4j*.jar")) {
+	#region Remove Log4j from customapp2
+	Write-Host ("customapp2 log4j cleanup")
+	If (Test-Path -Path ($env:systemdrive + "\customapp2")) {
+		ForEach ($File in (Get-ChildItem -Recurse -File -Path ($env:systemdrive + "\customapp2") -Include "log4j*.jar")) {
 			Write-Host ("`tRemoving: " + $File.FullName)
 			If (Get-Command -Name Set-Owner -ErrorAction SilentlyContinue) {
 				Set-Owner -Path $File.FullName -Account 'Administrators'
@@ -1004,7 +1324,33 @@ If ($RegistryScriptVersion -lt $ScriptVersion -or $ForceUpdate) {
 			}
 		}
 	}
-	#endregion Remove Log4j from VirtualTerminalBridgeOri
+	#endregion Remove Log4j from customapp2
+	#region Remove Log4j from vendorapp
+	Write-Host ("vendorapp log4j cleanup")
+	If (Test-Path -Path ($env:ProgramFiles + "\vendorapp\thirdparty")) {
+		ForEach ($File in (Get-ChildItem -Recurse -File -Path ($env:ProgramFiles + "\vendorapp\thirdparty") -Include "log4j*.jar")) {
+			Write-Host ("`tRemoving: " + $File.FullName)
+			If (Get-Command -Name Set-Owner -ErrorAction SilentlyContinue) {
+				Set-Owner -Path $File.FullName -Account 'Administrators'
+			}Else{
+				$ACL = Get-ACL $File.FullName
+				$Group = New-Object System.Security.Principal.NTAccount("Builtin", "Administrators")
+				$ACL.SetOwner($Group)
+				Set-Acl -Path $File.FullName -AclObject $ACL	
+			}
+			$Acls = Get-Acl $File.FullName
+			$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule("BUILTIN\Administrators", "FullControl", "Allow")
+			$Acls.SetAccessRule($Ar)
+			Set-Acl $File.FullName $Acls -ErrorAction SilentlyContinue
+			Write-host ("`tTrying to remove: " + $File.FullName)
+			Remove-Item -Force -Recurse -ErrorAction SilentlyContinue -Path $File.FullName 
+			If(Test-Path -Path $File.FullName) {
+				Move-OnReboot -Path $File.FullName
+				$RebootRequired = $True
+			}
+		}
+	}
+	#endregion Remove Log4j from vendorapp
 	#region Enable MS Office Automatic Updates
 	If ((Get-ItemProperty -Path "HKLM:\Software\Policies\Microsoft\Office\16.0\Common\OfficeUpdate" -ErrorAction SilentlyContinue)."EnableAutomaticUpdates" -ne 1 ) {
 		Write-Host ("Enabling MS Office Automatic Updates")	
@@ -1115,7 +1461,7 @@ If ($RegistryScriptVersion -lt $ScriptVersion -or $ForceUpdate) {
 			}
 
 			$FileInfo = Get-Item -Path ($env:SystemRoot + "\System32\MpSigStub.exe")
-			$FileVersion = $FileInfo.VersionInfo.ProductVersion
+			$FileVersion = [Version]$FileInfo.VersionInfo.ProductVersion
 			If ($FileVersion -lt [Version]"1.1.16638.0"){
 				Write-host ("Attempting to update Windows Defender from version: " + $FileInfo.VersionInfo.ProductVersion)
 				If (Test-Path -Path ($env:ProgramFiles + "\Windows Defender\MpCmdRun.exe")){
@@ -1150,6 +1496,115 @@ If ($RegistryScriptVersion -lt $ScriptVersion -or $ForceUpdate) {
 		}
 	}
 	#endregion Microsoft Defender Definition Update
+	#region Microsoft XML Parser (MSXML) and XML Core Services Unsupported
+	If (Test-Path -Path ($env:SystemRoot + "\SysWOW64\msxml4.dll")) {
+		If ($UpdateMSXML) {
+			$FileInfo = Get-Item -Path ($env:SystemRoot + "\SysWOW64\msxml4.dll")
+			$FileVersion = $FileInfo.VersionInfo.ProductVersion
+			If ($FileVersion -lt [Version]"4.30.2117.0"){
+				Write-host ("Attempting to update MSXML4 from version: " + $FileInfo.VersionInfo.ProductVersion)
+				Invoke-WebRequest -Uri $MSXML4UpdateHTTP -OutFile ($env:temp + "\" + (Split-Path -leaf -Path $MSXML4UpdateHTTP))
+				If (Test-Path -path ($env:temp + "\" + (Split-Path -leaf -Path $MSXML4UpdateHTTP))) {
+					Start-Process -FilePath ($env:temp + "\" + (Split-Path -leaf -Path $MSXML4UpdateHTTP)) -NoNewWindow -Wait -ArgumentList "/qb /norestart"
+					Start-Sleep -Milliseconds 5000
+					Write-host ("`tTrying to remove: " + ($env:temp + "\" + (Split-Path -leaf -Path $MSXML4UpdateHTTP)))
+					Remove-Item -Path ($env:temp + "\" + (Split-Path -leaf -Path $MSXML4UpdateHTTP)) -Force -ErrorAction SilentlyContinue
+				}
+			}
+		}Else{
+			Write-host ("Removing MSXML4")
+			Remove-Item -Path ($env:SystemRoot + "\SysWOW64\msxml4.dll") -Force -ErrorAction SilentlyContinue
+		}
+	}
+	#endregion Microsoft XML Parser (MSXML) and XML Core Services Unsupported
+	#region Disable 3DES
+		If (Test-Path -Path ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\Triple DES 168") -ErrorAction SilentlyContinue) {
+			If ((Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\Triple DES 168" -Name "Enabled" -ErrorAction SilentlyContinue).Enabled -ne 0) {
+				Write-Host ("Disabling Triple DES 168")
+				Set-Reg -regPath ("HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\Triple DES 168") -name "Enabled" -value 0 -type "DWord" -comment "Disabling Triple DES 168"
+			}
+		}
+	#endregion Disable 3DES
+	#region Sysmon Update
+	If (Test-Path -Path ($env:SystemRoot + "\Sysmon.exe")) {
+		If ($SysmonUpdateHTTP) {
+			$FileInfo = Get-Item -Path ($env:SystemRoot + "\Sysmon.exe")
+			$FileVersion = [Version]$FileInfo.VersionInfo.ProductVersion
+			If ($FileVersion -lt [Version]"14.13"){
+				Write-host ("Attempting to update Sysmon from version: " + $FileInfo.VersionInfo.ProductVersion)
+				Invoke-WebRequest -Uri $SysmonUpdateHTTP -OutFile ($env:temp + "\" + (Split-Path -leaf -Path $SysmonUpdateHTTP))
+				If (Test-Path -path ($env:temp + "\" + (Split-Path -leaf -Path $SysmonUpdateHTTP))) {
+					# If you want to extract only one file:
+					$zip = [System.IO.Compression.ZipFile]::OpenRead(($env:temp + "\" + (Split-Path -leaf -Path $SysmonUpdateHTTP)))
+					$entry = $zip.Entries | Where-Object { $_.Name -eq "Sysmon.exe" }
+					if ($entry) {
+						$destination = Join-Path $env:SystemRoot $entry.Name
+						# $entry.ExtractToFile($destination, $true)
+						[System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination, $true)
+					}
+					$zip.Dispose()
+					start-sleep -Milliseconds 500
+					Write-host ("`tTrying to remove: " + ($env:temp + "\" + (Split-Path -leaf -Path $SysmonUpdateHTTP)))
+					Remove-Item -Path ($env:temp + "\" + (Split-Path -leaf -Path $SysmonUpdateHTTP)) -Force -ErrorAction SilentlyContinue
+				}
+			}
+		}else{
+			Write-host ("Removing Sysmon")
+			Remove-Item -Path ($env:SystemRoot + "\Sysmon.exe") -Force -ErrorAction SilentlyContinue
+		}
+	}
+	If (Test-Path -Path ($env:SystemRoot + "\Sysmon64.exe")) {
+		If ($SysmonUpdateHTTP) {
+			$FileInfo = Get-Item -Path ($env:SystemRoot + "\Sysmon64.exe")
+			$FileVersion = [Version]$FileInfo.VersionInfo.ProductVersion
+			If ($FileVersion -lt [Version]"14.13"){
+				Write-host ("Attempting to update Sysmon64 from version: " + $FileInfo.VersionInfo.ProductVersion)
+				Invoke-WebRequest -Uri $SysmonUpdateHTTP -OutFile ($env:temp + "\" + (Split-Path -leaf -Path $SysmonUpdateHTTP))
+				If (Test-Path -path ($env:temp + "\" + (Split-Path -leaf -Path $SysmonUpdateHTTP))) {
+					# If you want to extract only one file:
+					$zip = [System.IO.Compression.ZipFile]::OpenRead(($env:temp + "\" + (Split-Path -leaf -Path $SysmonUpdateHTTP)))
+					$entry = $zip.Entries | Where-Object { $_.Name -eq "Sysmon64.exe" }
+					if ($entry) {
+						$destination = Join-Path $env:SystemRoot $entry.Name
+						# $entry.ExtractToFile($destination, $true)
+						[System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination, $true)
+					}
+					$zip.Dispose()
+					start-sleep -Milliseconds 500
+					Write-host ("`tTrying to remove: " + ($env:temp + "\" + (Split-Path -leaf -Path $SysmonUpdateHTTP)))
+					Remove-Item -Path ($env:temp + "\" + (Split-Path -leaf -Path $SysmonUpdateHTTP)) -Force -ErrorAction SilentlyContinue
+				}
+			}
+		}else{
+			Write-host ("Removing Sysmon")
+			Remove-Item -Path ($env:SystemRoot + "\Sysmon64.exe") -Force -ErrorAction SilentlyContinue
+		}
+	}
+	If (Test-Path -Path ($env:SystemRoot + "\SysmonDrv.sys")) {
+			Write-host ("Removing SysmonDrv.sys")
+			Remove-Item -Path ($env:SystemRoot + "\SysmonDrv.sys") -Force -ErrorAction SilentlyContinue
+	}
+	#endregion Sysmon Update
+	#region UNC Path Hardening
+		Write-Host ("Applying UNC Hardening Settings")
+
+		Set-Reg ("HKLM:\Software\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths") "\\*\NETLOGON" "RequireMutualAuthentication=1, RequireIntegrity=1, RequirePrivacy=1" "String"
+		Set-Reg ("HKLM:\Software\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths") "\\*\SYSVOL" "RequireMutualAuthentication=1, RequireIntegrity=1, RequirePrivacy=1" "String"
+		Set-Reg ("HKLM:\Software\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths") "\\Github.com\users" "RequireMutualAuthentication=1, RequireIntegrity=1, RequirePrivacy=1" "String"
+		Set-Reg ("HKLM:\Software\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths") "\\Github.com\share" "RequireMutualAuthentication=1, RequireIntegrity=1, RequirePrivacy=1" "String"
+		Set-Reg ("HKLM:\Software\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths") "\\Github.com\*" "RequireMutualAuthentication=1, RequireIntegrity=1" "String"
+
+	#endregion UNC Path Hardening
+	#region Disable ECDH public server param reuse in the Windows registry
+		#CVE-2022-35838
+		#CVE-2016-10957
+		Write-Host "Applying ECDH public server param reuse fix"
+		if(!(Test-Path "hklm:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\ECDH")) {
+		New-Item "hklm:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms" -name "ECDH"
+		}
+
+		New-ItemProperty "hklm:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\KeyExchangeAlgorithms\ECDH" -Name EphemKeyReuseTime -Value 0 -PropertyType DWord
+	#endregion Disable ECDH public server param reuse in the Windows registry
 	#End of Actions
 	If ($RebootRequired) {
 		Write-Warning " "
