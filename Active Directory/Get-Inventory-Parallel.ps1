@@ -85,6 +85,7 @@
                 02/28/2022        - Switched to use class instead of PSCustomObject.
                 05/10/2022        - Added more variable checks and TRY{}/Catch{}'s to reduce errors in transcript. 
                 04/27/2025        - Updated ConvertFrom-IISW3CLog to use less memory and to fix issues with large IIS logs.
+                12/18/2025        - Updated Get-CheckUrl to work better with Powershell 7. Skiping INV Cluster VIP.
 
   Release Date: 10-02-2018
    
@@ -103,16 +104,14 @@ Param(
     [Int]$TimeOut = 90,
     [Int]$LogHistory = -90,
     [Int]$MaxMemoryUsage = 80,
-    [string]$WSO = "\\github.com\wsusoffline-master\client",
+    [string]$WSO = "\\share\IT\wsusoffline-master\client",
     [switch]$InstallWMF,
     [switch]$SetupWinRM,
     [switch]$RemoveSMB1,
     [switch]$Excel,
     [switch]$Verbose,
-    [array]$VIServers = @("vcenter.github.com"),
+    [array]$VIServers = @("vcenter"),
     [string[]]$IgnoreIPs=@(
-        "1.1.1.1",
-		"8.8.8.8"
         )
 )
 $FileDate = (Get-Date -format yyyyMMdd-hhmm)
@@ -120,12 +119,12 @@ $LogFile = ($OutputFolder + "\" + `
            ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
 		   $env:computername + "_" + `
            $FileDate + ".log")
-$ScriptVersion = "2.2.01"
+$ScriptVersion = "2.2.02"
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $Inventory = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
 $VMs = [System.Collections.ArrayList]@()
 $ScanCount = 1
-$UNCPSExecPath = "github.com\PsExec.exe"
+$UNCPSExecPath = "\\\share\Utilities\PSTools\PsExec.exe"
 $RemoveServices=@(
     "ActiveX Installer (AxInstSV) - Disabled",
     "App Readiness - Manual",
@@ -217,11 +216,6 @@ $RemoveServices=@(
     "IPsec Policy Agent - Manual",
     "KDC Proxy Server service (KPS) - Manual",
     "KtmRm for Distributed Transaction Coordinator - Manual",
-    "LANDESK Remote Control Service - Auto",
-    "LANDesk Targeted Multicast - Auto",
-    "LANDesk(R) Extended device discovery service - Manual",
-    "LANDesk(R) Management Agent - Auto",
-    "LANDesk(R) Software Monitoring Service - Auto",
     "Link-Layer Topology Discovery Mapper - Manual",
     "Link-Layer Topology Discovery Mapper - Disabled",
     "Local Session Manager - Auto",
@@ -324,10 +318,6 @@ $RemoveServices=@(
     "User Experience Virtualization Service - Disabled",
     "User Profile Service - Auto",
     "Virtual Disk - Manual",
-    "VMware Alias Manager and Ticket Service - Auto",
-    "VMware Snapshot Provider - Manual",
-    "VMware SVGA Helper Service - Auto",
-    "VMware Tools - Auto",
     "Volume Shadow Copy - Manual",
     "WalletService - Disabled",
     "Windows Audio - Manual",
@@ -371,22 +361,17 @@ $RemoveServices=@(
     "Xbox Live Game Save - Disabled"
 )
 [string[]]$KillProcesses=@(
-    "TrustedInstaller",
-    "fcappdb",
-    "FCDBLog",
-    "fmon",
-    "FortiESNAC",
-    "FortiProxy"
+    "TrustedInstaller"
 )
 $winrmcommands=@(
-    'netsh advfirewall firewall add rule dir=in name="DCOM" program=%systemroot%\system32\svchost.exe service=rpcss action=allow protocol=TCP localport=135 remoteip=10.0.0.0/8,LocalSubnet profile=any',
-    'netsh advfirewall firewall add rule dir=in name="WMI-In" program=%systemroot%\system32\svchost.exe service=winmgmt action = allow protocol=TCP localport=any remoteip=10.0.0.0/8,LocalSubnet profile=any',
-    'netsh advfirewall firewall add rule dir=in name="UnsecApp" program=%systemroot%\system32\wbem\unsecapp.exe action=allow remoteip=10.0.0.0/8,LocalSubnet profile=any',
-    'netsh advfirewall firewall add rule dir=in name="WINRM-HTTP" protocol=tcp localport=5985 action=allow remoteip=10.0.0.0/8,LocalSubnet profile=any',
-    'netsh advfirewall firewall add rule dir=in name="WINRM-HTTPS" protocol=tcp localport=5986 action=allow remoteip=10.0.0.0/8,LocalSubnet profile=any',
-    'netsh advfirewall firewall add rule name="ICMP Allow incoming V4 echo request" protocol=icmpv4:8,any dir=in action=allow remoteip=10.0.0.0/8,LocalSubnet',
-    'netsh advfirewall firewall add rule dir=out name="WMI-OUT" program=%systemroot%\system32\svchost.exe service=winmgmt action=allow protocol=TCP localport=any remoteip=10.0.0.0/8,LocalSubnet profile=any',
-    'PowerShell -Command {New-Item -Path WSMan:\LocalHost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $(Get-ChildItem -Path cert:\LocalMachine\My | Sort-Object -Descending -property NotAfter | Where {$_.Issuer -eq "CN=Github CA, DC=gethub, DC=com" -and $_.Subject -match [System.Net.Dns]::GetHostByName(($env:computerName)).hostname} | Select-Object -first 1).Thumbprint -Force"}',
+    'netsh advfirewall firewall add rule dir=in name="DCOM" program=%systemroot%\system32\svchost.exe service=rpcss action=allow protocol=TCP localport=135 remoteip=10.0.0.0/16,LocalSubnet profile=any',
+    'netsh advfirewall firewall add rule dir=in name="WMI-In" program=%systemroot%\system32\svchost.exe service=winmgmt action = allow protocol=TCP localport=any remoteip=10.0.0.0/16,LocalSubnet profile=any',
+    'netsh advfirewall firewall add rule dir=in name="UnsecApp" program=%systemroot%\system32\wbem\unsecapp.exe action=allow remoteip=10.0.0.0/16,LocalSubnet profile=any',
+    'netsh advfirewall firewall add rule dir=in name="WINRM-HTTP" protocol=tcp localport=5985 action=allow remoteip=10.0.0.0/16,LocalSubnet profile=any',
+    'netsh advfirewall firewall add rule dir=in name="WINRM-HTTPS" protocol=tcp localport=5986 action=allow remoteip=10.0.0.0/16,LocalSubnet profile=any',
+    'netsh advfirewall firewall add rule name="ICMP Allow incoming V4 echo request" protocol=icmpv4:8,any dir=in action=allow remoteip=10.0.0.0/16,LocalSubnet',
+    'netsh advfirewall firewall add rule dir=out name="WMI-OUT" program=%systemroot%\system32\svchost.exe service=winmgmt action=allow protocol=TCP localport=any remoteip=10.0.0.0/164,LocalSubnet profile=any',
+    'PowerShell -Command {New-Item -Path WSMan:\LocalHost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $(Get-ChildItem -Path cert:\LocalMachine\My | Sort-Object -Descending -property NotAfter | Where {$_.Issuer -match "DC=com" -and $_.Subject -match [System.Net.Dns]::GetHostByName(($env:computerName)).hostname} | Select-Object -first 1).Thumbprint -Force"}',
     'net stop winrm && net start winrm'
 )
 
@@ -516,7 +501,7 @@ if (Get-Job -name *)
 }
 $swv = [Diagnostics.Stopwatch]::StartNew()
 write-host "Getting AD Computers"
-$AllComputers = Get-ADComputer -Filter * -Properties Name,Enabled,OperatingSystem,OperatingSystemServicePack,OperatingSystemVersion,LastLogonDate,description,dNSHostName
+$AllComputers = Get-ADComputer -Filter * -Properties Name,Enabled,OperatingSystem,OperatingSystemServicePack,OperatingSystemVersion,LastLogonDate,description,dNSHostName,servicePrincipalName
 $AllComputersNames = $AllComputers.Name
 $AllComputersNamesCount = [int]$AllComputersNames.Count
 $swv.Stop()
@@ -550,6 +535,7 @@ Foreach ($ComputerName in $AllComputersNames) {
                 [string]${AD Name}
                 [string]${DNS IP}
                 [string]$Enabled
+                [string]${Cluster Virtual Server}
                 [string]$Description
                 [string]${Operating System}
                 [string]${Operating System Version}
@@ -585,6 +571,7 @@ Foreach ($ComputerName in $AllComputersNames) {
                 [string]${SQL Version} 
                 [string]${SQL Databases} 
                 [string]$FortiClient
+                [string]${RSA Version}
                 [string]${LANDesk Agent Installed}
                 [string]${SMB Status}
                 [string]${TLS Status} 
@@ -602,6 +589,7 @@ Foreach ($ComputerName in $AllComputersNames) {
                     [int]$timeoutMilliseconds = ($TimeOut * 1000),
                     [int]$MinimumCertAgeDays = 90
                 )
+                if($powershellversion -eq 5) {
                 #source: https://stackoverflow.com/questions/39253055/powershell-script-to-get-certificate-expiry-for-a-website-remotely-for-multiple
                 [string]$details = $null
                 #Ignore Certs
@@ -684,8 +672,61 @@ Foreach ($ComputerName in $AllComputersNames) {
                 }else{
                     $returnData += new-object psobject -property  @{Url = $url; CheckResult = "ERROR"; CertExpiresInDays = $null; ExpirationOn = $null; CertName = $certname; Details = $details}
                 }
-
                 Remove-Variable req
+            }elseif($powershellversion -eq 7){
+                # PowerShell 7 specific code can be added here
+                $uri = [Uri]$url
+                if ($uri.Port) { 
+                    $port = $uri.Port 
+                } else { 
+                    $port = 443 
+                }
+                $tcpClient = New-Object System.Net.Sockets.TcpClient
+                $tcpClient.Connect($uri.Host, $port)
+                $sslStream = New-Object System.Net.Security.SslStream($tcpClient.GetStream(), $false, ({ $true }))
+
+                try {
+                    $sslStream.AuthenticateAsClient($uri.Host)
+                    $cert = $sslStream.RemoteCertificate
+                    if ($cert) {
+                        $x509 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $cert
+                        [datetime]$expiration = $x509.NotAfter
+                        [int]$certExpiresIn = ($expiration - $(get-date)).Days
+                        $certName = $x509.Subject
+                        $certSerialNumber = $x509.SerialNumber
+                        $certThumbprint = $x509.Thumbprint
+                        $certEffectiveDate = $x509.NotBefore
+                        $certIssuer = $x509.IssuerName
+                        if ($certExpiresIn -gt $minimumCertAgeDays) {
+                            $returnData += new-object psobject -property  @{Url = $url; CheckResult = "OK"; CertExpiresInDays = [int]$certExpiresIn; ExpirationOn = [datetime]$expiration; CertName = $certname; Details = $details}
+                        }else{
+                            $details = ""
+                            $details += "Cert for site $url expires in $certExpiresIn days [on $expiration]`n"
+                            $details += "Threshold is $minimumCertAgeDays days. Check details:`n"
+                            $details += "Cert name: $certName`n"
+                            $details += "Cert serial number: $certSerialNumber`n"
+                            $details += "Cert thumbprint: $certThumbprint`n"
+                            $details += "Cert effective date: $certEffectiveDate`n"
+                            $details += "Cert issuer: $certIssuer"
+                            $returnData += new-object psobject -property  @{Url = $url; CheckResult = "WARNING"; CertExpiresInDays = [int]$certExpiresIn; ExpirationOn = [datetime]$expiration; CertName = $certname; Details = $details}
+                        }
+                            # [PSCustomObject]@{
+                            #     Subject        = $x509.Subject
+                            #     Issuer         = $x509.Issuer
+                            #     NotBefore      = $x509.NotBefore
+                            #     NotAfter       = $x509.NotAfter
+                            #     Thumbprint     = $x509.Thumbprint
+                            #     SerialNumber   = $x509.SerialNumber
+                            # }
+                    } else {
+                        Write-Host "No certificate found."
+                        $returnData += new-object psobject -property  @{Url = $url; CheckResult = "ERROR"; CertExpiresInDays = $null; ExpirationOn = $null; CertName = $certname; Details = $details}
+                    }
+                } finally {
+                    $sslStream.Close()
+                    $tcpClient.Close()
+                }
+            }
                 #Remove-Variable res
                 return $returnData
             }
@@ -1033,7 +1074,7 @@ Foreach ($ComputerName in $AllComputersNames) {
             $ComputerInfo = [InventoryObject]::new()
 
             If ($null -eq $ComputerOS) {
-                $ComputerOS = Get-DomainComputer -ComputerName "$ComputerName" -Properties Name,Enabled,OperatingSystem,OperatingSystemServicePack,OperatingSystemVersion,LastLogonDate,description,dNSHostName -ErrorAction SilentlyContinue
+                $ComputerOS = Get-DomainComputer -ComputerName "$ComputerName" -Properties Name,Enabled,OperatingSystem,OperatingSystemServicePack,OperatingSystemVersion,LastLogonDate,description,dNSHostName,servicePrincipalName -ErrorAction SilentlyContinue
             }
             
             if ($null -ne $ComputerOS.Name) {
@@ -1042,9 +1083,14 @@ Foreach ($ComputerName in $AllComputersNames) {
                 $ComputerInfo.'AD Name'= $ComputerName
             }
             If ($null -ne $ComputerOS.dNSHostName) {
-                $ComputerInfo.'DNS IP' = (Resolve-DnsName -Name $ComputerOS.dNSHostName -ErrorAction SilentlyContinue).IPAddress
+                $ComputerInfo.'DNS IP' = (Resolve-DnsName -Name [string]$ComputerOS.dNSHostName -ErrorAction SilentlyContinue).IPAddress
             }Else {
-                $ComputerInfo.'DNS IP' = (Resolve-DnsName -Name $ComputerName -ErrorAction SilentlyContinue).IPAddress
+                $ComputerInfo.'DNS IP' = (Resolve-DnsName -Name [string]$ComputerName -ErrorAction SilentlyContinue).IPAddress
+            }
+            If($ComputerOS.servicePrincipalName | Where-Object {$_ -like "*MSClusterVirtualServer*" }) {
+                $ComputerInfo.'Cluster Virtual Server' = "True"
+            }Else{
+                $ComputerInfo.'Cluster Virtual Server' = "False"
             }
             If ($null -ne $ComputerOS) {
                 $ComputerInfo.Enabled = $ComputerOS.Enabled
@@ -1063,7 +1109,7 @@ Foreach ($ComputerName in $AllComputersNames) {
                 $ComputerInfo.'VM Tools Status' = $CurrentVM.'Tools Status'
                 $ComputerInfo.'VM Shutdown Date' = $CurrentVM.'Shutdown Date'
             }
-            If ($ComputerOS.Enabled -eq $true -and $null -ne $ComputerInfo.'DNS IP') {
+            If ($ComputerOS.Enabled -eq $true -and $null -ne $ComputerInfo.'DNS IP' -and -not ($ComputerOS.servicePrincipalName | Where-Object {$_ -like "*MSClusterVirtualServer*" })) {
                 #Create remote connections
                 Try{
                     $cimSession = New-CimSession -ComputerName $ComputerName -ErrorAction SilentlyContinue
@@ -1289,7 +1335,7 @@ Foreach ($ComputerName in $AllComputersNames) {
                             $ComputerIIS = Invoke-Command -errorAction SilentlyContinue -HideComputerName -Session $psSession -ScriptBlock {                           
                                 $MaxMemoryUsage = 75
                                 $Octet = '(?:0?0?[0-9]|0?[1-9][0-9]|1[0-9]{2}|2[0-5][0-5]|2[0-4][0-9])'
-[regex] $IPv4Regex = "^(?:$Octet\.){3}$Octet$"
+                                [regex] $IPv4Regex = "^(?:$Octet\.){3}$Octet$"
                                 #Force Process to run with lower priority
                                 Get-Process -id $pid | ForEach-Object {$_.PriorityClass='BelowNormal'}
 
@@ -1573,8 +1619,12 @@ Foreach ($ComputerName in $AllComputersNames) {
                             $FortiClient = ($ArrComputerSoftware | Where-Object {$_.Name -match "FortiClient"}).version
                             $ComputerInfo.FortiClient = $FortiClient
                         #endregion Forti Client
+                        #region RSA Version
+                            $RSAVersion = ($ArrComputerSoftware | Where-Object {$_.Name -match "RSA MFA"} | Select-Object -ExpandProperty version | Where-Object {$_})  -join ","
+                            $ComputerInfo.'RSA Version' = $RSAVersion
+                        #endregion RSA Version
                         #region LanDesk Agent
-                            $LanDeskVersion =  $ArrComputerSoftware | Where-Object {$_.Name -match "LanDesk"  -and $_.Name -match "Common" -and $_.Name -match "Agent"}
+                            $LanDeskVersion =  $ArrComputerSoftware | Where-Object {($_.Name -match "LanDesk"  -and $_.Name -match "Common" -and $_.Name -match "Agent") -or ($_.Name -match "Ivanti"  -and $_.Name -match "Base" -and $_.Name -match "Engine") }
                             If ($LanDeskVersion) {
                                 $ComputerInfo.'LANDesk Agent Installed' = $LanDeskVersion.Version
                             }
