@@ -146,6 +146,9 @@
 	* Version 3.00.40 - Fix for Schannel issue using 4294967295 instead of 1 for enabled
 	* Version 3.00.41 - Added SkipSystemRestore to skip disabling System Restore.
 	* Version 3.00.42 - Allows for IIS to be ignored.
+	* Version 3.00.43 - Fixed issue with windows time service not being set to automatic. 
+	* Version 3.00.44 - Fixed issue with windows time service not being set to automatic. Fixed issues with Powercfg setting PowerButtonAction.
+
 	#>
 #Requires -Version 5.1 -PSEdition Desktop
 #############################################################################
@@ -196,7 +199,7 @@ If (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 #############################################################################
 #region User Variables
 #############################################################################
-$ScriptVersion = "3.0.41"
+$ScriptVersion = "3.0.44"
 $LogFile = ("\Logs\" + `
 		   ($MyInvocation.MyCommand.Name -replace ".ps1","") + "_" + `
 		   $env:computername + "_" + `
@@ -1284,7 +1287,7 @@ If (-Not $NoCacheUpdate) {
 	#Setup Local Install Cache
 	If (-Not( Test-Path $LICache)) {
 		write-host ("Creating Local Install cache: " + $LICache)
-		New-Item -ItemType directory -Path $LICache | Out-Null
+		New-Item -ItemType Directory -Path $LICache | Out-Null
 		$Acl = Get-Acl $LICache
 		$Ar = New-Object system.Security.AccessControl.FileSystemAccessRule('Users', "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
 		$Acl.Setaccessrule($Ar) | Out-Null
@@ -1714,7 +1717,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 						$Acl.Setaccessrule($Ar)
 						Set-Acl (Get-envValueFromString -Path $file) $Acl	
 					} else {
-						Write-Warning ("`t`tCannot find '" + (Get-envValueFromString -Path $file) + "' to deny access to.")
+						Write-Host ("`t`tCannot find '" + (Get-envValueFromString -Path $file) + "' to deny access to.") -ForegroundColor Yellow
 					}
 				}
 				#Add Deny ACL User Profile
@@ -1727,7 +1730,7 @@ ForEach ( $CurrentProfile in $ProfileList.ToArray() ) {
 						Set-Acl ($UserProfile + "\"+ $file) $Acl	
 						Get-ChildItem -path ($UserProfile + "\"+ $file) -Recurse -Force | ForEach-Object {$_.attributes = "Hidden"}
 					} else {
-						Write-Warning ("`t`tCannot find '" + ($UserProfile + "\"+ $file) + "' to deny access to.")
+						Write-Host ("`t`tCannot find '" + ($UserProfile + "\"+ $file) + "' to deny access to.") -ForegroundColor Yellow
 					}
 				}
 				
@@ -2781,40 +2784,66 @@ If (-Not $UserOnly) {
 			}
 		}
 		If ($ConfigFile.Config.WindowsSettings.VM.DisablingHibernate -eq 'true' -or $ConfigFile.Config.WindowsSettings.VM.DisablingHibernate -eq 'yes') {
-			Write-Host "Disabling Hibernate..." -ForegroundColor Green
+			Write-Host "Disabling Hibernate." -ForegroundColor Green
 			POWERCFG -h off
 		}
 		If ($SkipSystemRestore -eq $False -and ($ConfigFile.Config.WindowsSettings.VM.DisableSystemRestore -eq 'true' -or $ConfigFile.Config.WindowsSettings.VM.DisableSystemRestore -eq 'yes')) {
 			If(Get-Command Disable-ComputerRestore -ErrorAction SilentlyContinue) {
-				Write-Host "Disabling System Restore..." -ForegroundColor Green
+				Write-Host "Disabling System Restore." -ForegroundColor Green
 				Disable-ComputerRestore -Drive "C:\"
 			}
 
 		}
 		If ($ConfigFile.Config.WindowsSettings.VM.NewNetworkWindowOff -eq 'true' -or $ConfigFile.Config.WindowsSettings.VM.NewNetworkWindowOff -eq 'yes') {
 			If (-Not (Test-path -path 'HKLM:\SYSTEM\CurrentControlSet\Control\Network\NewNetworkWindowOff')) {			
-				Write-Host "Disabling New Network Dialog..." -ForegroundColor Green
+				Write-Host "Disabling New Network Dialog." -ForegroundColor Green
 				New-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Network' -Name 'NewNetworkWindowOff' | Out-Null
 			}
 		}
 	}	
 	#endregion VM
 	#region Powerbutton
-	If ($ConfigFile.Config.WindowsSettings.PowerButtionAction) {
-		Switch ($ConfigFile.Config.WindowsSettings.PowerButtionAction) {
-			0 {Write-Host 'Setting "Power Button" to "Do nothing"...' -ForegroundColor Green}
-			0 {Write-Host 'Setting "Power Button" to "Do nothing"...' -ForegroundColor Green}
-			1 {Write-Host 'Setting "Power Button" to "Sleep"...' -ForegroundColor Green}
-			2 {Write-Host 'Setting "Power Button" to "Hibernate"...' -ForegroundColor Green}
-			3 {Write-Host 'Setting "Power Button" to "Shut down"...' -ForegroundColor Green}
-			4 {Write-Host 'Setting "Power Button" to "Turn off the display"...' -ForegroundColor Green}
+	If ($ConfigFile.Config.WindowsSettings.PowerButtonAction) {
+		Switch ($ConfigFile.Config.WindowsSettings.PowerButtonAction) {
+			0 {Write-Host 'Setting "Power Button" to "Do nothing".' }
+			0 {Write-Host 'Setting "Power Button" to "Do nothing".' }
+			1 {Write-Host 'Setting "Power Button" to "Sleep".' }
+			2 {Write-Host 'Setting "Power Button" to "Hibernate".' }
+			3 {Write-Host 'Setting "Power Button" to "Shut down".' }
+			4 {Write-Host 'Setting "Power Button" to "Turn off the display".' }
 		}
-		powercfg /SETDCVALUEINDEX SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 7648efa3-dd9c-4e3e-b566-50f929386280 ($ConfigFile.Config.WindowsSettings.PowerButtionAction)
-		powercfg /SETDCVALUEINDEX SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 7648efa3-dd9c-4e3e-b566-50f929386280 ($ConfigFile.Config.WindowsSettings.PowerButtionAction)
-		powercfg -SetActive SCHEME_CURRENT	
+		$Current_PowerPlan = (((powercfg /getactivescheme) -split ":")[1] -split " ")[1]
+		powercfg /SETDCVALUEINDEX $Current_PowerPlan 4f971e89-eebd-4455-a8de-9e59040e7347 7648efa3-dd9c-4e3e-b566-50f929386280 ($ConfigFile.Config.WindowsSettings.PowerButtonAction)
+		powercfg /SETDCVALUEINDEX $Current_PowerPlan 4f971e89-eebd-4455-a8de-9e59040e7347 7648efa3-dd9c-4e3e-b566-50f929386280 ($ConfigFile.Config.WindowsSettings.PowerButtonAction)
+		powercfg -SetActive $Current_PowerPlan
 	}
 	#endregion Powerbutton
-	#regon Install Font
+	#region SleepACTimeout
+	If ($ConfigFile.Config.WindowsSettings.SleepACTimeout) {
+		Write-Host ('Setting "Sleep AC Timeout" to ' + $ConfigFile.Config.WindowsSettings.SleepACTimeout + " Minutes.") 
+		powercfg /change standby-timeout-ac ($ConfigFile.Config.WindowsSettings.SleepACTimeout)
+
+	}
+	#endregion SleepACTimeout
+	#region SleepDCTimeout
+	If ($ConfigFile.Config.WindowsSettings.SleepDCTimeout) {
+		Write-Host ('Setting "Sleep DC Timeout" to ' + $ConfigFile.Config.WindowsSettings.SleepDCTimeout + " Minutes.") 
+		powercfg /change standby-timeout-dc ($ConfigFile.Config.WindowsSettings.SleepDCTimeout)
+	}
+	#endregion SleepDCTimeout
+	#region ScreenACTimeout
+	If ($ConfigFile.Config.WindowsSettings.ScreenACTimeout) {
+		Write-Host ('Setting "Screen AC Timeout" to ' + $ConfigFile.Config.WindowsSettings.ScreenACTimeout + " Minutes.") 
+		powercfg /change monitor-timeout-ac ($ConfigFile.Config.WindowsSettings.ScreenACTimeout)
+	}
+	#endregion ScreenACTimeout
+	#region ScreenDCTimeout
+	If ($ConfigFile.Config.WindowsSettings.ScreenDCTimeout) {
+		Write-Host ('Setting "Screen DC Timeout" to ' + $ConfigFile.Config.WindowsSettings.ScreenDCTimeout + " Minutes.") 
+		powercfg /change monitor-timeout-dc ($ConfigFile.Config.WindowsSettings.ScreenDCTimeout)
+	}
+	#endregion ScreenDCTimeout
+	#region Install Font
 	Foreach ($key in ($ConfigFile.Config.WindowsSettings.Fonts.Path)) {
 		If (Test-Path -Path (Get-envValueFromString -Path $key.'#text')) {
 			If ($key.Recurse -match "true") {
@@ -3074,7 +3103,7 @@ If (-Not $UserOnly) {
 	Foreach ($Cipher in $ConfigFile.Config.WindowsSettings.Schannel.Cipher) {
 		$CurrentCipher = $null
 		$CurrentCipher = Get-ItemPropertyValue -Path (($RegAddSCHANNEL -replace "HKLM\\","HKLM:\") + "\Ciphers\" + ( $Cipher.'#text')) -Name "Enabled" -ErrorAction SilentlyContinue
-		Write-Color -Text "Existing Cipher: ", $Cipher.'#text', $CurrentCipher -Color White,DarkYellow,DarkRed -StartTab 1
+		Write-Color -Text "Existing Cipher: ", $Cipher.'#text', " Value: ",$CurrentCipher -Color White,DarkYellow,White,DarkRed -StartTab 1
 		If ($Cipher.Status -eq "Enable" -or $Cipher.Status -eq "Enabled" -or $Cipher.Status -eq "on") {
 			If ($CurrentCipher -ne 1 -or $CurrentCipher -ne 4294967295) {
 				Write-Color -Text "Enabling Cipher: ",
@@ -3347,12 +3376,14 @@ If (-Not $UserOnly -and $ConfigFile.config.WindowsSettings.NtpServer) {
 	#Disable Clients being NTP Servers
 	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpServer" "Enabled" 0 "DWORD" "Setting up Time"
 	If ($Store) {
+		cmd /C sc config w32time start= auto | out-null
 		net stop w32time | out-null
 		W32tm /config /syncfromflags:manual /manualpeerlist:($ConfigFile.config.WindowsSettings.NtpServer) | out-null
 		w32tm /config /reliable:yes | out-null
 		net start w32time | out-null
 		w32tm /resync /rediscover | out-null
 	} else {
+		cmd /C sc config w32time start= auto | out-null
 		net stop w32time | out-null
 		W32tm /config /syncfromflags:ALL /manualpeerlist:($ConfigFile.config.WindowsSettings.NtpServer) | out-null
 		w32tm /config /reliable:yes | out-null
